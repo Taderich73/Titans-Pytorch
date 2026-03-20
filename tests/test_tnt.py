@@ -1,14 +1,16 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Tests for TNT configuration, state, Q-K projection, and hierarchical memory."""
+"""Tests for TNT: config, state, Q-K projection, hierarchical memory, and models."""
 
 import tempfile
 from pathlib import Path
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 import pytest
+from mlx.utils import tree_flatten
 
 from titans_mlx.config import TitansConfig
 from titans_mlx.memory import (
@@ -19,6 +21,12 @@ from titans_mlx.memory import (
 )
 from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
+from titans_mlx.tnt_models import (
+    TNTMACBlock,
+    TNTMAGBlock,
+    TNTMALBlock,
+    TitansTNT,
+)
 
 
 # ============================================================================
@@ -969,3 +977,316 @@ class TestTNTMemorySerialization:
                 np.array(orig.global_state.weights[0]),
                 atol=1e-6,
             )
+
+
+# ============================================================================
+# Phase 5.1: TNT Blocks
+# ============================================================================
+
+
+@pytest.fixture
+def tnt_config() -> TitansConfig:
+    """Small TNT config for block and model tests."""
+    return TitansConfig(
+        dim=32,
+        num_heads=2,
+        num_layers=1,
+        ffn_mult=2.0,
+        num_memory_layers=1,
+        memory_hidden_mult=2.0,
+        num_persistent_tokens=2,
+        chunk_size=16,
+        window_size=8,
+        dropout=0.0,
+        use_conv=False,
+        use_rope=False,
+        max_seq_len=64,
+        vocab_size=50,
+        use_tnt=True,
+        local_chunk_sizes=[4, 8],
+        local_shard_length=64,
+    )
+
+
+class TestTNTMACBlock:
+    """Tests for TNTMACBlock."""
+
+    def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass produces correct shape without initial state."""
+        block = TNTMACBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, state = block(x)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+        assert isinstance(state, TNTMemoryState)
+
+    def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass works with existing state."""
+        block = TNTMACBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        _, state1 = block(x)
+        output, state2 = block(x, state=state1)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+
+    def test_no_nan(self, tnt_config: TitansConfig) -> None:
+        """Output contains no NaN values."""
+        block = TNTMACBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, _ = block(x)
+        mx.eval(output)
+        assert not np.any(np.isnan(np.array(output)))
+
+
+class TestTNTMAGBlock:
+    """Tests for TNTMAGBlock."""
+
+    def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass produces correct shape."""
+        block = TNTMAGBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, state = block(x)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+        assert isinstance(state, TNTMemoryState)
+
+    def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass works with existing state."""
+        block = TNTMAGBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        _, state1 = block(x)
+        output, _ = block(x, state=state1)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+
+    def test_no_nan(self, tnt_config: TitansConfig) -> None:
+        """Output contains no NaN values."""
+        block = TNTMAGBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, _ = block(x)
+        mx.eval(output)
+        assert not np.any(np.isnan(np.array(output)))
+
+
+class TestTNTMALBlock:
+    """Tests for TNTMALBlock."""
+
+    def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass produces correct shape."""
+        block = TNTMALBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, state = block(x)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+        assert isinstance(state, TNTMemoryState)
+
+    def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
+        """Forward pass works with existing state."""
+        block = TNTMALBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        _, state1 = block(x)
+        output, _ = block(x, state=state1)
+        mx.eval(output)
+        assert output.shape == (2, 16, 32)
+
+    def test_no_nan(self, tnt_config: TitansConfig) -> None:
+        """Output contains no NaN values."""
+        block = TNTMALBlock(tnt_config)
+        x = mx.random.normal((2, 16, 32))
+        output, _ = block(x)
+        mx.eval(output)
+        assert not np.any(np.isnan(np.array(output)))
+
+
+# ============================================================================
+# Phase 5.2: TitansTNT Model
+# ============================================================================
+
+
+class TestTitansTNT:
+    """Tests for TitansTNT model."""
+
+    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
+    def test_forward_shape(self, tnt_config: TitansConfig, variant: str) -> None:
+        """Forward pass produces correct logits shape for all variants."""
+        model = TitansTNT(tnt_config, variant=variant)
+        input_ids = mx.random.randint(0, 50, (2, 16))
+        logits, states = model(input_ids)
+        mx.eval(logits)
+        assert logits.shape == (2, 16, 50)
+        assert len(states) == 1
+
+    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
+    def test_state_threading(self, tnt_config: TitansConfig, variant: str) -> None:
+        """State threads correctly across consecutive calls."""
+        model = TitansTNT(tnt_config, variant=variant)
+        input_ids = mx.random.randint(0, 50, (2, 16))
+
+        _, states1 = model(input_ids)
+        logits2, states2 = model(input_ids, states=states1)
+        mx.eval(logits2)
+
+        assert logits2.shape == (2, 16, 50)
+        # Step counters should increase — exact value depends on variant
+        # (MAG/MAL prepend persistent tokens to memory input, increasing
+        # the effective seq_len per call)
+        for c in states2[0].local_step_counters:
+            assert c > states1[0].local_step_counters[0]
+
+    def test_multi_chunk(self, tnt_config: TitansConfig) -> None:
+        """Sequences longer than chunk_size are processed in chunks."""
+        model = TitansTNT(tnt_config, variant="mac")
+        # seq_len=48 > chunk_size=16 → 3 chunks
+        input_ids = mx.random.randint(0, 50, (2, 48))
+        logits, states = model(input_ids)
+        mx.eval(logits)
+        assert logits.shape == (2, 48, 50)
+        assert states[0].local_step_counters == [48, 48]
+
+    def test_single_chunk_fast_path(self, tnt_config: TitansConfig) -> None:
+        """Sequences <= chunk_size use the fast path."""
+        model = TitansTNT(tnt_config, variant="mac")
+        input_ids = mx.random.randint(0, 50, (2, 8))
+        logits, states = model(input_ids)
+        mx.eval(logits)
+        assert logits.shape == (2, 8, 50)
+
+    def test_weight_tying(self, tnt_config: TitansConfig) -> None:
+        """Embedding and output head weights are tied."""
+        model = TitansTNT(tnt_config)
+        head_w = np.array(model.head.weight)
+        embed_w = np.array(model.embed.weight)
+        np.testing.assert_array_equal(head_w, embed_w)
+
+    def test_invalid_variant_raises(self, tnt_config: TitansConfig) -> None:
+        """Invalid variant raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown TNT variant"):
+            TitansTNT(tnt_config, variant="bad")
+
+    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
+    def test_no_nan(self, tnt_config: TitansConfig, variant: str) -> None:
+        """All variants produce valid (no NaN/Inf) logits."""
+        model = TitansTNT(tnt_config, variant=variant)
+        input_ids = mx.random.randint(0, 50, (2, 16))
+        logits, _ = model(input_ids)
+        mx.eval(logits)
+        logits_np = np.array(logits)
+        assert not np.any(np.isnan(logits_np)), f"{variant} produced NaN"
+        assert not np.any(np.isinf(logits_np)), f"{variant} produced Inf"
+
+    def test_tnt_differs_from_standard_mac(self, tnt_config: TitansConfig) -> None:
+        """TitansTNT produces different output than TitansMAC (different architecture)."""
+        from titans_mlx.models import TitansMAC
+
+        # Use same config for both
+        mac_config = TitansConfig(
+            dim=32, num_heads=2, num_layers=1, ffn_mult=2.0,
+            num_memory_layers=1, memory_hidden_mult=2.0, num_persistent_tokens=2,
+            chunk_size=16, window_size=8, dropout=0.0, use_conv=False,
+            use_rope=False, max_seq_len=64, vocab_size=50,
+        )
+
+        mx.random.seed(42)
+        mac_model = TitansMAC(mac_config)
+        mx.random.seed(42)
+        tnt_model = TitansTNT(tnt_config, variant="mac")
+
+        input_ids = mx.random.randint(0, 50, (1, 16))
+
+        mac_logits, _ = mac_model(input_ids)
+        tnt_logits, _ = tnt_model(input_ids)
+        mx.eval(mac_logits, tnt_logits)
+
+        # Both should be valid but different (different memory architectures)
+        assert not np.any(np.isnan(np.array(mac_logits)))
+        assert not np.any(np.isnan(np.array(tnt_logits)))
+        # They should differ (different number of memory modules, different init)
+        diff = float(mx.sum(mx.abs(mac_logits - tnt_logits)))
+        assert diff > 0.0
+
+    def test_gradient_flow(self, tnt_config: TitansConfig) -> None:
+        """Gradients flow through TitansTNT via value_and_grad."""
+        model = TitansTNT(tnt_config, variant="mac")
+        input_ids = mx.random.randint(0, 50, (2, 16))
+        targets = mx.random.randint(0, 50, (2, 16))
+
+        def loss_fn(model: nn.Module) -> mx.array:
+            logits, _ = model(input_ids)
+            logits_flat = logits.reshape(-1, 50)
+            targets_flat = targets.reshape(-1)
+            return nn.losses.cross_entropy(logits_flat, targets_flat).mean()
+
+        loss, grads = nn.value_and_grad(model, loss_fn)(model)
+        mx.eval(loss)
+
+        assert float(loss) > 0
+        flat_grads = tree_flatten(grads)
+        has_nonzero = any(float(mx.abs(g).sum()) > 0 for _, g in flat_grads)
+        assert has_nonzero, "Expected at least some non-zero gradients"
+
+
+# ============================================================================
+# Phase 5.3: Two-stage training configuration
+# ============================================================================
+
+
+class TestTwoStageConfig:
+    """Tests for TitansConfig.tnt_stage1 / tnt_stage2 helpers."""
+
+    def test_stage1_defaults(self) -> None:
+        """tnt_stage1() sets correct defaults."""
+        config = TitansConfig.tnt_stage1()
+        assert config.use_tnt is True
+        assert config.global_chunk_size == 2048
+        assert config.local_chunk_sizes == [8, 16]
+        assert config.local_shard_length == 2048
+        assert config.tnt_stage == 1
+
+    def test_stage1_override(self) -> None:
+        """tnt_stage1() accepts overrides."""
+        config = TitansConfig.tnt_stage1(
+            dim=128, local_chunk_sizes=[4, 8, 16]
+        )
+        assert config.dim == 128
+        assert config.local_chunk_sizes == [4, 8, 16]
+        assert config.use_tnt is True
+
+    def test_stage2_from_stage1(self) -> None:
+        """tnt_stage2() derives correct config from stage 1."""
+        s1 = TitansConfig.tnt_stage1(local_chunk_sizes=[8, 16, 32])
+        s2 = TitansConfig.tnt_stage2(s1)
+
+        assert s2.tnt_stage == 2
+        assert s2.finetune_local_chunk_sizes == [4, 8, 16]
+        assert s2.active_local_chunk_sizes == [4, 8, 16]
+        # Base local_chunk_sizes unchanged
+        assert s2.local_chunk_sizes == [8, 16, 32]
+
+    def test_stage2_minimum_chunk_size(self) -> None:
+        """tnt_stage2() clamps chunk sizes to minimum of 1."""
+        s1 = TitansConfig.tnt_stage1(local_chunk_sizes=[1, 2])
+        s2 = TitansConfig.tnt_stage2(s1)
+        # 1 // 2 = 0, clamped to 1
+        assert s2.finetune_local_chunk_sizes == [1, 1]
+
+    def test_stage2_preserves_other_fields(self) -> None:
+        """tnt_stage2() preserves non-TNT fields from stage 1."""
+        s1 = TitansConfig.tnt_stage1(dim=256, num_heads=8, num_layers=6)
+        s2 = TitansConfig.tnt_stage2(s1)
+        assert s2.dim == 256
+        assert s2.num_heads == 8
+        assert s2.num_layers == 6
+
+    def test_stage2_model_instantiation(self) -> None:
+        """TitansTNT can be instantiated with stage 2 config."""
+        s1 = TitansConfig.tnt_stage1(
+            dim=32, num_heads=2, num_layers=1, vocab_size=50,
+            chunk_size=16, window_size=8, use_conv=False, use_rope=False,
+            num_memory_layers=1,
+        )
+        s2 = TitansConfig.tnt_stage2(s1)
+        model = TitansTNT(s2, variant="mac")
+        input_ids = mx.random.randint(0, 50, (1, 16))
+        logits, _ = model(input_ids)
+        mx.eval(logits)
+        assert logits.shape == (1, 16, 50)

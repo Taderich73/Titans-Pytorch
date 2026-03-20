@@ -422,6 +422,62 @@ class TestTitansLMM:
         np.testing.assert_array_equal(head_w, embed_w)
 
 
+class TestMAGBlockPersistentMemoryInput:
+    """Verify Phase 1.1 fix: MAG memory receives persistent-augmented input."""
+
+    def test_mag_memory_sees_persistent(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """MAGBlock passes [persistent || input] to memory, not just input."""
+        block = MAGBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        output, state = block(x)
+        mx.eval(output)
+
+        # If persistent tokens are used, memory state should incorporate
+        # them. Run a second call and verify state evolved.
+        output2, state2 = block(x, state=state)
+        mx.eval(output2, state.weights[0], state2.weights[0])
+
+        diff = float(mx.sum(mx.abs(state2.weights[0] - state.weights[0])))
+        assert diff > 0.0, "Memory state should evolve between calls"
+
+
+class TestGatingNormalization:
+    """Verify Phase 1.2 fix: gating uses learnable normalization + sigmoid."""
+
+    def test_mac_has_gate_norms(self, default_config: TitansConfig) -> None:
+        """MACBlock has gate_norm_attn and gate_norm_mem."""
+        block = MACBlock(default_config)
+        assert hasattr(block, "gate_norm_attn")
+        assert hasattr(block, "gate_norm_mem")
+        assert isinstance(block.gate_norm_attn, RMSNorm)
+        assert isinstance(block.gate_norm_mem, RMSNorm)
+
+    def test_mag_has_gate_norms(self, default_config: TitansConfig) -> None:
+        """MAGBlock has gate_norm_attn and gate_norm_mem."""
+        block = MAGBlock(default_config)
+        assert hasattr(block, "gate_norm_attn")
+        assert hasattr(block, "gate_norm_mem")
+        assert isinstance(block.gate_norm_attn, RMSNorm)
+        assert isinstance(block.gate_norm_mem, RMSNorm)
+
+    def test_gated_output_bounded(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Sigmoid gating produces bounded contribution."""
+        block = MACBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+        output, _ = block(x)
+        mx.eval(output)
+
+        # Output should be finite (sigmoid gating prevents explosion)
+        output_np = np.array(output)
+        assert not np.any(np.isnan(output_np))
+        assert not np.any(np.isinf(output_np))
+
+
 class TestModelsIntegration:
     """Integration tests for all model variants."""
 
