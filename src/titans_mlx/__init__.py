@@ -35,6 +35,7 @@ from titans_mlx.memory import (
 )
 from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
 from titans_mlx.persistent import PersistentMemory
+from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM
 from titans_mlx.optimizations import (
     benchmark_function,
@@ -79,6 +80,9 @@ __all__ = [
     "SegmentedAttention",
     # Persistent Memory
     "PersistentMemory",
+    # Q-K Projection
+    "QKProjection",
+    "update_projection_state",
     # Models
     "TitansMAC",
     "TitansMAG",
