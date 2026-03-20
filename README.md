@@ -387,16 +387,16 @@ mx.eval(output)
 
 ```bash
 # Demo with synthetic data
-uv run python scripts/pretrain_mlx.py --model mac --dim 256 --epochs 10
+uv run python scripts/pretrain.py --model mac --dim 256 --epochs 10
 
 # Train with FineWeb-Edu
-uv run python scripts/pretrain_mlx.py --model mac \
+uv run python scripts/pretrain.py --model mac \
     --dataset HuggingFaceFW/fineweb-edu \
     --tokenizer meta-llama/Llama-2-7b-hf \
     --dim 512 --num-layers 12
 
 # Full training
-uv run python scripts/pretrain_mlx.py --model mac \
+uv run python scripts/pretrain.py --model mac \
     --dataset HuggingFaceFW/fineweb-edu \
     --tokenizer meta-llama/Llama-2-7b-hf \
     --dim 1024 --num-layers 24 --num-heads 16 \
@@ -404,11 +404,11 @@ uv run python scripts/pretrain_mlx.py --model mac \
     --dtype float16 --wandb
 
 # Train with local text
-uv run python scripts/pretrain_mlx.py --model mag \
+uv run python scripts/pretrain.py --model mag \
     --data path/to/corpus.txt
 
 # Resume from checkpoint
-uv run python scripts/pretrain_mlx.py --model mac \
+uv run python scripts/pretrain.py --model mac \
     --resume checkpoints_mlx/latest.safetensors
 ```
 
@@ -458,18 +458,18 @@ uv run python scripts/pretrain_mlx.py --model mac \
 
 ```bash
 # Generate text
-uv run python scripts/inference_mlx.py \
+uv run python scripts/inference.py \
     --checkpoint checkpoints_mlx/best_model.safetensors \
     --prompt "Once upon a time" \
     --max-tokens 100
 
 # Interactive mode
-uv run python scripts/inference_mlx.py \
+uv run python scripts/inference.py \
     --checkpoint checkpoints_mlx/best_model.safetensors \
     --interactive
 
 # With quantization and benchmark
-uv run python scripts/inference_mlx.py \
+uv run python scripts/inference.py \
     --checkpoint checkpoints_mlx/best_model.safetensors \
     --prompt "Hello" \
     --quantize 8 \
@@ -740,8 +740,8 @@ titans-tnt-mlx/
 │       └── metal_kernels.py    # Metal kernels
 │
 ├── scripts/
-│   ├── pretrain_mlx.py         # MLX training
-│   └── inference_mlx.py        # MLX inference
+│   ├── pretrain.py         # MLX training
+│   └── inference.py        # MLX inference
 │
 ├── tests/
 │   ├── test_memory.py
