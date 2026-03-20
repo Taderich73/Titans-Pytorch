@@ -415,8 +415,18 @@ class MAGBlock(nn.Module):
             attn_out = nn.Dropout(self.dropout_p)(attn_out)
         y_t = x + attn_out
 
-        # Eq. 27: M_t = M_{t-1}(x_t) - Memory update with input
-        mem_out, new_state = self.memory(normed, state=state)
+        # Eq. 27-28: M_t = M_{t-1}(x̃) - Memory receives persistent-augmented input
+        # Paper Eq. 28: o = y ⊗ M(x̃), where x̃ = [p₁...p_Np] || x (Eq. 26)
+        if persistent is not None:
+            mem_input = mx.concatenate([persistent, normed], axis=1)
+        else:
+            mem_input = normed
+        mem_out_full, new_state = self.memory(mem_input, state=state)
+        # Slice off persistent prefix from output
+        if persistent is not None:
+            mem_out = mem_out_full[:, persistent.shape[1]:, :]
+        else:
+            mem_out = mem_out_full
 
         # Eq. 28: Gated output with learnable normalization
         # Section 4.2: "normalize outputs y and M(x̃) using learnable vector-valued
