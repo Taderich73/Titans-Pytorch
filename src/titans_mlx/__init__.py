@@ -29,6 +29,7 @@ from titans_mlx.config import TitansConfig
 from titans_mlx.memory import (
     MemoryState,
     NeuralLongTermMemory,
+    TNTMemoryState,
     load_memory_states,
     save_memory_states,
 )
@@ -70,6 +71,7 @@ __all__ = [
     # Memory
     "NeuralLongTermMemory",
     "MemoryState",
+    "TNTMemoryState",
     "save_memory_states",
     "load_memory_states",
     # Attention

@@ -71,6 +71,76 @@ class MemoryState:
         )
 
 
+@dataclass
+class TNTMemoryState:
+    """State for TNT hierarchical memory system.
+
+    The TNT architecture uses a global memory (V) for long-range context
+    and N local memories (W^(i)) with different chunk sizes for fine-grained
+    recall. Local memories are periodically reset to learned initial weights.
+
+    Attributes:
+        global_state: MemoryState for the global memory (V)
+        local_states: List of MemoryState, one per local memory (W^(i))
+        local_inits: Initial weight snapshots per local memory (W_init^(i)),
+            used to reset local memories at shard boundaries
+        qk_projections: Q-K projection matrices (M_t^(i)), one per local
+            memory — accumulated outer products that align query space to
+            the key space used during memory compression (TNT Eq. 7)
+        local_step_counters: Position within shard for each local memory,
+            used to trigger resets when reaching local_shard_length
+    """
+
+    global_state: MemoryState
+    local_states: list[MemoryState]
+    local_inits: list[list[mx.array]]
+    qk_projections: list[mx.array]
+    local_step_counters: list[int]
+
+    def detach(self) -> TNTMemoryState:
+        """Detach state (stop gradients)."""
+        return TNTMemoryState(
+            global_state=self.global_state.detach(),
+            local_states=[s.detach() for s in self.local_states],
+            local_inits=[
+                [mx.stop_gradient(w) for w in init]
+                for init in self.local_inits
+            ],
+            qk_projections=[mx.stop_gradient(m) for m in self.qk_projections],
+            local_step_counters=list(self.local_step_counters),
+        )
+
+    def reset_local(self, index: int) -> TNTMemoryState:
+        """Reset a local memory to its initial weights.
+
+        Called at shard boundaries when local_step_counters[index] reaches
+        local_shard_length.
+
+        Args:
+            index: Which local memory to reset
+
+        Returns:
+            New TNTMemoryState with the specified local memory reset
+        """
+        new_local_states = list(self.local_states)
+        init_weights = self.local_inits[index]
+        new_local_states[index] = MemoryState(
+            weights=[mx.array(w) for w in init_weights],
+            momentum=[mx.zeros_like(w) for w in init_weights],
+        )
+        new_qk = list(self.qk_projections)
+        new_qk[index] = mx.zeros_like(self.qk_projections[index])
+        new_counters = list(self.local_step_counters)
+        new_counters[index] = 0
+        return TNTMemoryState(
+            global_state=self.global_state,
+            local_states=new_local_states,
+            local_inits=self.local_inits,
+            qk_projections=new_qk,
+            local_step_counters=new_counters,
+        )
+
+
 def save_memory_states(states: list[MemoryState], path: Path) -> None:
     """Serialize memory states from all layers to a single .npz file.
 
