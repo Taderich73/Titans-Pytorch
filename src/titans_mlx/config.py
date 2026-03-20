@@ -35,6 +35,13 @@ class TitansConfig:
         dropout: Dropout probability
         activation: Activation function name
         init_std: Standard deviation for weight initialization
+        use_tnt: Whether to enable TNT hierarchical memory mode
+        global_chunk_size: C_G — chunk size for global memory updates
+        local_chunk_sizes: C_L — chunk sizes for each local memory (one per local memory)
+        local_shard_length: S_L — shard length (local memory reset period)
+        use_qk_projection: Whether to use Q-K projection for local retrieval
+        tnt_stage: Training stage (1 = pre-training, 2 = fine-tuning)
+        finetune_local_chunk_sizes: C_L' — smaller chunk sizes for stage 2 fine-tuning
     """
 
     # Core dimensions
@@ -65,6 +72,15 @@ class TitansConfig:
     conv_kernel_size: int = 4
     use_rope: bool = True
 
+    # TNT Hierarchical Memory
+    use_tnt: bool = False
+    global_chunk_size: int = 2048
+    local_chunk_sizes: list[int] = field(default_factory=lambda: [8, 16])
+    local_shard_length: int = 2048
+    use_qk_projection: bool = True
+    tnt_stage: int = 1
+    finetune_local_chunk_sizes: list[int] | None = None
+
     # Training
     dropout: float = 0.0
     activation: str = "silu"
@@ -84,6 +100,22 @@ class TitansConfig:
     def memory_hidden_dim(self) -> int:
         """Hidden dimension for memory MLP."""
         return int(self.dim * self.memory_hidden_mult)
+
+    @property
+    def num_local_memories(self) -> int:
+        """Number of local memories (N), derived from local_chunk_sizes."""
+        return len(self.local_chunk_sizes)
+
+    @property
+    def active_local_chunk_sizes(self) -> list[int]:
+        """Active local chunk sizes for the current training stage.
+
+        Returns finetune sizes during stage 2 if provided, otherwise
+        the base local_chunk_sizes.
+        """
+        if self.tnt_stage == 2 and self.finetune_local_chunk_sizes is not None:
+            return self.finetune_local_chunk_sizes
+        return self.local_chunk_sizes
 
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -106,6 +138,13 @@ class TitansConfig:
             "use_conv": self.use_conv,
             "conv_kernel_size": self.conv_kernel_size,
             "use_rope": self.use_rope,
+            "use_tnt": self.use_tnt,
+            "global_chunk_size": self.global_chunk_size,
+            "local_chunk_sizes": self.local_chunk_sizes,
+            "local_shard_length": self.local_shard_length,
+            "use_qk_projection": self.use_qk_projection,
+            "tnt_stage": self.tnt_stage,
+            "finetune_local_chunk_sizes": self.finetune_local_chunk_sizes,
             "dropout": self.dropout,
             "activation": self.activation,
             "init_std": self.init_std,
