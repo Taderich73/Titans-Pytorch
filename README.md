@@ -1,16 +1,11 @@
 # Titans: Learning to Memorize at Test Time
 
-<p align="center">
-<img src="assets/hero.png" alt="Titans Hero" width="100%"/>
-</p>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-105%20passed-brightgreen.svg)](tests/)
 
-A complete **PyTorch** and **MLX** (Apple Silicon) implementation of the Titans architecture from Google Research.
+A complete **MLX** (Apple Silicon) implementation of the Titans architecture from Google Research.
 
 Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. This enables attention mechanisms to focus on local context while utilizing long-range information through neural memory.
 
@@ -26,11 +21,7 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
   - [Neural Long-term Memory](#neural-long-term-memory)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-  - [PyTorch](#pytorch-quick-start)
-  - [MLX (Apple Silicon)](#mlx-quick-start)
 - [Pretraining](#pretraining)
-  - [PyTorch Pretraining](#pytorch-pretraining)
-  - [MLX Pretraining](#mlx-pretraining)
 - [Inference](#inference)
 - [Benchmarks](#benchmarks)
 - [Configuration Reference](#configuration-reference)
@@ -55,46 +46,41 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 
 ### Core Features
 
-| Feature | PyTorch | MLX |
-|---------|---------|-----|
-| MAC (Memory as Context) | ✅ | ✅ |
-| MAG (Memory as Gate) | ✅ | ✅ |
-| MAL (Memory as Layer) | ✅ | ✅ |
-| LMM (Memory Only) | ✅ | ✅ |
-| Deep Memory (L_M >= 1) | ✅ | ✅ |
-| Data-dependent Gating | ✅ | ✅ |
-| RoPE (Rotary Embeddings) | ✅ | ✅ |
-| 1D Depthwise Convolution | ✅ | ✅ |
-| Mixed Precision Training | ✅ bf16/fp16 | ✅ fp16/bf16 |
-| Gradient Accumulation | ✅ | ✅ |
-| Streaming Datasets | ✅ | ✅ |
-| W&B Logging | ✅ | ✅ |
+| Feature | MLX |
+|---------|-----|
+| MAC (Memory as Context) | ✅ |
+| MAG (Memory as Gate) | ✅ |
+| MAL (Memory as Layer) | ✅ |
+| LMM (Memory Only) | ✅ |
+| Deep Memory (L_M >= 1) | ✅ |
+| Data-dependent Gating | ✅ |
+| RoPE (Rotary Embeddings) | ✅ |
+| 1D Depthwise Convolution | ✅ |
+| Mixed Precision Training | ✅ fp16/bf16 |
+| Gradient Accumulation | ✅ |
+| Streaming Datasets | ✅ |
+| W&B Logging | ✅ |
 
-### Backend-Specific Features
+### MLX-Specific Features
 
-| Feature | PyTorch | MLX |
-|---------|---------|-----|
-| Flash Attention 2 | ✅ (CUDA) | N/A |
-| Triton Kernels | ✅ (CUDA) | N/A |
-| Metal Kernels | N/A | ✅ |
-| MPS Backend | ✅ | N/A |
-| Unified Memory | N/A | ✅ |
-| Numerical Parity | Reference | ✅ < 1e-4 |
+| Feature | MLX |
+|---------|-----|
+| Metal Kernels | ✅ |
+| Unified Memory | ✅ |
 
 ### Test Coverage
 
 - **105 unit tests** covering all modules
-- **Numerical parity tests** ensuring MLX matches PyTorch outputs
 - **Integration tests** for all model variants
 
 ---
 
 ## Architecture Overview
 
-<p align="center">
+<p align="left">
 <img src="assets/figures/fig1_memory_training.png" alt="Neural Memory Training" width="600"/>
 </p>
-<p align="center"><em>Figure 1: Neural memory training with efficient parallelization via matmul operations (from paper)</em></p>
+<p align="left"><em>Figure 1: Neural memory training with efficient parallelization via matmul operations (from paper)</em></p>
 
 ### Memory Perspective
 
@@ -127,16 +113,16 @@ Titans are designed around a **memory perspective** inspired by human cognition 
 | Long document QA (>100K tokens) | **MAC** | Best BABILong benchmark results (97.95%) |
 | Language modeling (perplexity) | **MAG** | Slightly better perplexity than MAC |
 | Real-time / streaming inference | **MAG** | No chunking, constant memory footprint |
-| Maximum training throughput | **MAL** | Leverages FlashAttention optimizations |
+| Maximum training throughput | **MAL** | Simplest architecture |
 | Existing hybrid model replacement | **MAL** | Same architecture as Griffin/Samba |
 | Pure sequence modeling | **LMM** | Tests memory capability alone |
 
 #### MAC: Memory as Context (Section 4.1)
 
-<p align="center">
+<p align="left">
 <img src="assets/figures/fig2_mac.png" alt="MAC Architecture" width="700"/>
 </p>
-<p align="center"><em>Figure 2: MAC (Memory as Context) - Bidirectional interaction between memory and attention</em></p>
+<p align="left"><em>Figure 2: MAC (Memory as Context) - Bidirectional interaction between memory and attention</em></p>
 
 ```
 h_t = M*_{t-1}(q_t)                              # Eq. 21: Retrieve from memory
@@ -151,10 +137,10 @@ o_t = y_t ⊗ M*_t(y_t)                            # Eq. 25: Output gating
 
 #### MAG: Memory as Gate (Section 4.2)
 
-<p align="center">
+<p align="left">
 <img src="assets/figures/fig4_mag_mal.png" alt="MAG and MAL Architecture" width="700"/>
 </p>
-<p align="center"><em>Figure 4-5: MAG (Memory as Gate) and MAL (Memory as Layer) architectures</em></p>
+<p align="left"><em>Figure 4-5: MAG (Memory as Gate) and MAL (Memory as Layer) architectures</em></p>
 
 ```
 x̃ = [persistent] || x                           # Eq. 26: Add persistent tokens
@@ -178,11 +164,11 @@ o = SW-Attn(y)                                   # Eq. 31: Attention on memory o
 
 ### Neural Long-term Memory
 
-<p align="center">
+<p align="left">
 <img src="assets/figures/fig3a_lstm_forget.png" alt="LSTM-inspired Gating" width="400"/>
 <img src="assets/figures/fig3b_lstm_update.png" alt="Memory Update" width="400"/>
 </p>
-<p align="center"><em>Figure 3: LSTM-inspired gating mechanism for memory forgetting (left) and update (right)</em></p>
+<p align="left"><em>Figure 3: LSTM-inspired gating mechanism for memory forgetting (left) and update (right)</em></p>
 
 #### Core Equations (Section 3.1)
 
@@ -219,7 +205,7 @@ Where:
 
 ## Installation
 
-### Basic Installation (PyTorch)
+### Basic Installation
 
 ```bash
 git clone https://github.com/yourusername/Google-Titans-replication.git
@@ -239,7 +225,7 @@ uv sync --extra train
 uv sync --all-extras
 ```
 
-### MLX Requirements
+### Requirements
 
 MLX requires macOS 13.5+ and Apple Silicon (M1/M2/M3/M4):
 
@@ -252,43 +238,11 @@ uv sync
 
 ## Quick Start
 
-### PyTorch Quick Start
-
-```python
-import torch
-from titans import TitansConfig, TitansMAC, TitansMAG, TitansMAL
-
-# Configuration
-config = TitansConfig(
-    dim=512,
-    num_heads=8,
-    num_layers=6,
-    vocab_size=32000,
-    chunk_size=512,           # For MAC
-    window_size=512,          # For MAG/MAL
-    num_persistent_tokens=16,
-    num_memory_layers=2,      # Deep memory
-)
-
-# Create model
-model = TitansMAC(config)  # or TitansMAG, TitansMAL
-
-# Forward pass
-input_ids = torch.randint(0, config.vocab_size, (2, 1024))
-logits, states = model(input_ids)
-
-# Continue with states for next segment
-input_ids_next = torch.randint(0, config.vocab_size, (2, 512))
-logits_next, states = model(input_ids_next, states=states)
-```
-
-### MLX Quick Start
-
 ```python
 import mlx.core as mx
 from titans_mlx import TitansConfig, TitansMAC, TitansMAG, TitansMAL
 
-# Configuration (same as PyTorch)
+# Configuration
 config = TitansConfig(
     dim=512,
     num_heads=8,
@@ -317,18 +271,6 @@ logits_next, states = model(input_ids_next, states=states)
 ### Standalone Neural Memory
 
 ```python
-# PyTorch
-from titans import TitansConfig, NeuralLongTermMemory
-import torch
-
-config = TitansConfig(dim=512, num_memory_layers=2)
-memory = NeuralLongTermMemory(config)
-
-x = torch.randn(2, 100, 512)
-output, state = memory(x)
-output2, state2 = memory(x, state=state)  # Continue with state
-
-# MLX
 from titans_mlx import TitansConfig, NeuralLongTermMemory
 import mlx.core as mx
 
@@ -344,140 +286,6 @@ mx.eval(output)
 ---
 
 ## Pretraining
-
-### PyTorch Pretraining
-
-#### Option 1: HuggingFace Streaming (Simple, No Setup)
-
-Stream directly from HuggingFace - tokenization happens on-the-fly:
-
-```bash
-# Train with FineWeb-Edu streaming
-uv run python scripts/pretrain.py --model mac \
-    --dataset HuggingFaceFW/fineweb-edu \
-    --dataset-subset sample-10BT \
-    --tokenizer NousResearch/Llama-2-7b-hf \
-    --dim 512 --num-layers 12 \
-    --mixed-precision bf16
-
-# Full training (340M params)
-uv run python scripts/pretrain.py --model mac \
-    --dataset HuggingFaceFW/fineweb-edu \
-    --dataset-subset sample-10BT \
-    --tokenizer NousResearch/Llama-2-7b-hf \
-    --dim 1024 --num-layers 24 --num-heads 16 \
-    --batch-size 8 --gradient-accumulation-steps 32 \
-    --lr 4e-4 --mixed-precision bf16 --wandb
-```
-
-#### Option 2: Pre-tokenized Local Dataset (Fastest)
-
-Pre-tokenize once, then train without tokenization overhead:
-
-```bash
-# Step 1: Pre-tokenize (one time)
-uv run python scripts/pretokenize.py \
-    --dataset HuggingFaceFW/fineweb-edu \
-    --subset sample-10BT \
-    --tokenizer NousResearch/Llama-2-7b-hf \
-    --output data/fineweb-tokenized \
-    --seq-len 4096 \
-    --num-proc 8
-
-# Step 2: Train with pre-tokenized data
-uv run python scripts/pretrain.py --model mac \
-    --local-dataset data/fineweb-tokenized \
-    --tokenizer NousResearch/Llama-2-7b-hf \
-    --dim 512 --num-layers 12 \
-    --mixed-precision bf16
-```
-
-#### Other Options
-
-```bash
-# Demo with synthetic data (quick test)
-uv run python scripts/pretrain.py --model mac --dim 256 --epochs 10
-
-# Train with local text file
-uv run python scripts/pretrain.py --model mag \
-    --data path/to/corpus.txt \
-    --tokenizer gpt2
-
-# Resume from checkpoint
-uv run python scripts/pretrain.py --model mac \
-    --resume checkpoints/latest.pt
-```
-
-#### PyTorch Training Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| **Model Architecture** |
-| `--model` | `mac` | Model variant: mac, mag, mal, lmm |
-| `--dim` | `512` | Model dimension |
-| `--num-heads` | `8` | Attention heads |
-| `--num-layers` | `12` | Number of layers |
-| `--vocab-size` | `32000` | Vocabulary size |
-| `--chunk-size` | `512` | Chunk size for MAC |
-| `--window-size` | `512` | Window size for MAG/MAL |
-| **Data** |
-| `--dataset` | - | HuggingFace dataset name (streaming) |
-| `--dataset-subset` | - | Dataset subset (e.g., sample-10BT) |
-| `--local-dataset` | - | Pre-tokenized local dataset (Arrow format) |
-| `--data` | - | Local text file path |
-| `--tokenizer` | `gpt2` | HuggingFace tokenizer |
-| `--seq-len` | `4096` | Sequence length |
-| **Training** |
-| `--epochs` | `1` | Number of epochs |
-| `--max-steps` | `-1` | Max steps (-1 = use epochs) |
-| `--batch-size` | `4` | Per-device batch size |
-| `--gradient-accumulation-steps` | `32` | Gradient accumulation steps |
-| `--lr` | `4e-4` | Learning rate |
-| `--weight-decay` | `0.1` | Weight decay |
-| `--grad-clip` | `1.0` | Gradient clipping |
-| `--warmup-ratio` | `0.03` | Warmup ratio |
-| `--mixed-precision` | `bf16` | none, fp16, bf16 |
-| **Optimization** |
-| `--torch-compile` | `False` | Enable torch.compile (PyTorch 2.0+) |
-| `--compile-mode` | `default` | default, reduce-overhead, max-autotune |
-| `--gradient-checkpointing` | `False` | Enable gradient checkpointing |
-| `--num-workers` | `4` | DataLoader workers |
-| **Checkpointing** |
-| `--checkpoint-dir` | `checkpoints/` | Checkpoint directory |
-| `--save-every` | `1000` | Save every N steps |
-| `--eval-every` | `500` | Eval every N steps |
-| `--resume` | - | Resume from checkpoint |
-| **Logging** |
-| `--log-every` | `10` | Log every N steps |
-| `--wandb` | `False` | Enable W&B logging |
-| `--wandb-project` | `titans` | W&B project name |
-| `--wandb-run-name` | - | W&B run name |
-| `--seed` | `42` | Random seed |
-
-#### CUDA Optimizations
-
-The training scripts include automatic CUDA optimizations:
-
-- **TF32 Precision**: Enabled by default on Ampere+ GPUs for faster matmul
-- **cuDNN Benchmark**: Auto-tunes convolution algorithms
-- **Fused AdamW**: Optimizer runs entirely on GPU
-- **BFloat16 Native**: Model initialized in bf16 (no autocast overhead)
-- **Non-blocking Transfers**: CPU→GPU transfers overlap with computation
-
-### Distributed Training (Multi-GPU)
-
-```bash
-# Multi-GPU with DDP (auto-detects GPUs)
-uv run accelerate launch scripts/pretrain_distributed.py \
-    --model mac --dim 512 \
-    --local-dataset data/fineweb-tokenized
-
-# Multi-GPU with custom config
-uv run accelerate launch --config_file configs/fsdp_config.yaml \
-    scripts/pretrain_distributed.py --model mac --dim 1024
-```
-
-### MLX Pretraining
 
 ```bash
 # Demo with synthetic data
@@ -506,7 +314,7 @@ uv run python scripts/pretrain_mlx.py --model mac \
     --resume checkpoints_mlx/latest.safetensors
 ```
 
-#### MLX Training Options
+### Training Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -550,54 +358,6 @@ uv run python scripts/pretrain_mlx.py --model mac \
 
 ## Inference
 
-### PyTorch Inference
-
-```bash
-# Generate text
-uv run python scripts/inference.py \
-    --checkpoint checkpoints/best_model.pt \
-    --prompt "Once upon a time" \
-    --max-tokens 100
-
-# Interactive mode
-uv run python scripts/inference.py \
-    --checkpoint checkpoints/best_model.pt \
-    --interactive
-
-# With sampling parameters
-uv run python scripts/inference.py \
-    --checkpoint checkpoints/best_model.pt \
-    --prompt "The meaning of life is" \
-    --temperature 0.8 \
-    --top-p 0.9 \
-    --max-tokens 200
-
-# With quantization
-uv run python scripts/inference.py \
-    --checkpoint checkpoints/best_model.pt \
-    --prompt "Hello" \
-    --quantize int8
-```
-
-#### PyTorch Inference Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--checkpoint` | **required** | Path to model checkpoint (.pt) |
-| `--tokenizer` | `gpt2` | HuggingFace tokenizer |
-| `--prompt` | - | Input prompt |
-| `--max-tokens` | `100` | Max tokens to generate |
-| `--temperature` | `1.0` | Sampling temperature |
-| `--top-k` | `50` | Top-k sampling |
-| `--top-p` | `0.9` | Top-p (nucleus) sampling |
-| `--repetition-penalty` | `1.0` | Repetition penalty |
-| `--interactive` | `False` | Interactive mode |
-| `--stream` | `False` | Stream output token by token |
-| `--quantize` | - | Quantization: int8, int4, fp16 |
-| `--device` | `auto` | Device: auto, cpu, cuda, mps |
-
-### MLX Inference
-
 ```bash
 # Generate text
 uv run python scripts/inference_mlx.py \
@@ -618,7 +378,7 @@ uv run python scripts/inference_mlx.py \
     --benchmark
 ```
 
-#### MLX Inference Options
+### Inference Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -663,25 +423,12 @@ uv run python scripts/inference_mlx.py \
 
 Configuration: batch=4, seq_len=256, dim=256, 4 layers
 
-| Model | MLX (ms) | PyTorch MPS (ms) | PyTorch CPU (ms) | MLX Speedup vs MPS |
-|-------|----------|------------------|------------------|-------------------|
-| MAC | **19.89** | 24.94 | 90.30 | **1.25x** |
-| MAG | **9.72** | 16.66 | 43.45 | **1.71x** |
-| MAL | **9.75** | 16.89 | 45.05 | **1.73x** |
-| LMM | **7.11** | 11.88 | 28.73 | **1.67x** |
-
-**All MLX implementations are faster than PyTorch MPS on Apple Silicon.**
-
-### Numerical Parity
-
-MLX and PyTorch implementations produce identical outputs:
-
-| Model | Max Difference |
-|-------|---------------|
-| Memory | < 1e-5 |
-| LMM | < 1e-4 |
-| MAG | < 1e-4 |
-| MAC | < 1e-4 |
+| Model | MLX (ms) |
+|-------|----------|
+| MAC | **19.89** |
+| MAG | **9.72** |
+| MAL | **9.75** |
+| LMM | **7.11** |
 
 ---
 
@@ -720,42 +467,6 @@ MLX and PyTorch implementations produce identical outputs:
 ---
 
 ## API Reference
-
-### PyTorch API
-
-```python
-from titans import (
-    # Configuration
-    TitansConfig,
-
-    # Models
-    TitansMAC,
-    TitansMAG,
-    TitansMAL,
-    TitansLMM,
-
-    # Components
-    NeuralLongTermMemory,
-    MemoryState,
-    SlidingWindowAttention,
-    SegmentedAttention,
-    PersistentMemory,
-)
-
-# Model forward signature
-logits, states = model(input_ids, states=None)
-# input_ids: (batch, seq_len) - Token IDs
-# states: Optional list of MemoryState
-# Returns: logits (batch, seq_len, vocab_size), new states
-
-# Memory forward signature
-output, state = memory(x, state=None, return_state=True)
-# x: (batch, seq_len, dim)
-# state: Optional MemoryState
-# Returns: output (batch, seq_len, dim), new state
-```
-
-### MLX API
 
 ```python
 from titans_mlx import (
@@ -859,22 +570,6 @@ config = TitansConfig(..., use_conv=False)
 
 ### Common Issues
 
-#### PyTorch
-
-**Issue**: Out of memory on GPU
-```bash
-# Reduce batch size or use gradient accumulation
---batch-size 2 --gradient-accumulation-steps 64
-```
-
-**Issue**: NaN loss during training
-```bash
-# Use bf16 instead of fp16, or reduce learning rate
---mixed-precision bf16 --lr 2e-4
-```
-
-#### MLX
-
 **Issue**: `ValueError: conv1d groups` error
 ```python
 # Disable convolution
@@ -895,15 +590,6 @@ gc.collect()
 mx.metal.clear_cache()  # If available
 ```
 
-### Numerical Differences
-
-Small numerical differences (< 1e-4) between PyTorch and MLX are expected due to:
-- Different floating-point implementations
-- Different reduction orders
-- Platform-specific optimizations
-
-For exact reproducibility, use the same backend.
-
 ---
 
 ## Development
@@ -911,17 +597,8 @@ For exact reproducibility, use the same backend.
 ### Project Structure
 
 ```
-titans-pytorch/
+titans-pytorch-mlx/
 ├── src/
-│   ├── titans/                 # PyTorch implementation
-│   │   ├── __init__.py
-│   │   ├── config.py           # TitansConfig
-│   │   ├── memory.py           # Neural Long-term Memory
-│   │   ├── attention.py        # Attention modules
-│   │   ├── persistent.py       # Persistent Memory
-│   │   ├── models.py           # MAC, MAG, MAL, LMM
-│   │   └── triton_kernels.py   # Triton optimizations
-│   │
 │   └── titans_mlx/             # MLX implementation
 │       ├── __init__.py
 │       ├── config.py
@@ -933,19 +610,14 @@ titans-pytorch/
 │       └── metal_kernels.py    # Metal kernels
 │
 ├── scripts/
-│   ├── pretrain.py             # PyTorch training (optimized)
-│   ├── pretrain_distributed.py # Multi-GPU training (Accelerate)
 │   ├── pretrain_mlx.py         # MLX training
-│   ├── pretokenize.py          # Dataset pre-tokenization
-│   ├── inference.py            # PyTorch inference
 │   └── inference_mlx.py        # MLX inference
 │
 ├── tests/
 │   ├── test_memory.py
 │   ├── test_attention.py
 │   ├── test_models.py
-│   ├── test_persistent.py
-│   └── test_numerical_parity.py  # MLX vs PyTorch
+│   └── test_persistent.py
 │
 ├── examples/
 │   ├── basic_usage.py
@@ -961,10 +633,10 @@ titans-pytorch/
 uv run pytest tests/ -v
 
 # Specific test file
-uv run pytest tests/test_numerical_parity.py -v
+uv run pytest tests/test_memory.py -v
 
 # With coverage
-uv run pytest tests/ --cov=titans --cov=titans_mlx --cov-report=term-missing
+uv run pytest tests/ --cov=titans_mlx --cov-report=term-missing
 ```
 
 ### Linting
