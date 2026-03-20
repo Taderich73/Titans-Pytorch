@@ -1,13 +1,13 @@
-# Titans: Learning to Memorize at Test Time
+# TitansTNT for MLX
 
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-105%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-178%20passed-brightgreen.svg)](tests/)
 
-A complete **MLX** (Apple Silicon) implementation of the Titans architecture from Google Research.
+A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, extended with **TNT (Test-Time Neural Turing)** hierarchical memory from Li et al.
 
-Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. This enables attention mechanisms to focus on local context while utilizing long-range information through neural memory.
+Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** builds on this with a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions for fine-grained detail — with periodic resets and Q-K projection for domain-aligned retrieval.
 
 ---
 
@@ -19,6 +19,10 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
   - [Memory Perspective](#memory-perspective)
   - [Architecture Variants](#architecture-variants)
   - [Neural Long-term Memory](#neural-long-term-memory)
+- [TNT: Hierarchical Memory](#tnt-hierarchical-memory)
+  - [Architecture](#tnt-architecture)
+  - [Two-Stage Training](#two-stage-training)
+  - [TNT Quick Start](#tnt-quick-start)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
@@ -40,6 +44,8 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 
 > **Analysis Paper**: Di Nepi, G., Siciliano, F., & Silvestri, F. (2025). *Titans Revisited: A Lightweight Reimplementation and Critical Analysis of a Test-Time Memory Model*. arXiv preprint arXiv:2510.09551
 
+> **TNT Paper**: Li, S., Bick, A., Lucchi, A., & Behrouz, A. (2025). *TNT: Improving Chunkwise Training for Test-Time Memorization*. [arXiv:2511.07343](https://arxiv.org/pdf/2511.07343)
+
 ---
 
 ## Features
@@ -52,6 +58,10 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 | MAG (Memory as Gate) | ✅ |
 | MAL (Memory as Layer) | ✅ |
 | LMM (Memory Only) | ✅ |
+| **TNT Hierarchical Memory** | ✅ |
+| **TNT MAC / MAG / MAL variants** | ✅ |
+| **Q-K Projection (local retrieval)** | ✅ |
+| **Two-Stage Training (pre-train + fine-tune)** | ✅ |
 | Deep Memory (L_M >= 1) | ✅ |
 | Data-dependent Gating | ✅ |
 | RoPE (Rotary Embeddings) | ✅ |
@@ -70,8 +80,8 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 
 ### Test Coverage
 
-- **105 unit tests** covering all modules
-- **Integration tests** for all model variants
+- **178 unit tests** covering all modules
+- **Integration tests** for all model variants (including TNT)
 
 ---
 
@@ -200,6 +210,94 @@ Where:
 2. **Forgetting mechanism**: Weight decay for memory management on long sequences
 3. **Deep memory**: MLP with L_M >= 2 layers for more expressive power
 4. **Data-dependent gates**: α, η, θ are functions of input, not fixed hyperparameters
+
+---
+
+## TNT: Hierarchical Memory
+
+TNT extends Titans with a **hierarchical memory system** that separates long-range context from fine-grained detail, enabling both better memorization and massive parallelism through periodic local memory resets.
+
+### TNT Architecture
+
+```
+Input x
+  │
+  ├──► Global Memory (V)     ─── large chunks (C_G=2048) ─── long-range context
+  │        sequential across global chunks
+  │
+  ├──► Local Memory 1 (W¹)   ─── small chunks (C_L=8)   ─── fine detail
+  │        resets every S_L tokens to learnable W_init
+  │
+  ├──► Local Memory 2 (W²)   ─── small chunks (C_L=16)  ─── medium detail
+  │        resets every S_L tokens to learnable W_init
+  │
+  └──► ... N local memories at different resolutions
+```
+
+**Retrieval** (Eq. 15 from TNT paper):
+```
+o_t = f(V, q_t) + Σ_{i=1}^{N} f(W^(i), M_t^(i) · q_t)
+      └─ global ─┘   └──── local with Q-K projection ────┘
+```
+
+Key innovations:
+- **Learnable W_init**: Local memories reset to trained initial weights (not zeros), preserving task knowledge
+- **Q-K Projection**: Projects queries onto the key subspace (`M_t = Σ k_τ k_τᵀ`), resolving the domain mismatch between memory compression and retrieval
+- **Periodic resets**: Breaking sequential dependencies across shards enables context parallelism
+
+### Two-Stage Training
+
+| Stage | Purpose | Local Chunk Sizes | Compute |
+|-------|---------|-------------------|---------|
+| **Stage 1** (pre-training) | Throughput | Moderate (C_L = {8, 16}) | Baseline |
+| **Stage 2** (fine-tuning) | Quality | Smaller (C_L' = {4, 8}) | +5% |
+
+```python
+from titans_mlx import TitansConfig
+
+# Stage 1: pre-training config
+stage1 = TitansConfig.tnt_stage1(dim=512, num_heads=8, num_layers=12, vocab_size=32000)
+
+# Stage 2: derive fine-tuning config (halves local chunk sizes)
+stage2 = TitansConfig.tnt_stage2(stage1)
+# stage2.active_local_chunk_sizes → [4, 8]
+```
+
+### TNT Quick Start
+
+```python
+import mlx.core as mx
+from titans_mlx import TitansConfig, TitansTNT
+
+# Configure TNT with hierarchical memory
+config = TitansConfig(
+    dim=512,
+    num_heads=8,
+    num_layers=6,
+    vocab_size=32000,
+    chunk_size=512,
+    window_size=512,
+    use_tnt=True,
+    local_chunk_sizes=[8, 16],       # N=2 local memories
+    local_shard_length=2048,          # Reset period
+    global_chunk_size=2048,           # Global memory chunk size
+)
+
+# Create model — supports "mac", "mag", "mal" variants
+model = TitansTNT(config, variant="mac")
+mx.eval(model.parameters())
+
+# Forward pass
+input_ids = mx.random.randint(0, config.vocab_size, (2, 1024))
+logits, states = model(input_ids)
+mx.eval(logits)
+
+# Continue with state (memory threads across calls)
+input_ids_next = mx.random.randint(0, config.vocab_size, (2, 512))
+logits_next, states = model(input_ids_next, states=states)
+```
+
+See [`examples/tnt_usage.py`](examples/tnt_usage.py) for more detailed examples including multi-resolution memories and state persistence.
 
 ---
 
@@ -460,6 +558,14 @@ Configuration: batch=4, seq_len=256, dim=256, 4 layers
 | `use_rope` | True | Rotary Position Embeddings | - |
 | `activation` | "silu" | Activation function | Section 4.4 |
 | `dropout` | 0.0 | Dropout rate | - |
+| **TNT Hierarchical Memory** |
+| `use_tnt` | False | Enable TNT hierarchical memory | TNT paper |
+| `global_chunk_size` | 2048 | Global memory chunk size (C_G) | TNT Eq. 5 |
+| `local_chunk_sizes` | [8, 16] | Chunk sizes per local memory (C_L) | TNT Eq. 6 |
+| `local_shard_length` | 2048 | Local memory reset period (S_L) | TNT Eq. 6 |
+| `use_qk_projection` | True | Q-K projection for local retrieval | TNT Eq. 7 |
+| `tnt_stage` | 1 | Training stage (1=pre-train, 2=fine-tune) | TNT Sec. 4.2 |
+| `finetune_local_chunk_sizes` | None | Smaller C_L' for stage 2 | TNT Sec. 4.2 |
 | **FFN** |
 | `ffn_mult` | 4.0 | FFN hidden dim multiplier | - |
 | `init_std` | 0.02 | Weight initialization std | - |
@@ -473,18 +579,39 @@ from titans_mlx import (
     # Configuration
     TitansConfig,
 
-    # Models
+    # Models (original Titans)
     TitansMAC,
     TitansMAG,
     TitansMAL,
     TitansLMM,
 
-    # Components
+    # TNT Models (hierarchical memory)
+    TitansTNT,          # Full model — pass variant="mac"/"mag"/"mal"
+    TNTMACBlock,
+    TNTMAGBlock,
+    TNTMALBlock,
+
+    # TNT Memory Components
+    HierarchicalMemory,
+    GlobalMemory,
+    LocalMemory,
+    TNTMemoryState,
+    QKProjection,
+
+    # TNT State Persistence
+    save_tnt_memory_states,
+    load_tnt_memory_states,
+
+    # Core Components
     NeuralLongTermMemory,
     MemoryState,
     SlidingWindowAttention,
     SegmentedAttention,
     PersistentMemory,
+
+    # State Persistence
+    save_memory_states,
+    load_memory_states,
 
     # Optimizations
     compile_model,      # Note: Limited support
@@ -602,10 +729,13 @@ titans-tnt-mlx/
 │   └── titans_mlx/             # MLX implementation
 │       ├── __init__.py
 │       ├── config.py
-│       ├── memory.py
+│       ├── memory.py           # MemoryState, TNTMemoryState, serialization
 │       ├── attention.py
 │       ├── persistent.py
-│       ├── models.py
+│       ├── models.py           # TitansMAC, TitansMAG, TitansMAL, TitansLMM
+│       ├── qk_projection.py    # Q-K Projection for TNT local retrieval
+│       ├── tnt_memory.py       # GlobalMemory, LocalMemory, HierarchicalMemory
+│       ├── tnt_models.py       # TNTMACBlock, TNTMAGBlock, TNTMALBlock, TitansTNT
 │       ├── optimizations.py    # MLX optimizations
 │       └── metal_kernels.py    # Metal kernels
 │
@@ -617,11 +747,14 @@ titans-tnt-mlx/
 │   ├── test_memory.py
 │   ├── test_attention.py
 │   ├── test_models.py
-│   └── test_persistent.py
+│   ├── test_persistent.py
+│   ├── test_config.py
+│   └── test_tnt.py             # TNT: config, Q-K proj, hierarchical memory, models
 │
 ├── examples/
 │   ├── basic_usage.py
-│   └── long_sequence.py
+│   ├── long_sequence.py
+│   └── tnt_usage.py            # TNT hierarchical memory examples
 │
 └── pyproject.toml
 ```
@@ -662,6 +795,13 @@ uv run ruff format src/ tests/ scripts/
   title={Titans Revisited: A Lightweight Reimplementation and Critical Analysis of a Test-Time Memory Model},
   author={Di Nepi, Gavriel and Siciliano, Federico and Silvestri, Fabrizio},
   journal={arXiv preprint arXiv:2510.09551},
+  year={2025}
+}
+
+@article{li2025tnt,
+  title={TNT: Improving Chunkwise Training for Test-Time Memorization},
+  author={Li, Shuo and Bick, Ari and Lucchi, Aurelien and Behrouz, Ali},
+  journal={arXiv preprint arXiv:2511.07343},
   year={2025}
 }
 ```
