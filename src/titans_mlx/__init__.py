@@ -31,11 +31,14 @@ from titans_mlx.memory import (
     NeuralLongTermMemory,
     TNTMemoryState,
     load_memory_states,
+    load_tnt_memory_states,
     save_memory_states,
+    save_tnt_memory_states,
 )
 from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
 from titans_mlx.persistent import PersistentMemory
 from titans_mlx.qk_projection import QKProjection, update_projection_state
+from titans_mlx.tnt_memory import GlobalMemory, LocalMemory, HierarchicalMemory
 from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM
 from titans_mlx.optimizations import (
     benchmark_function,
@@ -75,6 +78,8 @@ __all__ = [
     "TNTMemoryState",
     "save_memory_states",
     "load_memory_states",
+    "save_tnt_memory_states",
+    "load_tnt_memory_states",
     # Attention
     "SlidingWindowAttention",
     "SegmentedAttention",
@@ -83,6 +88,10 @@ __all__ = [
     # Q-K Projection
     "QKProjection",
     "update_projection_state",
+    # TNT Hierarchical Memory
+    "GlobalMemory",
+    "LocalMemory",
+    "HierarchicalMemory",
     # Models
     "TitansMAC",
     "TitansMAG",

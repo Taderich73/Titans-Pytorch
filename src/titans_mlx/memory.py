@@ -218,6 +218,138 @@ def load_memory_states(path: Path) -> list[MemoryState]:
     return states
 
 
+def save_tnt_memory_states(states: list[TNTMemoryState], path: Path) -> None:
+    """Serialize TNT hierarchical memory states to a single .npz file.
+
+    Stores global state, N local states, local init weights, Q-K projection
+    matrices, and step counters for each model layer.
+
+    Args:
+        states: List of TNTMemoryState, one per model layer.
+        path: Output file path (will be saved as .npz).
+    """
+    arrays: dict[str, np.ndarray] = {}
+    arrays["num_layers"] = np.array([len(states)])
+    arrays["state_type"] = np.array([1])  # 1 = TNT
+
+    for i, state in enumerate(states):
+        # Global state
+        n_global = len(state.global_state.weights)
+        arrays[f"layer_{i}_global_num_weights"] = np.array([n_global])
+        for j, w in enumerate(state.global_state.weights):
+            arrays[f"layer_{i}_global_weight_{j}"] = np.array(w)
+        for j, m in enumerate(state.global_state.momentum):
+            arrays[f"layer_{i}_global_momentum_{j}"] = np.array(m)
+
+        # Local states
+        n_locals = len(state.local_states)
+        arrays[f"layer_{i}_num_locals"] = np.array([n_locals])
+
+        for li in range(n_locals):
+            local = state.local_states[li]
+            n_local_weights = len(local.weights)
+            arrays[f"layer_{i}_local_{li}_num_weights"] = np.array([n_local_weights])
+            for j, w in enumerate(local.weights):
+                arrays[f"layer_{i}_local_{li}_weight_{j}"] = np.array(w)
+            for j, m in enumerate(local.momentum):
+                arrays[f"layer_{i}_local_{li}_momentum_{j}"] = np.array(m)
+
+            # Local init weights
+            for j, w in enumerate(state.local_inits[li]):
+                arrays[f"layer_{i}_local_{li}_init_{j}"] = np.array(w)
+
+            # Q-K projection matrix
+            arrays[f"layer_{i}_qk_proj_{li}"] = np.array(state.qk_projections[li])
+
+        # Step counters
+        arrays[f"layer_{i}_step_counters"] = np.array(state.local_step_counters)
+
+    path = Path(path)
+    np.savez(path, **arrays)
+
+
+def load_tnt_memory_states(path: Path) -> list[TNTMemoryState]:
+    """Deserialize TNT hierarchical memory states from a .npz file.
+
+    Args:
+        path: Path to .npz file saved by save_tnt_memory_states.
+
+    Returns:
+        List of TNTMemoryState, one per model layer.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        ValueError: If the file structure is invalid.
+    """
+    path = Path(path)
+    if not path.exists():
+        if not path.with_suffix(".npz").exists():
+            raise FileNotFoundError(f"TNT memory state file not found: {path}")
+        path = path.with_suffix(".npz")
+
+    data = np.load(str(path))
+
+    if "num_layers" not in data:
+        raise ValueError("Invalid TNT memory state file: missing 'num_layers'")
+
+    num_layers = int(data["num_layers"][0])
+    states: list[TNTMemoryState] = []
+
+    for i in range(num_layers):
+        # Global state
+        n_global = int(data[f"layer_{i}_global_num_weights"][0])
+        global_weights = [
+            mx.array(data[f"layer_{i}_global_weight_{j}"])
+            for j in range(n_global)
+        ]
+        global_momentum = [
+            mx.array(data[f"layer_{i}_global_momentum_{j}"])
+            for j in range(n_global)
+        ]
+        global_state = MemoryState(weights=global_weights, momentum=global_momentum)
+
+        # Local states
+        n_locals = int(data[f"layer_{i}_num_locals"][0])
+        local_states = []
+        local_inits = []
+        qk_projections = []
+
+        for li in range(n_locals):
+            n_lw = int(data[f"layer_{i}_local_{li}_num_weights"][0])
+            lw = [
+                mx.array(data[f"layer_{i}_local_{li}_weight_{j}"])
+                for j in range(n_lw)
+            ]
+            lm = [
+                mx.array(data[f"layer_{i}_local_{li}_momentum_{j}"])
+                for j in range(n_lw)
+            ]
+            local_states.append(MemoryState(weights=lw, momentum=lm))
+
+            # Local inits
+            li_inits = [
+                mx.array(data[f"layer_{i}_local_{li}_init_{j}"])
+                for j in range(n_lw)
+            ]
+            local_inits.append(li_inits)
+
+            # Q-K projection
+            qk_projections.append(mx.array(data[f"layer_{i}_qk_proj_{li}"]))
+
+        # Step counters
+        step_counters = list(int(x) for x in data[f"layer_{i}_step_counters"])
+
+        states.append(TNTMemoryState(
+            global_state=global_state,
+            local_states=local_states,
+            local_inits=local_inits,
+            qk_projections=qk_projections,
+            local_step_counters=step_counters,
+        ))
+
+    return states
+
+
 class MemoryMLP(nn.Module):
     """MLP architecture for the neural memory.
 

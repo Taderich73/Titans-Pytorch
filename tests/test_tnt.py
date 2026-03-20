@@ -1,15 +1,24 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Tests for TNT configuration, state, and Q-K projection (Phases 2-3)."""
+"""Tests for TNT configuration, state, Q-K projection, and hierarchical memory."""
+
+import tempfile
+from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
 import pytest
 
 from titans_mlx.config import TitansConfig
-from titans_mlx.memory import MemoryState, TNTMemoryState
+from titans_mlx.memory import (
+    MemoryState,
+    TNTMemoryState,
+    load_tnt_memory_states,
+    save_tnt_memory_states,
+)
 from titans_mlx.qk_projection import QKProjection, update_projection_state
+from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 
 
 # ============================================================================
@@ -466,3 +475,497 @@ class TestUpdateProjectionState:
         n2 = float(mx.sum(carry2 ** 2))
         assert n1 > n0
         assert n2 > n1
+
+
+# ============================================================================
+# Phase 4.1: GlobalMemory
+# ============================================================================
+
+
+class TestGlobalMemory:
+    """Tests for GlobalMemory module."""
+
+    @pytest.fixture
+    def config(self) -> TitansConfig:
+        return TitansConfig(dim=32, num_memory_layers=1, use_conv=False)
+
+    def test_forward_shape(self, config: TitansConfig) -> None:
+        """Forward pass produces correct output shape."""
+        gm = GlobalMemory(config)
+        x = mx.random.normal((2, 16, 32))
+        out, state = gm(x)
+        mx.eval(out)
+        assert out.shape == (2, 16, 32)
+
+    def test_state_returned(self, config: TitansConfig) -> None:
+        """Forward pass returns a valid MemoryState."""
+        gm = GlobalMemory(config)
+        x = mx.random.normal((2, 16, 32))
+        _, state = gm(x)
+        mx.eval(state.weights[0])
+        assert isinstance(state, MemoryState)
+        assert len(state.weights) == 1
+        assert state.weights[0].shape == (32, 32)
+
+    def test_retrieve_shape(self, config: TitansConfig) -> None:
+        """Retrieval produces correct output shape."""
+        gm = GlobalMemory(config)
+        x = mx.random.normal((2, 16, 32))
+        _, state = gm(x)
+        queries = mx.random.normal((2, 4, 32))
+        retrieved = gm.retrieve(queries, state)
+        mx.eval(retrieved)
+        assert retrieved.shape == (2, 4, 32)
+
+    def test_state_evolves(self, config: TitansConfig) -> None:
+        """Memory state changes after processing input."""
+        gm = GlobalMemory(config)
+        state0 = gm.init_state(1)
+        x = mx.random.normal((1, 16, 32))
+        _, state1 = gm(x, state=state0)
+        mx.eval(state0.weights[0], state1.weights[0])
+
+        diff = float(mx.sum(mx.abs(state1.weights[0] - state0.weights[0])))
+        assert diff > 0.0
+
+    def test_no_nan(self, config: TitansConfig) -> None:
+        """Output contains no NaN values."""
+        gm = GlobalMemory(config)
+        x = mx.random.normal((2, 8, 32))
+        out, state = gm(x)
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out)))
+
+
+# ============================================================================
+# Phase 4.2: LocalMemory
+# ============================================================================
+
+
+class TestLocalMemory:
+    """Tests for LocalMemory module with periodic reset."""
+
+    @pytest.fixture
+    def config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False, use_qk_projection=True
+        )
+
+    @pytest.fixture
+    def local_mem(self, config: TitansConfig) -> LocalMemory:
+        return LocalMemory(config, chunk_size=8, shard_length=64)
+
+    def test_forward_shape(self, local_mem: LocalMemory) -> None:
+        """Forward pass produces correct output shape."""
+        x = mx.random.normal((2, 8, 32))
+        out, state = local_mem(x)
+        mx.eval(out)
+        assert out.shape == (2, 8, 32)
+
+    def test_init_state_uses_w_init(self, local_mem: LocalMemory) -> None:
+        """init_state() uses the learnable W_init, not memory's default."""
+        state = local_mem.init_state(1)
+        mx.eval(state.weights[0], local_mem.w_init[0])
+
+        np.testing.assert_allclose(
+            np.array(state.weights[0]),
+            np.array(local_mem.w_init[0]),
+            atol=1e-6,
+        )
+
+    def test_init_state_zeros_momentum(self, local_mem: LocalMemory) -> None:
+        """init_state() initializes momentum to zero."""
+        state = local_mem.init_state(1)
+        mx.eval(state.momentum[0])
+        assert float(mx.sum(mx.abs(state.momentum[0]))) == 0.0
+
+    def test_maybe_reset_at_boundary(self, local_mem: LocalMemory) -> None:
+        """maybe_reset() resets state at shard boundaries."""
+        state = local_mem.init_state(1)
+        x = mx.random.normal((1, 8, 32))
+        _, modified_state = local_mem(x, state=state)
+
+        # At shard boundary (step 64), state should reset
+        reset_state, counter = local_mem.maybe_reset(modified_state, 64)
+        mx.eval(reset_state.weights[0], local_mem.w_init[0])
+
+        assert counter == 0
+        np.testing.assert_allclose(
+            np.array(reset_state.weights[0]),
+            np.array(local_mem.w_init[0]),
+            atol=1e-6,
+        )
+
+    def test_maybe_reset_not_at_boundary(self, local_mem: LocalMemory) -> None:
+        """maybe_reset() preserves state when not at shard boundary."""
+        state = local_mem.init_state(1)
+        x = mx.random.normal((1, 8, 32))
+        _, modified_state = local_mem(x, state=state)
+
+        preserved_state, counter = local_mem.maybe_reset(modified_state, 32)
+        assert counter == 32
+        # State should be the same object (not reset)
+        assert preserved_state is modified_state
+
+    def test_maybe_reset_at_zero_does_not_reset(
+        self, local_mem: LocalMemory
+    ) -> None:
+        """maybe_reset() at step 0 does not reset (only at multiples > 0)."""
+        state = local_mem.init_state(1)
+        x = mx.random.normal((1, 8, 32))
+        _, modified_state = local_mem(x, state=state)
+
+        preserved, counter = local_mem.maybe_reset(modified_state, 0)
+        assert counter == 0
+        assert preserved is modified_state
+
+    def test_has_qk_projection(self, local_mem: LocalMemory) -> None:
+        """QK projection is initialized when use_qk_projection=True."""
+        assert local_mem.qk_proj is not None
+        assert isinstance(local_mem.qk_proj, QKProjection)
+
+    def test_no_qk_projection(self, config: TitansConfig) -> None:
+        """QK projection is None when use_qk_projection=False."""
+        config_no_qk = TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False, use_qk_projection=False
+        )
+        lm = LocalMemory(config_no_qk, chunk_size=8, shard_length=64)
+        assert lm.qk_proj is None
+
+    def test_retrieve_shape(self, local_mem: LocalMemory) -> None:
+        """Retrieve returns correct shape."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = local_mem(x)
+        queries = mx.random.normal((2, 4, 32))
+        out = local_mem.retrieve(queries, state)
+        mx.eval(out)
+        assert out.shape == (2, 4, 32)
+
+    def test_no_nan(self, local_mem: LocalMemory) -> None:
+        """Output contains no NaN values."""
+        x = mx.random.normal((2, 8, 32))
+        out, _ = local_mem(x)
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out)))
+
+
+# ============================================================================
+# Phase 4.3: HierarchicalMemory
+# ============================================================================
+
+
+class TestHierarchicalMemory:
+    """Tests for HierarchicalMemory combining global + N local memories."""
+
+    @pytest.fixture
+    def config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            use_tnt=True,
+            local_chunk_sizes=[4, 8],
+            local_shard_length=64,
+            use_qk_projection=True,
+        )
+
+    @pytest.fixture
+    def hier_mem(self, config: TitansConfig) -> HierarchicalMemory:
+        return HierarchicalMemory(config)
+
+    def test_forward_shape(self, hier_mem: HierarchicalMemory) -> None:
+        """Forward pass produces correct output shape."""
+        x = mx.random.normal((2, 16, 32))
+        out, state = hier_mem(x)
+        mx.eval(out)
+        assert out.shape == (2, 16, 32)
+
+    def test_returns_tnt_state(self, hier_mem: HierarchicalMemory) -> None:
+        """Forward pass returns a TNTMemoryState."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+        assert isinstance(state, TNTMemoryState)
+
+    def test_state_structure(self, hier_mem: HierarchicalMemory) -> None:
+        """TNTMemoryState has correct number of local memories."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+        assert len(state.local_states) == 2
+        assert len(state.qk_projections) == 2
+        assert len(state.local_step_counters) == 2
+
+    def test_step_counters_advance(self, hier_mem: HierarchicalMemory) -> None:
+        """Step counters increase by sequence length after each call."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+        assert state.local_step_counters == [8, 8]
+
+        _, state2 = hier_mem(x, state=state)
+        assert state2.local_step_counters == [16, 16]
+
+    def test_retrieve_shape(self, hier_mem: HierarchicalMemory) -> None:
+        """Hierarchical retrieval produces correct shape."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+        queries = mx.random.normal((2, 4, 32))
+        out = hier_mem.retrieve(queries, state)
+        mx.eval(out)
+        assert out.shape == (2, 4, 32)
+
+    def test_global_state_evolves(self, hier_mem: HierarchicalMemory) -> None:
+        """Global memory state changes after processing."""
+        state0 = hier_mem.init_state(1)
+        x = mx.random.normal((1, 8, 32))
+        _, state1 = hier_mem(x, state=state0)
+        mx.eval(state0.global_state.weights[0], state1.global_state.weights[0])
+
+        diff = float(
+            mx.sum(
+                mx.abs(
+                    state1.global_state.weights[0] - state0.global_state.weights[0]
+                )
+            )
+        )
+        assert diff > 0.0
+
+    def test_local_states_evolve(self, hier_mem: HierarchicalMemory) -> None:
+        """Local memory states change after processing."""
+        state0 = hier_mem.init_state(1)
+        x = mx.random.normal((1, 8, 32))
+        _, state1 = hier_mem(x, state=state0)
+
+        for i in range(2):
+            mx.eval(
+                state0.local_states[i].weights[0],
+                state1.local_states[i].weights[0],
+            )
+            diff = float(
+                mx.sum(
+                    mx.abs(
+                        state1.local_states[i].weights[0]
+                        - state0.local_states[i].weights[0]
+                    )
+                )
+            )
+            assert diff > 0.0, f"Local memory {i} did not evolve"
+
+    def test_qk_projections_nonzero(self, hier_mem: HierarchicalMemory) -> None:
+        """Q-K projection matrices become non-zero after processing."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+
+        for i in range(2):
+            mx.eval(state.qk_projections[i])
+            norm = float(mx.sum(mx.abs(state.qk_projections[i])))
+            assert norm > 0.0, f"Q-K projection {i} is zero"
+
+    def test_no_qk_projection(self) -> None:
+        """Works correctly with Q-K projection disabled."""
+        config = TitansConfig(
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            use_tnt=True,
+            local_chunk_sizes=[4],
+            use_qk_projection=False,
+        )
+        hm = HierarchicalMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        out, state = hm(x)
+        mx.eval(out)
+        assert out.shape == (1, 8, 32)
+
+    def test_multi_resolution_local(self) -> None:
+        """Three local memories at different resolutions."""
+        config = TitansConfig(
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            use_tnt=True,
+            local_chunk_sizes=[4, 8, 16],
+        )
+        hm = HierarchicalMemory(config)
+        assert len(hm.local_memories) == 3
+
+        x = mx.random.normal((1, 16, 32))
+        out, state = hm(x)
+        mx.eval(out)
+        assert out.shape == (1, 16, 32)
+        assert len(state.local_states) == 3
+
+    def test_no_nan(self, hier_mem: HierarchicalMemory) -> None:
+        """Output contains no NaN values."""
+        x = mx.random.normal((2, 16, 32))
+        out, _ = hier_mem(x)
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out)))
+
+    def test_retrieval_no_nan(self, hier_mem: HierarchicalMemory) -> None:
+        """Retrieval output contains no NaN values."""
+        x = mx.random.normal((2, 8, 32))
+        _, state = hier_mem(x)
+        queries = mx.random.normal((2, 4, 32))
+        out = hier_mem.retrieve(queries, state)
+        mx.eval(out)
+        assert not np.any(np.isnan(np.array(out)))
+
+    def test_init_state_zeros_qk(self, hier_mem: HierarchicalMemory) -> None:
+        """init_state() starts with zeroed Q-K projections."""
+        state = hier_mem.init_state(1)
+        for qk in state.qk_projections:
+            mx.eval(qk)
+            assert float(mx.sum(mx.abs(qk))) == 0.0
+
+    def test_init_state_zero_counters(self, hier_mem: HierarchicalMemory) -> None:
+        """init_state() starts with zero step counters."""
+        state = hier_mem.init_state(1)
+        assert state.local_step_counters == [0, 0]
+
+
+# ============================================================================
+# Phase 4.4: TNT Memory State Serialization
+# ============================================================================
+
+
+class TestTNTMemorySerialization:
+    """Tests for save/load of TNTMemoryState."""
+
+    @pytest.fixture
+    def config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            use_tnt=True,
+            local_chunk_sizes=[4, 8],
+        )
+
+    @pytest.fixture
+    def tnt_state(self, config: TitansConfig) -> TNTMemoryState:
+        hm = HierarchicalMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        _, state = hm(x)
+        # Force evaluation
+        mx.eval(
+            state.global_state.weights[0],
+            state.local_states[0].weights[0],
+            state.local_states[1].weights[0],
+            state.qk_projections[0],
+            state.qk_projections[1],
+        )
+        return state
+
+    def test_roundtrip_global_weights(self, tnt_state: TNTMemoryState) -> None:
+        """Global weights survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        s = loaded[0]
+        mx.eval(s.global_state.weights[0])
+        np.testing.assert_allclose(
+            np.array(s.global_state.weights[0]),
+            np.array(tnt_state.global_state.weights[0]),
+            atol=1e-6,
+        )
+
+    def test_roundtrip_local_weights(self, tnt_state: TNTMemoryState) -> None:
+        """Local weights survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        s = loaded[0]
+        for i in range(2):
+            mx.eval(s.local_states[i].weights[0])
+            np.testing.assert_allclose(
+                np.array(s.local_states[i].weights[0]),
+                np.array(tnt_state.local_states[i].weights[0]),
+                atol=1e-6,
+            )
+
+    def test_roundtrip_qk_projections(self, tnt_state: TNTMemoryState) -> None:
+        """Q-K projection matrices survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        s = loaded[0]
+        for i in range(2):
+            mx.eval(s.qk_projections[i])
+            np.testing.assert_allclose(
+                np.array(s.qk_projections[i]),
+                np.array(tnt_state.qk_projections[i]),
+                atol=1e-6,
+            )
+
+    def test_roundtrip_step_counters(self, tnt_state: TNTMemoryState) -> None:
+        """Step counters survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        assert loaded[0].local_step_counters == tnt_state.local_step_counters
+
+    def test_roundtrip_local_inits(self, tnt_state: TNTMemoryState) -> None:
+        """Local init weights survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        s = loaded[0]
+        for i in range(2):
+            mx.eval(s.local_inits[i][0])
+            np.testing.assert_allclose(
+                np.array(s.local_inits[i][0]),
+                np.array(tnt_state.local_inits[i][0]),
+                atol=1e-6,
+            )
+
+    def test_roundtrip_momentum(self, tnt_state: TNTMemoryState) -> None:
+        """Momentum arrays survive serialization round-trip."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([tnt_state], path)
+            loaded = load_tnt_memory_states(path)
+
+        s = loaded[0]
+        mx.eval(s.global_state.momentum[0])
+        np.testing.assert_allclose(
+            np.array(s.global_state.momentum[0]),
+            np.array(tnt_state.global_state.momentum[0]),
+            atol=1e-6,
+        )
+
+    def test_file_not_found(self) -> None:
+        """Raises FileNotFoundError for missing file."""
+        with pytest.raises(FileNotFoundError):
+            load_tnt_memory_states(Path("/tmp/nonexistent_tnt_state"))
+
+    def test_multiple_layers(self, config: TitansConfig) -> None:
+        """Serialization works with multiple model layers."""
+        hm1 = HierarchicalMemory(config)
+        hm2 = HierarchicalMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        _, s1 = hm1(x)
+        _, s2 = hm2(x)
+        mx.eval(s1.global_state.weights[0], s2.global_state.weights[0])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state"
+            save_tnt_memory_states([s1, s2], path)
+            loaded = load_tnt_memory_states(path)
+
+        assert len(loaded) == 2
+        for i, (orig, load) in enumerate(zip([s1, s2], loaded)):
+            mx.eval(load.global_state.weights[0])
+            np.testing.assert_allclose(
+                np.array(load.global_state.weights[0]),
+                np.array(orig.global_state.weights[0]),
+                atol=1e-6,
+            )
