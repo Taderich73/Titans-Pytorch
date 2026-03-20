@@ -154,3 +154,35 @@ class TitansConfig:
     def from_dict(cls, d: dict) -> TitansConfig:
         """Create config from dictionary."""
         return cls(**d)
+
+    @classmethod
+    def tnt_stage1(cls, **kwargs) -> TitansConfig:
+        """Default Stage 1 (pre-training) TNT configuration.
+
+        Large global chunks (C_G=2048) for long-range context,
+        moderate local chunks (C_L={8,16}) for detail. Focus on throughput.
+        """
+        defaults = dict(
+            use_tnt=True,
+            global_chunk_size=2048,
+            local_chunk_sizes=[8, 16],
+            local_shard_length=2048,
+            tnt_stage=1,
+        )
+        defaults.update(kwargs)
+        return cls(**defaults)
+
+    @classmethod
+    def tnt_stage2(cls, stage1_config: TitansConfig) -> TitansConfig:
+        """Create Stage 2 (fine-tuning) config from a Stage 1 config.
+
+        Halves each local chunk size for finer-grained memorization.
+        Global memory is intended to be frozen during stage 2 training.
+        ~5% additional compute over stage 1.
+        """
+        d = stage1_config.to_dict()
+        d["finetune_local_chunk_sizes"] = [
+            max(1, cs // 2) for cs in d["local_chunk_sizes"]
+        ]
+        d["tnt_stage"] = 2
+        return cls.from_dict(d)

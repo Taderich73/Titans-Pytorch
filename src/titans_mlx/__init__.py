@@ -40,6 +40,12 @@ from titans_mlx.persistent import PersistentMemory
 from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.tnt_memory import GlobalMemory, LocalMemory, HierarchicalMemory
 from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM
+from titans_mlx.tnt_models import (
+    TNTMACBlock,
+    TNTMAGBlock,
+    TNTMALBlock,
+    TitansTNT,
+)
 from titans_mlx.optimizations import (
     benchmark_function,
     chunked_attention,
@@ -97,6 +103,11 @@ __all__ = [
     "TitansMAG",
     "TitansMAL",
     "TitansLMM",
+    # TNT Models
+    "TNTMACBlock",
+    "TNTMAGBlock",
+    "TNTMALBlock",
+    "TitansTNT",
     # Optimizations
     "benchmark_function",
     "chunked_attention",
