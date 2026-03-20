@@ -115,6 +115,11 @@ class MACBlock(nn.Module):
         self.norm2 = RMSNorm(config.dim)
         self.norm_mem = RMSNorm(config.dim)
 
+        # Gating normalization (Section 4.2: "learnable vector-valued weights
+        # followed by a non-linearity σ(·)")
+        self.gate_norm_attn = RMSNorm(config.dim)
+        self.gate_norm_mem = RMSNorm(config.dim)
+
         # Dropout
         self.dropout_p = config.dropout
 
@@ -178,11 +183,12 @@ class MACBlock(nn.Module):
         # while still providing cross-chunk memory context.
         mem_out, new_state = self.memory(y_t, state=state)
 
-        # Step 5 (Eq. 25): Final output with memory gate
-        # Section 4.4: "In all blocks, we use residual connections" — the equations
-        # omit this for simplicity, but without a residual the multiplicative gate
-        # kills gradient flow when mem_out ≈ 0 at initialization.
-        output = y_t + y_t * mem_out  # Residual + multiplicative gating
+        # Step 5 (Eq. 25): Gated output with learnable normalization
+        # Section 4.2: "normalize outputs y and M(x̃) using learnable vector-valued
+        # weights, followed by a non-linearity σ(·)."
+        # Section 4.4: residual connection (omitted from equations for simplicity)
+        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
+        output = y_t + gated
 
         # Feed-forward
         normed = self.norm2(output)
@@ -370,6 +376,11 @@ class MAGBlock(nn.Module):
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
 
+        # Gating normalization (Section 4.2: "learnable vector-valued weights
+        # followed by a non-linearity σ(·)")
+        self.gate_norm_attn = RMSNorm(config.dim)
+        self.gate_norm_mem = RMSNorm(config.dim)
+
         # Dropout
         self.dropout_p = config.dropout
 
@@ -407,9 +418,12 @@ class MAGBlock(nn.Module):
         # Eq. 27: M_t = M_{t-1}(x_t) - Memory update with input
         mem_out, new_state = self.memory(normed, state=state)
 
-        # Eq. 28: o_t = y_t ⊗ M*_t(x_t) - Element-wise product
+        # Eq. 28: Gated output with learnable normalization
+        # Section 4.2: "normalize outputs y and M(x̃) using learnable vector-valued
+        # weights, followed by a non-linearity σ(·)."
         # Section 4.4: residual connection (omitted from equations for simplicity)
-        output = y_t + y_t * mem_out
+        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
+        output = y_t + gated
 
         # Feed-forward
         normed = self.norm2(output)

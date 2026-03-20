@@ -300,9 +300,13 @@ class NeuralLongTermMemory(nn.Module):
         self.memory = MemoryMLP(config)
 
         # Data-dependent gates (Section 3.1: α_t, θ_t, η_t are functions of x_t)
-        self.gate_decay_proj = nn.Linear(config.dim, config.dim)
-        self.gate_lr_proj = nn.Linear(config.dim, config.dim)
-        self.gate_momentum_proj = nn.Linear(config.dim, config.dim)
+        # Per Section 3.2: gates are chunk-constant scalars. Use dedicated
+        # scalar projections (dim -> 1) instead of projecting to dim and
+        # averaging over features, which loses per-dimension information
+        # before collapsing to a scalar anyway.
+        self.gate_decay_proj = nn.Linear(config.dim, 1)
+        self.gate_lr_proj = nn.Linear(config.dim, 1)
+        self.gate_momentum_proj = nn.Linear(config.dim, 1)
 
         # Output projection
         self.proj_out = nn.Linear(config.dim, config.dim, bias=False)
@@ -323,9 +327,7 @@ class NeuralLongTermMemory(nn.Module):
         # in a chunk = (1-α)^S.  For chunk_size=512:
         #   sigmoid(-6) ≈ 0.0025 → retention ≈ 0.28 per chunk (current default)
         #   sigmoid( 0) ≈ 0.5    → retention ≈ 0     (catastrophic forgetting)
-        self.gate_decay_proj.bias = mx.full(
-            self.gate_decay_proj.bias.shape, -6.0
-        )
+        self.gate_decay_proj.bias = mx.array([-6.0])
         # LR gate (θ): sigmoid(0)*memory_lr = 0.5*0.1 = 0.05  — reasonable, no change
         # Momentum gate (η): sigmoid(0)*momentum = 0.5*0.9 = 0.45 — reasonable, no change
 
@@ -524,19 +526,17 @@ class NeuralLongTermMemory(nn.Module):
         retrieved = self.memory.forward_with_weights(q, state.weights)
 
         # Compute data-dependent gates (Section 3.1, Eq 13-14)
-        # Per Section 3.2: gates can be constant within a chunk, so we average
-        # over the sequence dimension. We compute per-sample values first,
-        # then average across batch since memory weights are shared.
+        # Per Section 3.2: gates are chunk-constant scalars. We average over
+        # the sequence dimension to get a chunk-level representation, then
+        # project to scalar via dedicated (dim -> 1) projections.
         x_mean = mx.mean(x, axis=1, keepdims=True)  # (B, 1, D)
-        alpha = mx.mean(mx.sigmoid(self.gate_decay_proj(x_mean)), axis=-1, keepdims=True)
+        alpha = mx.sigmoid(self.gate_decay_proj(x_mean))  # (B, 1, 1)
         theta = (
-            mx.mean(mx.sigmoid(self.gate_lr_proj(x_mean)), axis=-1, keepdims=True)
-            * self.config.memory_lr
-        )
+            mx.sigmoid(self.gate_lr_proj(x_mean)) * self.config.memory_lr
+        )  # (B, 1, 1)
         eta = (
-            mx.mean(mx.sigmoid(self.gate_momentum_proj(x_mean)), axis=-1, keepdims=True)
-            * self.config.memory_momentum
-        )
+            mx.sigmoid(self.gate_momentum_proj(x_mean)) * self.config.memory_momentum
+        )  # (B, 1, 1)
         # Average across batch — weights are shared, so per-sample gates must be
         # collapsed. This is a practical tradeoff vs per-sample weight copies.
         alpha = mx.mean(alpha)
