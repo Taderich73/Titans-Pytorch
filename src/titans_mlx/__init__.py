@@ -4,9 +4,8 @@
 """
 Titans MLX Implementation - Optimized for Apple Silicon.
 
-This module provides an MLX implementation of the Titans architecture
-that produces identical results to the PyTorch implementation while
-being optimized for Apple Silicon (M1/M2/M3/M4) GPUs.
+This module provides an MLX-native implementation of the Titans architecture,
+optimized for Apple Silicon (M1/M2/M3/M4) GPUs.
 
 MLX is Apple's array framework for machine learning on Apple silicon.
 It provides:

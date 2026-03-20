@@ -605,9 +605,7 @@ def apply_gradients(
 
     # Re-tie head and embedding weights after optimizer step.
     # MLX optimizer.update() creates new arrays for each parameter entry,
-    # breaking the weight tie (unlike PyTorch where tied params share one
-    # tensor). The Titans paper follows GatedDeltaNet's training procedure
-    # which uses tied weights. Re-tying after each step ensures the head
+    # breaking the weight tie. Re-tying after each step ensures the head
     # always uses the updated embedding weights.
     if hasattr(model, "head") and hasattr(model, "embed"):
         model.head.weight = model.embed.weight

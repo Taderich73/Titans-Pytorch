@@ -597,7 +597,7 @@ mx.metal.clear_cache()  # If available
 ### Project Structure
 
 ```
-titans-pytorch-mlx/
+titans-tnt-mlx/
 ├── src/
 │   └── titans_mlx/             # MLX implementation
 │       ├── __init__.py

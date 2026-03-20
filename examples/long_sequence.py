@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0
 
 """
-Example: Processing long sequences with Titans.
+Example: Processing long sequences with Titans MLX.
 
 This demonstrates how Titans handles long sequences by:
 1. Chunking the sequence for MAC variant
@@ -11,14 +11,16 @@ This demonstrates how Titans handles long sequences by:
 3. Maintaining memory state across chunks
 
 Run with:
-    uv run python examples/long_sequence.py
+    PYTHONPATH=src python examples/long_sequence.py
 """
 
 import time
 
-import torch
+import mlx.core as mx
+import numpy as np
+from mlx.utils import tree_flatten
 
-from titans import TitansConfig, TitansMAC, TitansMAG
+from titans_mlx import TitansConfig, TitansMAC, TitansMAG
 
 
 def process_long_sequence_mac() -> None:
@@ -38,13 +40,12 @@ def process_long_sequence_mac() -> None:
     )
 
     model = TitansMAC(config)
-    model.eval()
 
     # Long sequence: 1024 tokens (8 chunks of 128)
     total_length = 1024
     batch_size = 2
 
-    input_ids = torch.randint(0, config.vocab_size, (batch_size, total_length))
+    input_ids = mx.random.randint(0, config.vocab_size, (batch_size, total_length))
 
     print(f"Input sequence length: {total_length}")
     print(f"Chunk size: {config.chunk_size}")
@@ -52,8 +53,8 @@ def process_long_sequence_mac() -> None:
 
     # Process entire sequence at once (internally chunked)
     start_time = time.time()
-    with torch.no_grad():
-        logits, states = model(input_ids)
+    logits, states = model(input_ids)
+    mx.eval(logits)
     elapsed = time.time() - start_time
 
     print(f"Output shape: {logits.shape}")
@@ -77,7 +78,6 @@ def process_streaming_mac() -> None:
     )
 
     model = TitansMAC(config)
-    model.eval()
 
     batch_size = 1
     chunk_size = config.chunk_size
@@ -89,26 +89,26 @@ def process_streaming_mac() -> None:
     states = None
     all_logits = []
 
-    with torch.no_grad():
-        for i in range(num_chunks):
-            # Simulate receiving new chunk
-            chunk = torch.randint(0, config.vocab_size, (batch_size, chunk_size))
+    for i in range(num_chunks):
+        # Simulate receiving new chunk
+        chunk = mx.random.randint(0, config.vocab_size, (batch_size, chunk_size))
 
-            # Process chunk with previous state
-            logits, states = model(chunk, states=states)
-            all_logits.append(logits)
+        # Process chunk with previous state
+        logits, states = model(chunk, states=states)
+        mx.eval(logits)
+        all_logits.append(logits)
 
-            print(f"Chunk {i + 1}: processed {chunk_size} tokens, memory updated")
+        print(f"Chunk {i + 1}: processed {chunk_size} tokens, memory updated")
 
     # Concatenate all outputs
-    final_logits = torch.cat(all_logits, dim=1)
+    final_logits = mx.concatenate(all_logits, axis=1)
     print(f"\nFinal output shape: {final_logits.shape}")
 
 
 def compare_memory_usage() -> None:
-    """Compare memory usage across different configurations."""
+    """Compare parameter counts across different configurations."""
     print("\n" + "=" * 60)
-    print("Memory Usage Comparison")
+    print("Parameter Count Comparison")
     print("=" * 60)
 
     configs = [
@@ -119,7 +119,7 @@ def compare_memory_usage() -> None:
 
     for name, config in configs:
         model = TitansMAG(config)
-        params = sum(p.numel() for p in model.parameters())
+        params = sum(v.size for _, v in tree_flatten(model.parameters()))
         param_mb = params * 4 / (1024 * 1024)  # Assuming float32
 
         print(f"{name}:")
@@ -144,37 +144,36 @@ def demonstrate_memory_persistence() -> None:
     )
 
     model = TitansMAC(config)
-    model.eval()
 
     batch_size = 1
     seq_len = 32
 
     # First chunk
-    chunk1 = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-    with torch.no_grad():
-        _, state1 = model(chunk1)
+    chunk1 = mx.random.randint(0, config.vocab_size, (batch_size, seq_len))
+    _, state1 = model(chunk1)
+    mx.eval(state1[0].weights[0])
 
     # Extract memory weights from first layer
-    weights1 = state1[0].weights[0].clone()
+    weights1 = mx.array(state1[0].weights[0])
 
     # Second chunk with same state
-    chunk2 = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-    with torch.no_grad():
-        _, state2 = model(chunk2, states=state1)
+    chunk2 = mx.random.randint(0, config.vocab_size, (batch_size, seq_len))
+    _, state2 = model(chunk2, states=state1)
+    mx.eval(state2[0].weights[0])
 
     weights2 = state2[0].weights[0]
 
     # Memory has changed
-    weight_diff = (weights2 - weights1).abs().mean()
+    weight_diff = float(mx.mean(mx.abs(weights2 - weights1)))
     print(f"Memory weight change after chunk 2: {weight_diff:.6f}")
 
     # Third chunk
-    chunk3 = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-    with torch.no_grad():
-        _, state3 = model(chunk3, states=state2)
+    chunk3 = mx.random.randint(0, config.vocab_size, (batch_size, seq_len))
+    _, state3 = model(chunk3, states=state2)
+    mx.eval(state3[0].weights[0])
 
     weights3 = state3[0].weights[0]
-    weight_diff2 = (weights3 - weights2).abs().mean()
+    weight_diff2 = float(mx.mean(mx.abs(weights3 - weights2)))
     print(f"Memory weight change after chunk 3: {weight_diff2:.6f}")
 
     print("\nMemory accumulates information across chunks!")
@@ -183,8 +182,10 @@ def demonstrate_memory_persistence() -> None:
 def main() -> None:
     """Run all long sequence examples."""
     print("\n" + "#" * 60)
-    print("# TITANS: Long Sequence Processing Examples")
+    print("# TITANS: Long Sequence Processing Examples (MLX)")
     print("#" * 60)
+
+    mx.random.seed(42)
 
     process_long_sequence_mac()
     process_streaming_mac()

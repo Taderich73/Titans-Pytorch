@@ -3,8 +3,6 @@
 
 """
 Configuration for Titans MLX models.
-
-Identical to PyTorch TitansConfig for compatibility.
 """
 
 from __future__ import annotations
@@ -15,9 +13,6 @@ from dataclasses import dataclass, field
 @dataclass
 class TitansConfig:
     """Configuration for Titans models.
-
-    This configuration is identical to the PyTorch version to ensure
-    compatibility and identical behavior.
 
     Attributes:
         dim: Model dimension (d_model)
