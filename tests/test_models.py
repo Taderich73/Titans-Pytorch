@@ -1,0 +1,510 @@
+# Copyright 2024 Delanoe Pirard / Aedelon
+# Licensed under the Apache License, Version 2.0
+
+"""Tests for Titans model variants (MLX)."""
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+from mlx.utils import tree_flatten
+
+from titans_mlx.config import TitansConfig
+from titans_mlx.models import (
+    FeedForward,
+    LMMBlock,
+    MACBlock,
+    MAGBlock,
+    MALBlock,
+    RMSNorm,
+    TitansLMM,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
+)
+
+
+class TestRMSNorm:
+    """Tests for RMSNorm."""
+
+    def test_forward(self) -> None:
+        """Test RMS normalization."""
+        norm = RMSNorm(dim=64)
+        x = mx.random.normal((2, 16, 64))
+
+        y = norm(x)
+        mx.eval(y)
+
+        assert y.shape == x.shape
+        assert not np.any(np.isnan(np.array(y)))
+
+    def test_output_scale(self) -> None:
+        """Test output is properly scaled."""
+        norm = RMSNorm(dim=64)
+        x = mx.random.normal((2, 16, 64)) * 10
+
+        y = norm(x)
+        mx.eval(y)
+
+        rms = np.sqrt(np.mean(np.array(y) ** 2, axis=-1))
+        np.testing.assert_allclose(rms, np.ones_like(rms), atol=0.5)
+
+
+class TestFeedForward:
+    """Tests for FeedForward network."""
+
+    def test_forward(self, default_config: TitansConfig) -> None:
+        """Test FFN forward pass."""
+        ffn = FeedForward(default_config)
+        x = mx.random.normal((2, 16, default_config.dim))
+
+        y = ffn(x)
+        mx.eval(y)
+
+        assert y.shape == x.shape
+
+    def test_dimensions(self, default_config: TitansConfig) -> None:
+        """Test FFN hidden dimensions."""
+        ffn = FeedForward(default_config)
+
+        assert ffn.gate_proj.weight.shape == (
+            default_config.ffn_dim,
+            default_config.dim,
+        )
+        assert ffn.down_proj.weight.shape == (
+            default_config.dim,
+            default_config.ffn_dim,
+        )
+
+
+class TestMACBlock:
+    """Tests for MACBlock."""
+
+    def test_forward_without_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward without initial state."""
+        block = MACBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        output, state = block(x)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state is not None
+
+    def test_forward_with_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with existing state."""
+        block = MACBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        _, state1 = block(x)
+        mx.eval(state1.weights[0])
+
+        output, state2 = block(x, state=state1)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state2 is not None
+
+
+class TestTitansMAC:
+    """Tests for TitansMAC model."""
+
+    def test_forward(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test full forward pass."""
+        model = TitansMAC(small_config)
+        seq_len = small_config.chunk_size * 2
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (
+            batch_size,
+            seq_len,
+            small_config.vocab_size,
+        )
+        assert len(states) == small_config.num_layers
+
+    def test_forward_with_states(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test forward with continuing states."""
+        model = TitansMAC(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, small_config.chunk_size)
+        )
+
+        _, states1 = model(input_ids)
+        mx.eval(states1[0].weights[0])
+
+        logits2, states2 = model(input_ids, states=states1)
+        mx.eval(logits2)
+
+        assert logits2.shape[0] == batch_size
+        assert len(states2) == small_config.num_layers
+
+    def test_chunking(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test sequence is processed in chunks."""
+        model = TitansMAC(small_config)
+        chunk_size = small_config.chunk_size
+        seq_len = chunk_size * 3
+
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+        logits, _ = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (
+            batch_size,
+            seq_len,
+            small_config.vocab_size,
+        )
+
+    def test_weight_tying(self, small_config: TitansConfig) -> None:
+        """Test embedding and output weights are tied."""
+        model = TitansMAC(small_config)
+
+        head_w = np.array(model.head.weight)
+        embed_w = np.array(model.embed.weight)
+        np.testing.assert_array_equal(head_w, embed_w)
+
+
+class TestMAGBlock:
+    """Tests for MAGBlock."""
+
+    def test_forward_without_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward without initial state."""
+        block = MAGBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        output, state = block(x)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state is not None
+
+    def test_forward_with_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with existing state."""
+        block = MAGBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        _, state1 = block(x)
+        mx.eval(state1.weights[0])
+
+        output, state2 = block(x, state=state1)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state2 is not None
+
+
+class TestTitansMAG:
+    """Tests for TitansMAG model."""
+
+    def test_forward(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test full forward pass."""
+        model = TitansMAG(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (
+            batch_size,
+            seq_len,
+            small_config.vocab_size,
+        )
+        assert len(states) == small_config.num_layers
+
+    def test_forward_with_states(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with continuing states."""
+        model = TitansMAG(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        _, states1 = model(input_ids)
+        mx.eval(states1[0].weights[0])
+
+        logits2, states2 = model(input_ids, states=states1)
+        mx.eval(logits2)
+
+        assert logits2.shape[0] == batch_size
+
+    def test_weight_tying(self, small_config: TitansConfig) -> None:
+        """Test embedding and output weights are tied."""
+        model = TitansMAG(small_config)
+
+        head_w = np.array(model.head.weight)
+        embed_w = np.array(model.embed.weight)
+        np.testing.assert_array_equal(head_w, embed_w)
+
+
+class TestMALBlock:
+    """Tests for MALBlock."""
+
+    def test_forward_without_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward without initial state."""
+        block = MALBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        output, state = block(x)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state is not None
+
+    def test_forward_with_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with existing state."""
+        block = MALBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        _, state1 = block(x)
+        mx.eval(state1.weights[0])
+
+        output, state2 = block(x, state=state1)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state2 is not None
+
+
+class TestTitansMAL:
+    """Tests for TitansMAL model."""
+
+    def test_forward(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test full forward pass."""
+        model = TitansMAL(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (
+            batch_size,
+            seq_len,
+            small_config.vocab_size,
+        )
+        assert len(states) == small_config.num_layers
+
+    def test_forward_with_states(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with continuing states."""
+        model = TitansMAL(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        _, states1 = model(input_ids)
+        mx.eval(states1[0].weights[0])
+
+        logits2, states2 = model(input_ids, states=states1)
+        mx.eval(logits2)
+
+        assert logits2.shape[0] == batch_size
+
+    def test_weight_tying(self, small_config: TitansConfig) -> None:
+        """Test embedding and output weights are tied."""
+        model = TitansMAL(small_config)
+
+        head_w = np.array(model.head.weight)
+        embed_w = np.array(model.embed.weight)
+        np.testing.assert_array_equal(head_w, embed_w)
+
+
+class TestLMMBlock:
+    """Tests for LMMBlock (standalone memory)."""
+
+    def test_forward_without_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward without initial state."""
+        block = LMMBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        output, state = block(x)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state is not None
+
+    def test_forward_with_state(
+        self, default_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with existing state."""
+        block = LMMBlock(default_config)
+        x = mx.random.normal((batch_size, seq_len, default_config.dim))
+
+        _, state1 = block(x)
+        mx.eval(state1.weights[0])
+
+        output, state2 = block(x, state=state1)
+        mx.eval(output)
+
+        assert output.shape == x.shape
+        assert state2 is not None
+
+
+class TestTitansLMM:
+    """Tests for TitansLMM model (memory only)."""
+
+    def test_forward(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test full forward pass."""
+        model = TitansLMM(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (
+            batch_size,
+            seq_len,
+            small_config.vocab_size,
+        )
+        assert len(states) == small_config.num_layers
+
+    def test_forward_with_states(
+        self, small_config: TitansConfig, batch_size: int, seq_len: int
+    ) -> None:
+        """Test forward with continuing states."""
+        model = TitansLMM(small_config)
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        _, states1 = model(input_ids)
+        mx.eval(states1[0].weights[0])
+
+        logits2, states2 = model(input_ids, states=states1)
+        mx.eval(logits2)
+
+        assert logits2.shape[0] == batch_size
+
+    def test_weight_tying(self, small_config: TitansConfig) -> None:
+        """Test embedding and output weights are tied."""
+        model = TitansLMM(small_config)
+
+        head_w = np.array(model.head.weight)
+        embed_w = np.array(model.embed.weight)
+        np.testing.assert_array_equal(head_w, embed_w)
+
+
+class TestModelsIntegration:
+    """Integration tests for all model variants."""
+
+    def test_all_models_produce_valid_logits(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test all models produce valid logits."""
+        seq_len = 16
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        models = [
+            TitansMAC(small_config),
+            TitansMAG(small_config),
+            TitansMAL(small_config),
+            TitansLMM(small_config),
+        ]
+
+        for model in models:
+            logits, _ = model(input_ids)
+            mx.eval(logits)
+            logits_np = np.array(logits)
+
+            assert not np.any(np.isnan(logits_np)), (
+                f"{type(model).__name__} produced NaN"
+            )
+            assert not np.any(np.isinf(logits_np)), (
+                f"{type(model).__name__} produced Inf"
+            )
+
+    def test_all_models_return_states(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test all models return memory states."""
+        seq_len = 16
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        models = [
+            TitansMAC(small_config),
+            TitansMAG(small_config),
+            TitansMAL(small_config),
+            TitansLMM(small_config),
+        ]
+
+        for model in models:
+            _, states = model(input_ids)
+
+            assert states is not None, (
+                f"{type(model).__name__} returned None states"
+            )
+            assert len(states) == small_config.num_layers
+
+    def test_gradient_flow_via_value_and_grad(
+        self, small_config: TitansConfig, batch_size: int
+    ) -> None:
+        """Test gradients flow through models using mx.value_and_grad."""
+        seq_len = 16
+        input_ids = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+        targets = mx.random.randint(
+            0, small_config.vocab_size, (batch_size, seq_len)
+        )
+
+        model = TitansLMM(small_config)
+
+        def loss_fn(model: nn.Module) -> mx.array:
+            logits, _ = model(input_ids)
+            logits_flat = logits.reshape(-1, small_config.vocab_size)
+            targets_flat = targets.reshape(-1)
+            return nn.losses.cross_entropy(
+                logits_flat, targets_flat
+            ).mean()
+
+        loss, grads = nn.value_and_grad(model, loss_fn)(model)
+        mx.eval(loss)
+
+        assert float(loss) > 0
+        flat_grads = tree_flatten(grads)
+        has_nonzero = any(
+            float(mx.abs(g).sum()) > 0 for _, g in flat_grads
+        )
+        assert has_nonzero, "Expected at least some non-zero gradients"

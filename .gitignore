@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Linting
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Checkpoints
+checkpoints_mlx/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Logs
+*.log
+logs/
+wandb/
+
+# Papers / PDFs
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+datasets/
+*.bin
+*.jsonl
+
+# Secrets
+.env
+.env.*
+secrets.yaml
+
+# Cache
+.cache/
+
+# Profiling
+profiler_logs/
+
+# Todos
+todos/
