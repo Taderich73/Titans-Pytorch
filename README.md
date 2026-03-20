@@ -409,7 +409,7 @@ uv run python scripts/pretrain.py --model mag \
 
 # Resume from checkpoint
 uv run python scripts/pretrain.py --model mac \
-    --resume checkpoints_mlx/latest.safetensors
+    --resume checkpoints/latest.safetensors
 ```
 
 ### Training Options
@@ -441,7 +441,7 @@ uv run python scripts/pretrain.py --model mac \
 | `--warmup-ratio` | `0.03` | Warmup ratio |
 | `--dtype` | `float16` | float32, float16, bfloat16 |
 | **Checkpointing** |
-| `--checkpoint-dir` | `checkpoints_mlx/` | Checkpoint directory |
+| `--checkpoint-dir` | `checkpoints/` | Checkpoint directory |
 | `--save-every` | `1000` | Save every N steps |
 | `--eval-every` | `500` | Eval every N steps |
 | `--resume` | - | Resume from checkpoint (.safetensors) |
@@ -459,18 +459,18 @@ uv run python scripts/pretrain.py --model mac \
 ```bash
 # Generate text
 uv run python scripts/inference.py \
-    --checkpoint checkpoints_mlx/best_model.safetensors \
+    --checkpoint checkpoints/best_model.safetensors \
     --prompt "Once upon a time" \
     --max-tokens 100
 
 # Interactive mode
 uv run python scripts/inference.py \
-    --checkpoint checkpoints_mlx/best_model.safetensors \
+    --checkpoint checkpoints/best_model.safetensors \
     --interactive
 
 # With quantization and benchmark
 uv run python scripts/inference.py \
-    --checkpoint checkpoints_mlx/best_model.safetensors \
+    --checkpoint checkpoints/best_model.safetensors \
     --prompt "Hello" \
     --quantize 8 \
     --benchmark

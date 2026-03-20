@@ -7,5 +7,6 @@ uv run --extra train python scripts/pretrain.py --model mac \
       --seq-len 4096 --max-steps 10000 \
       --eval-every 200 --eval-buffer-size 100 \
       --save-every 500 \
-      --resume checkpoints/best_model.meta.npz \
       --dtype bfloat16
+      
+#--resume checkpoints/best_model.meta.npz \

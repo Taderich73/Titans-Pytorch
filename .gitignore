@@ -47,7 +47,7 @@ htmlcov/
 Thumbs.db
 
 # Checkpoints
-checkpoints_mlx/
+checkpoints/
 *.pt
 *.pth
 *.ckpt
