@@ -690,6 +690,7 @@ class NeuralLongTermMemory(nn.Module):
         x: mx.array,
         state: MemoryState | None = None,
         return_state: bool = True,
+        lr_scale: float | mx.array = 1.0,
     ) -> tuple[mx.array, MemoryState | None]:
         """Forward pass with memory update.
 
@@ -744,6 +745,9 @@ class NeuralLongTermMemory(nn.Module):
         alpha = mx.mean(alpha)
         theta = mx.mean(theta)
         eta = mx.mean(eta)
+
+        # Apply AttnRes modulation to learning rate
+        theta = theta * lr_scale
 
         # Update memory weights and momentum
         if len(state.weights) == 1:

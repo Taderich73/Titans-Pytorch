@@ -16,6 +16,7 @@ from mlx.utils import tree_flatten
 from titans_mlx.config import TitansConfig
 from titans_mlx.memory import (
     MemoryState,
+    NeuralLongTermMemory,
     TNTMemoryState,
     load_tnt_memory_states,
     save_tnt_memory_states,
@@ -1291,6 +1292,56 @@ class TestTwoStageConfig:
         logits, _ = model(input_ids)
         mx.eval(logits)
         assert logits.shape == (1, 16, 50)
+
+
+# =============================================================================
+# lr_scale Tests
+# =============================================================================
+
+
+class TestLrScale(unittest.TestCase):
+    """Test lr_scale parameter on NeuralLongTermMemory."""
+
+    def setUp(self):
+        self.config = TitansConfig(dim=64, num_heads=4, num_layers=2, vocab_size=100)
+        self.mem = NeuralLongTermMemory(self.config)
+        self.x = mx.random.normal((2, 8, 64))
+
+    def test_lr_scale_default_matches_baseline(self):
+        """lr_scale=1.0 (default) produces identical output to no lr_scale."""
+        state = self.mem.init_state(2)
+        out1, state1 = self.mem(self.x, state=state)
+        out2, state2 = self.mem(self.x, state=state, lr_scale=1.0)
+        mx.eval(out1, out2)
+        self.assertTrue(mx.allclose(out1, out2, atol=1e-6).item())
+
+    def test_lr_scale_zero_removes_gradient_contribution(self):
+        """lr_scale=0.0 makes theta=0: no gradient in momentum update.
+
+        State still changes via alpha decay (weight decay), but the
+        gradient-driven learning signal is zeroed out.
+        """
+        state = self.mem.init_state(2)
+        _, state_zero = self.mem(self.x, state=state, lr_scale=0.0)
+        _, state_full = self.mem(self.x, state=state, lr_scale=1.0)
+        mx.eval(state_zero.weights[0], state_full.weights[0])
+        # Both states differ from original (alpha decay), but they
+        # differ from each other because lr_scale=0 removes gradient
+        self.assertFalse(
+            mx.allclose(
+                state_zero.weights[0], state_full.weights[0], atol=1e-8
+            ).item()
+        )
+
+    def test_lr_scale_affects_state_differently(self):
+        """Different lr_scale values produce different memory states."""
+        state = self.mem.init_state(2)
+        _, state_half = self.mem(self.x, state=state, lr_scale=0.5)
+        _, state_full = self.mem(self.x, state=state, lr_scale=1.0)
+        mx.eval(state_half.weights[0], state_full.weights[0])
+        self.assertFalse(
+            mx.allclose(state_half.weights[0], state_full.weights[0], atol=1e-8).item()
+        )
 
 
 # =============================================================================
