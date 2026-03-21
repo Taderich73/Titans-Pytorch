@@ -23,6 +23,7 @@ from titans_mlx.memory import (
 )
 from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
+from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans_mlx.tnt_models import (
     TNTMACBlock,
     TNTMAGBlock,
@@ -1418,6 +1419,107 @@ class TestMemoryGatePropagation(unittest.TestCase):
                 atol=1e-8,
             ).item()
         )
+
+
+# =============================================================================
+# BlockAttnRes and AttnResMemoryGate Tests
+# =============================================================================
+
+
+class TestBlockAttnRes(unittest.TestCase):
+    """Test Block Attention Residuals module."""
+
+    def setUp(self):
+        self.dim = 64
+        self.batch = 2
+        self.seq = 8
+        self.attn_res = BlockAttnRes(self.dim)
+        self.block1 = mx.random.normal((self.batch, self.seq, self.dim))
+        self.block2 = mx.random.normal((self.batch, self.seq, self.dim))
+        self.partial = mx.random.normal((self.batch, self.seq, self.dim))
+
+    def test_output_shape(self):
+        """Output shape matches input shape."""
+        h, weights = self.attn_res([self.block1], self.partial)
+        mx.eval(h, weights)
+        self.assertEqual(h.shape, (self.batch, self.seq, self.dim))
+
+    def test_attn_weights_sum_to_one(self):
+        """Attention weights sum to 1 across sources (softmax property)."""
+        _, weights = self.attn_res([self.block1, self.block2], self.partial)
+        mx.eval(weights)
+        sums = mx.sum(weights, axis=-1)
+        self.assertTrue(mx.allclose(sums, mx.ones_like(sums), atol=1e-5).item())
+
+    def test_zero_init_uniform_weights(self):
+        """Zero-initialized pseudo-query produces uniform attention weights."""
+        attn_res = BlockAttnRes(self.dim)
+        _, weights = attn_res([self.block1, self.block2], self.partial)
+        mx.eval(weights)
+        expected = 1.0 / 3.0
+        mean_weight = mx.mean(weights).item()
+        self.assertAlmostEqual(mean_weight, expected, places=2)
+
+    def test_single_source_partial_only(self):
+        """With no completed blocks, attend only over partial_block."""
+        h, weights = self.attn_res([], self.partial)
+        mx.eval(h, weights)
+        self.assertEqual(weights.shape[-1], 1)
+        self.assertTrue(mx.allclose(h, self.partial, atol=1e-5).item())
+
+    def test_partial_none_with_blocks(self):
+        """partial_block=None: attend only over completed blocks."""
+        h, weights = self.attn_res([self.block1, self.block2], None)
+        mx.eval(h, weights)
+        self.assertEqual(h.shape, (self.batch, self.seq, self.dim))
+        self.assertEqual(weights.shape[-1], 2)
+
+    def test_no_nan(self):
+        """No NaN in output."""
+        h, weights = self.attn_res([self.block1, self.block2], self.partial)
+        mx.eval(h, weights)
+        self.assertFalse(mx.any(mx.isnan(h)).item())
+        self.assertFalse(mx.any(mx.isnan(weights)).item())
+
+
+class TestAttnResMemoryGate(unittest.TestCase):
+    """Test AttnRes memory gate extraction."""
+
+    def test_returns_scalar(self):
+        """Gate returns a scalar value."""
+        gate = AttnResMemoryGate()
+        weights = mx.ones((2, 8, 4)) / 4.0
+        result = gate(weights)
+        mx.eval(result)
+        self.assertEqual(result.ndim, 0)
+
+    def test_uniform_weights(self):
+        """Uniform weights -> gate = 1/N (weight on last source)."""
+        gate = AttnResMemoryGate()
+        n_sources = 4
+        weights = mx.ones((2, 8, n_sources)) / n_sources
+        result = gate(weights)
+        mx.eval(result)
+        self.assertAlmostEqual(result.item(), 1.0 / n_sources, places=5)
+
+    def test_gate_in_range(self):
+        """Gate value is in [0, 1] (it's a softmax weight)."""
+        gate = AttnResMemoryGate()
+        weights = mx.softmax(mx.random.normal((2, 8, 5)), axis=-1)
+        result = gate(weights)
+        mx.eval(result)
+        self.assertGreaterEqual(result.item(), 0.0)
+        self.assertLessEqual(result.item(), 1.0)
+
+    def test_high_weight_on_last(self):
+        """When last source dominates, gate ~ 1."""
+        gate = AttnResMemoryGate()
+        weights = mx.concatenate(
+            [mx.zeros((2, 8, 2)), mx.ones((2, 8, 1))], axis=-1
+        )
+        result = gate(weights)
+        mx.eval(result)
+        self.assertAlmostEqual(result.item(), 1.0, places=5)
 
 
 # =============================================================================
