@@ -1345,6 +1345,82 @@ class TestLrScale(unittest.TestCase):
 
 
 # =============================================================================
+# Memory Gate Propagation Tests
+# =============================================================================
+
+
+class TestMemoryGatePropagation(unittest.TestCase):
+    """Test memory_gate propagation through hierarchical memory."""
+
+    def setUp(self):
+        self.config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=100,
+            use_tnt=True, local_chunk_sizes=[8],
+            attnres_modulate_global_memory=True,
+            attnres_modulate_local_memory=False,
+        )
+        self.hier_mem = HierarchicalMemory(self.config)
+        self.x = mx.random.normal((2, 8, 64))
+
+    def test_memory_gate_none_matches_baseline(self):
+        """memory_gate=None produces same result as no gate."""
+        state = self.hier_mem.init_state(2)
+        out1, s1 = self.hier_mem(self.x, state=state)
+        out2, s2 = self.hier_mem(self.x, state=state, memory_gate=None)
+        mx.eval(out1, out2)
+        self.assertTrue(mx.allclose(out1, out2, atol=1e-6).item())
+
+    def test_memory_gate_modulates_global(self):
+        """memory_gate affects global memory when configured."""
+        state = self.hier_mem.init_state(2)
+        _, s_full = self.hier_mem(self.x, state=state, memory_gate=None)
+        _, s_half = self.hier_mem(self.x, state=state, memory_gate=mx.array(0.5))
+        mx.eval(s_full.global_state.weights[0], s_half.global_state.weights[0])
+        self.assertFalse(
+            mx.allclose(
+                s_full.global_state.weights[0],
+                s_half.global_state.weights[0],
+                atol=1e-8,
+            ).item()
+        )
+
+    def test_memory_gate_skips_local_when_disabled(self):
+        """memory_gate does NOT affect local memory when modulate_local=False."""
+        state = self.hier_mem.init_state(2)
+        _, s_full = self.hier_mem(self.x, state=state, memory_gate=None)
+        _, s_half = self.hier_mem(self.x, state=state, memory_gate=mx.array(0.5))
+        mx.eval(s_full.local_states[0].weights[0], s_half.local_states[0].weights[0])
+        self.assertTrue(
+            mx.allclose(
+                s_full.local_states[0].weights[0],
+                s_half.local_states[0].weights[0],
+                atol=1e-6,
+            ).item()
+        )
+
+    def test_memory_gate_affects_local_when_enabled(self):
+        """memory_gate affects local memory when modulate_local=True."""
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=100,
+            use_tnt=True, local_chunk_sizes=[8],
+            attnres_modulate_global_memory=True,
+            attnres_modulate_local_memory=True,
+        )
+        hier_mem = HierarchicalMemory(config)
+        state = hier_mem.init_state(2)
+        _, s_full = hier_mem(self.x, state=state, memory_gate=None)
+        _, s_half = hier_mem(self.x, state=state, memory_gate=mx.array(0.5))
+        mx.eval(s_full.local_states[0].weights[0], s_half.local_states[0].weights[0])
+        self.assertFalse(
+            mx.allclose(
+                s_full.local_states[0].weights[0],
+                s_half.local_states[0].weights[0],
+                atol=1e-8,
+            ).item()
+        )
+
+
+# =============================================================================
 # AttnRes Config Tests
 # =============================================================================
 

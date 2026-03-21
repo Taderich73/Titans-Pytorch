@@ -51,17 +51,19 @@ class GlobalMemory(nn.Module):
         self,
         x: mx.array,
         state: MemoryState | None = None,
+        lr_scale: float | mx.array = 1.0,
     ) -> tuple[mx.array, MemoryState]:
         """Update global memory with input chunk.
 
         Args:
             x: Input tensor (batch, seq, dim)
             state: Previous global memory state
+            lr_scale: Multiplicative scale factor for learning rate
 
         Returns:
             Tuple of (output, new_state)
         """
-        return self.memory(x, state=state)
+        return self.memory(x, state=state, lr_scale=lr_scale)
 
     def retrieve(self, queries: mx.array, state: MemoryState) -> mx.array:
         """Retrieve from global memory using raw queries (no Q-K projection).
@@ -152,19 +154,21 @@ class LocalMemory(nn.Module):
         self,
         x: mx.array,
         state: MemoryState | None = None,
+        lr_scale: float | mx.array = 1.0,
     ) -> tuple[mx.array, MemoryState]:
         """Update local memory with input chunk.
 
         Args:
             x: Input tensor (batch, seq, dim)
             state: Previous local memory state
+            lr_scale: Multiplicative scale factor for learning rate
 
         Returns:
             Tuple of (output, new_state)
         """
         if state is None:
             state = self.init_state(x.shape[0])
-        return self.memory(x, state=state)
+        return self.memory(x, state=state, lr_scale=lr_scale)
 
     def retrieve(
         self,
@@ -253,6 +257,7 @@ class HierarchicalMemory(nn.Module):
         self,
         x: mx.array,
         state: TNTMemoryState | None = None,
+        memory_gate: mx.array | None = None,
     ) -> tuple[mx.array, TNTMemoryState]:
         """Process input through hierarchical memory.
 
@@ -262,6 +267,8 @@ class HierarchicalMemory(nn.Module):
         Args:
             x: Input tensor (batch, seq, dim)
             state: Previous hierarchical memory state
+            memory_gate: Optional scalar importance weight from AttnRes;
+                translated to lr_scale based on config flags
 
         Returns:
             Tuple of (retrieved_output, new_state)
@@ -272,8 +279,22 @@ class HierarchicalMemory(nn.Module):
         if state is None:
             state = self.init_state(batch_size)
 
+        # Determine lr_scale from memory_gate
+        global_lr_scale = (
+            memory_gate
+            if memory_gate is not None and self.config.attnres_modulate_global_memory
+            else 1.0
+        )
+        local_lr_scale = (
+            memory_gate
+            if memory_gate is not None and self.config.attnres_modulate_local_memory
+            else 1.0
+        )
+
         # 1. Update global memory
-        global_out, new_global_state = self.global_memory(x, state=state.global_state)
+        global_out, new_global_state = self.global_memory(
+            x, state=state.global_state, lr_scale=global_lr_scale
+        )
 
         # 2. Update each local memory (with periodic reset check)
         new_local_states = []
@@ -294,7 +315,7 @@ class HierarchicalMemory(nn.Module):
                 qk_carry = state.qk_projections[i]
 
             # Update local memory
-            local_out, new_local_state = local_mem(x, state=local_state)
+            local_out, new_local_state = local_mem(x, state=local_state, lr_scale=local_lr_scale)
             new_local_states.append(new_local_state)
 
             # Update Q-K projection state with keys from this chunk
