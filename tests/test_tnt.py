@@ -1523,6 +1523,112 @@ class TestAttnResMemoryGate(unittest.TestCase):
 
 
 # =============================================================================
+# AttnRes Integration Tests
+# =============================================================================
+
+
+class TestAttnResIntegration(unittest.TestCase):
+    """Test AttnRes integration into TNTMACBlock and TitansTNT."""
+
+    def _make_config(self, use_attn_res=True, **kwargs):
+        defaults = dict(
+            dim=64, num_heads=4, num_layers=4, vocab_size=100,
+            use_tnt=True, local_chunk_sizes=[8],
+            chunk_size=16, use_conv=False,
+            use_attn_res=use_attn_res, num_attnres_blocks=2,
+        )
+        defaults.update(kwargs)
+        return TitansConfig(**defaults)
+
+    def test_mac_block_memory_gate_none_baseline(self):
+        """TNTMACBlock with memory_gate=None matches no-gate behavior."""
+        config = self._make_config(use_attn_res=False)
+        block = TNTMACBlock(config)
+        x = mx.random.normal((2, 8, 64))
+        out1, s1 = block(x)
+        out2, s2 = block(x, memory_gate=None)
+        mx.eval(out1, out2)
+        self.assertTrue(mx.allclose(out1, out2, atol=1e-5).item())
+
+    def test_mac_block_memory_gate_scalar(self):
+        """TNTMACBlock with memory_gate scalar runs without error."""
+        config = self._make_config()
+        block = TNTMACBlock(config)
+        x = mx.random.normal((2, 8, 64))
+        out, state = block(x, memory_gate=mx.array(0.5))
+        mx.eval(out)
+        self.assertEqual(out.shape, (2, 8, 64))
+
+    def test_tnt_model_attnres_forward(self):
+        """TitansTNT with use_attn_res=True runs forward pass."""
+        config = self._make_config()
+        model = TitansTNT(config, variant="mac")
+        ids = mx.random.randint(0, 100, (2, 16))
+        logits, states = model(ids)
+        mx.eval(logits)
+        self.assertEqual(logits.shape, (2, 16, 100))
+
+    def test_tnt_model_attnres_disabled_no_nan(self):
+        """TitansTNT with use_attn_res=False produces valid output."""
+        config = self._make_config(use_attn_res=False)
+        model = TitansTNT(config, variant="mac")
+        ids = mx.random.randint(0, 100, (2, 16))
+        logits, _ = model(ids)
+        mx.eval(logits)
+        self.assertEqual(logits.shape, (2, 16, 100))
+        self.assertFalse(mx.any(mx.isnan(logits)).item())
+
+    def test_attnres_disabled_no_extra_params(self):
+        """use_attn_res=False means no AttnRes attributes on blocks."""
+        config = self._make_config(use_attn_res=False)
+        block = TNTMACBlock(config)
+        self.assertFalse(hasattr(block, 'attn_res'))
+
+    def test_tnt_model_gradient_flow(self):
+        """Gradients flow through AttnRes path."""
+        config = self._make_config()
+        model = TitansTNT(config, variant="mac")
+        ids = mx.random.randint(0, 100, (2, 16))
+
+        def loss_fn(model, ids):
+            logits, _ = model(ids)
+            return mx.mean(logits)
+
+        loss, grads = mx.value_and_grad(loss_fn)(model, ids)
+        mx.eval(loss, grads)
+        self.assertFalse(mx.isnan(loss).item())
+
+    def test_tnt_model_block_boundaries(self):
+        """Block boundaries handled correctly with even division."""
+        config = self._make_config(num_layers=4, num_attnres_blocks=2)
+        model = TitansTNT(config, variant="mac")
+        ids = mx.random.randint(0, 100, (2, 16))
+        logits, states = model(ids)
+        mx.eval(logits)
+        self.assertEqual(logits.shape, (2, 16, 100))
+        self.assertFalse(mx.any(mx.isnan(logits)).item())
+
+    def test_tnt_model_uneven_blocks(self):
+        """Uneven block division works (last block absorbs remainder)."""
+        config = self._make_config(num_layers=5, num_attnres_blocks=2)
+        model = TitansTNT(config, variant="mac")
+        ids = mx.random.randint(0, 100, (2, 16))
+        logits, _ = model(ids)
+        mx.eval(logits)
+        self.assertFalse(mx.any(mx.isnan(logits)).item())
+
+    def test_warmup_bypasses_gate(self):
+        """During warmup, memory_gate should be None (bypassed)."""
+        config = self._make_config(attnres_warmup_steps=100)
+        model = TitansTNT(config, variant="mac")
+        self.assertEqual(model._step_count, 0)
+        ids = mx.random.randint(0, 100, (2, 16))
+        logits, _ = model(ids)
+        mx.eval(logits)
+        self.assertEqual(model._step_count, 1)
+
+
+# =============================================================================
 # AttnRes Config Tests
 # =============================================================================
 

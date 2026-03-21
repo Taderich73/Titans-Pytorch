@@ -33,6 +33,7 @@ from titans_mlx.config import TitansConfig
 from titans_mlx.memory import TNTMemoryState
 from titans_mlx.models import FeedForward, RMSNorm
 from titans_mlx.persistent import PersistentMemory
+from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans_mlx.tnt_memory import HierarchicalMemory
 
 
@@ -90,16 +91,23 @@ class TNTMACBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # AttnRes (optional)
+        if config.use_attn_res:
+            self.attn_res = BlockAttnRes(config.dim)
+            self.attn_res_gate = AttnResMemoryGate()
+
     def __call__(
         self,
         x: mx.array,
         state: TNTMemoryState | None = None,
+        memory_gate: mx.array | None = None,
     ) -> tuple[mx.array, TNTMemoryState]:
         """Forward pass for TNT MAC block.
 
         Args:
             x: Input tensor (batch, seq, dim) — single chunk/segment
             state: Hierarchical memory state from previous chunk
+            memory_gate: Optional scalar importance weight from AttnRes
 
         Returns:
             Tuple of (output, new_state)
@@ -125,7 +133,9 @@ class TNTMACBlock(nn.Module):
         y_t = x + attn_out
 
         # Step 4: Update hierarchical memory with attention output
-        mem_out, new_state = self.hierarchical_memory(y_t, state=state)
+        mem_out, new_state = self.hierarchical_memory(
+            y_t, state=state, memory_gate=memory_gate
+        )
 
         # Step 5: Gated output with learnable normalization
         gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(
@@ -394,6 +404,9 @@ class TitansTNT(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
 
+        # AttnRes step counter for warmup
+        self._step_count = 0
+
     def _init_weights(self) -> None:
         """Initialize weights."""
         self.embed.weight = (
@@ -407,9 +420,53 @@ class TitansTNT(nn.Module):
     ) -> tuple[mx.array, list[TNTMemoryState]]:
         """Process a single chunk through all blocks."""
         new_states = []
+
+        if not self.config.use_attn_res:
+            # Unchanged fast path
+            for i, block in enumerate(self.blocks):
+                chunk, new_state = block(chunk, state=states[i])
+                new_states.append(new_state)
+            return chunk, new_states
+
+        # AttnRes path
+        S = self.config.attnres_base_block_size
+        completed_blocks: list[mx.array] = []
+        partial_block: mx.array | None = chunk  # Token embedding = b_0
+
         for i, block in enumerate(self.blocks):
-            chunk, new_state = block(chunk, state=states[i])
+            # Compute AttnRes input
+            h, attn_weights = block.attn_res(completed_blocks, partial_block)
+
+            # Extract memory gate
+            memory_gate = block.attn_res_gate(attn_weights)
+
+            # Bypass gate during warmup
+            if (
+                self.config.attnres_warmup_steps > 0
+                and self._step_count < self.config.attnres_warmup_steps
+            ):
+                memory_gate = None
+
+            # Forward through block
+            output, new_state = block(h, state=states[i], memory_gate=memory_gate)
             new_states.append(new_state)
+
+            # Track block output for AttnRes.
+            # (output - h) captures the total contribution of this block
+            # across all its internal sub-layers (attention, gating, FFN).
+            layer_output = output - h
+            if partial_block is None:
+                partial_block = layer_output
+            else:
+                partial_block = partial_block + layer_output
+
+            # Block boundary check
+            if (i + 1) % S == 0 or i == len(self.blocks) - 1:
+                completed_blocks.append(partial_block)
+                partial_block = None
+
+            chunk = output
+
         return chunk, new_states
 
     def __call__(
@@ -429,39 +486,32 @@ class TitansTNT(nn.Module):
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
 
-        # Initialize states if needed
         if states is None:
             states = [None] * len(self.blocks)
 
-        # Embed
         x = self.embed(input_ids)
 
-        # Fast path: sequence fits in one chunk
         if seq_len <= chunk_size:
+            # Fast path: single chunk
             x, new_states = self._process_single_chunk(x, states)
-            x = self.norm(x)
-            logits = self.head(x)
-            return logits, new_states
+        else:
+            # Chunked path
+            outputs = []
+            new_states = list(states)
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, seq_len)
+                chunk = x[:, chunk_start:chunk_end]
+                chunk, new_states = self._process_single_chunk(chunk, new_states)
+                outputs.append(chunk)
+            x = mx.concatenate(outputs, axis=1)
 
-        # Process in chunks — collect outputs
-        outputs = []
-        new_states = list(states)
-
-        num_chunks = (seq_len + chunk_size - 1) // chunk_size
-
-        for i in range(num_chunks):
-            chunk_start = i * chunk_size
-            chunk_end = min(chunk_start + chunk_size, seq_len)
-            chunk = x[:, chunk_start:chunk_end]
-
-            chunk, new_states = self._process_single_chunk(chunk, new_states)
-            outputs.append(chunk)
-
-        # Concatenate all outputs
-        x = mx.concatenate(outputs, axis=1)
-
-        # Output projection
+        # Shared exit: output projection + step counter
         x = self.norm(x)
         logits = self.head(x)
+
+        # Increment step counter for AttnRes warmup
+        self._step_count += 1
 
         return logits, new_states
