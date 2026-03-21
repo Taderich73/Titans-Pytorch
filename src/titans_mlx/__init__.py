@@ -46,6 +46,7 @@ from titans_mlx.tnt_models import (
     TNTMALBlock,
     TitansTNT,
 )
+from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
 from titans_mlx.optimizations import (
     benchmark_function,
     chunked_attention,
@@ -94,6 +95,9 @@ __all__ = [
     # Q-K Projection
     "QKProjection",
     "update_projection_state",
+    # AttnRes
+    "BlockAttnRes",
+    "AttnResMemoryGate",
     # TNT Hierarchical Memory
     "GlobalMemory",
     "LocalMemory",

@@ -47,7 +47,7 @@ from mlx.utils import tree_flatten
 import numpy as np
 from tqdm import tqdm
 
-from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
+from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL, TitansTNT
 
 # Optional imports
 try:
@@ -86,7 +86,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainingConfig:
-    """Training hyperparameters following the paper (Section 5.1)."""
+    """Training hyperparameters"""
 
     # Model
     model_type: str = "mac"
@@ -98,6 +98,11 @@ class TrainingConfig:
     window_size: int = 512
     num_persistent_tokens: int = 16
     num_memory_layers: int = 2
+    use_attn_res: bool = False
+    num_attnres_blocks: int = 8
+    attnres_warmup_steps: int = 0
+    attnres_modulate_global: bool = True
+    attnres_modulate_local: bool = False
 
     # Data
     dataset: str | None = None  # HuggingFace dataset name
@@ -121,7 +126,7 @@ class TrainingConfig:
 
     # Checkpointing
     checkpoint_dir: str = "checkpoints"
-    save_every: int = 1000  # Save every N steps
+    save_every: int = 10000  # Save every N steps
     eval_every: int = 500  # Evaluate every N steps
     eval_dataset: str | None = None  # Separate HF dataset for eval
     eval_split: str = "train"  # Split for eval dataset
@@ -381,6 +386,12 @@ class BufferedEvalDataset:
 
 def create_model(model_type: str, config: TitansConfig) -> nn.Module:
     """Create Titans model based on type."""
+    if config.use_tnt or config.use_attn_res:
+        if model_type not in ("mac", "mag", "mal"):
+            raise ValueError(
+                f"TNT/AttnRes requires variant mac, mag, or mal (got '{model_type}')"
+            )
+        return TitansTNT(config, variant=model_type)
     models = {
         "mac": TitansMAC,
         "mag": TitansMAG,
@@ -844,6 +855,7 @@ def train(
 
     start_time = time.time()
     pbar = tqdm(total=total_steps, initial=global_step, desc="Training")
+    pbar.refresh()  # Force initial render
 
     # Training loop — gradient accumulation state
     accumulated_grads: dict | None = None
@@ -872,12 +884,21 @@ def train(
                 labels = batch["labels"]
 
                 # --- Micro-step: compute gradients only ---
+                micro_start = time.time()
                 loss, grads = compute_grads(model, input_ids, labels)
 
                 # Materialize this micro-step's arrays to bound memory.
                 # Without this, MLX's lazy graph grows across accumulation
                 # steps and eventually OOMs.
                 _eval_grads(grads, loss)
+                micro_elapsed = time.time() - micro_start
+
+                # Show micro-step progress within accumulation window
+                pbar.set_postfix({
+                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                    "μloss": f"{float(loss):.4f}",
+                    "μtime": f"{micro_elapsed:.1f}s",
+                })
 
                 loss_val = float(loss)
                 if math.isnan(loss_val) or math.isinf(loss_val):
@@ -1033,8 +1054,17 @@ def train(
                 labels = batch["labels"]
 
                 # --- Micro-step: compute gradients only ---
+                micro_start = time.time()
                 loss, grads = compute_grads(model, input_ids, labels)
                 _eval_grads(grads, loss)
+                micro_elapsed = time.time() - micro_start
+
+                # Show micro-step progress within accumulation window
+                pbar.set_postfix({
+                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                    "μloss": f"{float(loss):.4f}",
+                    "μtime": f"{micro_elapsed:.1f}s",
+                })
 
                 loss_val = float(loss)
                 if math.isnan(loss_val) or math.isinf(loss_val):
@@ -1222,6 +1252,30 @@ def main() -> None:
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
     )
 
+    # AttnRes
+    parser.add_argument(
+        "--use-attn-res", action="store_true", help="Enable Attention Residuals"
+    )
+    parser.add_argument(
+        "--num-attnres-blocks", type=int, default=8, help="AttnRes block count (N)"
+    )
+    parser.add_argument(
+        "--attnres-warmup-steps", type=int, default=0,
+        help="Steps before AttnRes memory gating activates",
+    )
+    parser.add_argument(
+        "--attnres-modulate-global", action="store_true", default=True,
+        help="Gate global memory LR with AttnRes",
+    )
+    parser.add_argument(
+        "--no-attnres-modulate-global", dest="attnres_modulate_global",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--attnres-modulate-local", action="store_true", default=False,
+        help="Gate local memory LR with AttnRes",
+    )
+
     # Data
     parser.add_argument(
         "--dataset",
@@ -1362,6 +1416,11 @@ def main() -> None:
         seed=args.seed,
         synthetic_samples=args.synthetic_samples,
         dtype=args.dtype,
+        use_attn_res=args.use_attn_res,
+        num_attnres_blocks=args.num_attnres_blocks,
+        attnres_warmup_steps=args.attnres_warmup_steps,
+        attnres_modulate_global=args.attnres_modulate_global,
+        attnres_modulate_local=args.attnres_modulate_local,
     )
 
     # Check dependencies
@@ -1397,6 +1456,11 @@ def main() -> None:
         num_memory_layers=config.num_memory_layers,
         dropout=0.0,  # Usually 0 for pretraining
         use_conv=False,  # Disable conv to avoid dimension issues
+        use_attn_res=config.use_attn_res,
+        num_attnres_blocks=config.num_attnres_blocks,
+        attnres_warmup_steps=config.attnres_warmup_steps,
+        attnres_modulate_global_memory=config.attnres_modulate_global,
+        attnres_modulate_local_memory=config.attnres_modulate_local,
     )
 
     # Configure dtype for mixed precision
