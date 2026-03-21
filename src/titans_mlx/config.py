@@ -81,6 +81,13 @@ class TitansConfig:
     tnt_stage: int = 1
     finetune_local_chunk_sizes: list[int] | None = None
 
+    # AttnRes (Attention Residuals)
+    use_attn_res: bool = False
+    num_attnres_blocks: int = 8
+    attnres_warmup_steps: int = 0
+    attnres_modulate_global_memory: bool = True
+    attnres_modulate_local_memory: bool = False
+
     # Training
     dropout: float = 0.0
     activation: str = "silu"
@@ -117,6 +124,15 @@ class TitansConfig:
             return self.finetune_local_chunk_sizes
         return self.local_chunk_sizes
 
+    @property
+    def attnres_base_block_size(self) -> int:
+        """S — base number of layers per AttnRes block.
+
+        When num_layers is not evenly divisible by num_attnres_blocks,
+        the last block absorbs the remainder.
+        """
+        return self.num_layers // self.num_attnres_blocks
+
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
         return {
@@ -145,6 +161,11 @@ class TitansConfig:
             "use_qk_projection": self.use_qk_projection,
             "tnt_stage": self.tnt_stage,
             "finetune_local_chunk_sizes": self.finetune_local_chunk_sizes,
+            "use_attn_res": self.use_attn_res,
+            "num_attnres_blocks": self.num_attnres_blocks,
+            "attnres_warmup_steps": self.attnres_warmup_steps,
+            "attnres_modulate_global_memory": self.attnres_modulate_global_memory,
+            "attnres_modulate_local_memory": self.attnres_modulate_local_memory,
             "dropout": self.dropout,
             "activation": self.activation,
             "init_std": self.init_std,

@@ -4,6 +4,7 @@
 """Tests for TNT: config, state, Q-K projection, hierarchical memory, and models."""
 
 import tempfile
+import unittest
 from pathlib import Path
 
 import mlx.core as mx
@@ -1290,3 +1291,49 @@ class TestTwoStageConfig:
         logits, _ = model(input_ids)
         mx.eval(logits)
         assert logits.shape == (1, 16, 50)
+
+
+# =============================================================================
+# AttnRes Config Tests
+# =============================================================================
+
+
+class TestAttnResConfig(unittest.TestCase):
+    """Test AttnRes configuration fields."""
+
+    def test_attnres_defaults(self):
+        """AttnRes is disabled by default."""
+        config = TitansConfig()
+        self.assertFalse(config.use_attn_res)
+        self.assertEqual(config.num_attnres_blocks, 8)
+        self.assertEqual(config.attnres_warmup_steps, 0)
+        self.assertTrue(config.attnres_modulate_global_memory)
+        self.assertFalse(config.attnres_modulate_local_memory)
+
+    def test_attnres_base_block_size_even(self):
+        """Block size derived correctly when evenly divisible."""
+        config = TitansConfig(num_layers=16, num_attnres_blocks=8)
+        self.assertEqual(config.attnres_base_block_size, 2)
+
+    def test_attnres_base_block_size_uneven(self):
+        """Block size with remainder — last block absorbs extra."""
+        config = TitansConfig(num_layers=12, num_attnres_blocks=8)
+        self.assertEqual(config.attnres_base_block_size, 1)
+
+    def test_attnres_serialization(self):
+        """AttnRes fields survive to_dict/from_dict round-trip."""
+        config = TitansConfig(
+            use_attn_res=True,
+            num_attnres_blocks=4,
+            attnres_warmup_steps=1000,
+            attnres_modulate_global_memory=False,
+            attnres_modulate_local_memory=True,
+        )
+        d = config.to_dict()
+        restored = TitansConfig.from_dict(d)
+        self.assertTrue(restored.use_attn_res)
+        self.assertEqual(restored.num_attnres_blocks, 4)
+        self.assertEqual(restored.attnres_warmup_steps, 1000)
+        self.assertFalse(restored.attnres_modulate_global_memory)
+        self.assertTrue(restored.attnres_modulate_local_memory)
+        self.assertEqual(restored.attnres_base_block_size, config.attnres_base_block_size)
