@@ -3,11 +3,11 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-178%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-228%20passed-brightgreen.svg)](tests/)
 
-A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, extended with **TNT (Test-Time Neural Turing)** hierarchical memory from Li et al.
+A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, extended with **TNT** hierarchical memory and **Attention Residuals (AttnRes)**.
 
-Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** builds on this with a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions for fine-grained detail — with periodic resets and Q-K projection for domain-aligned retrieval.
+Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** builds on this with a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions for fine-grained detail — with periodic resets and Q-K projection for domain-aligned retrieval. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution and enabling architecturally-aware memory gating.
 
 ---
 
@@ -23,6 +23,11 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
   - [Architecture](#tnt-architecture)
   - [Two-Stage Training](#two-stage-training)
   - [TNT Quick Start](#tnt-quick-start)
+- [Attention Residuals (AttnRes)](#attention-residuals-attnres)
+  - [How It Works](#how-it-works)
+  - [Memory Gating](#memory-gating)
+  - [AttnRes Quick Start](#attnres-quick-start)
+  - [Training with AttnRes](#training-with-attnres)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
@@ -46,6 +51,8 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 
 > **TNT Paper**: Li, S., Bick, A., Lucchi, A., & Behrouz, A. (2025). *TNT: Improving Chunkwise Training for Test-Time Memorization*. [arXiv:2511.07343](https://arxiv.org/pdf/2511.07343)
 
+> **AttnRes Paper**: Kimi Team (2025). *Attention Residuals*. [arXiv:2603.15031](https://arxiv.org/abs/2603.15031)
+
 ---
 
 ## Features
@@ -62,6 +69,8 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 | **TNT MAC / MAG / MAL variants** | ✅ |
 | **Q-K Projection (local retrieval)** | ✅ |
 | **Two-Stage Training (pre-train + fine-tune)** | ✅ |
+| **Attention Residuals (AttnRes)** | ✅ MAC |
+| **AttnRes Memory Gating** | ✅ MAC |
 | Deep Memory (L_M >= 1) | ✅ |
 | Data-dependent Gating | ✅ |
 | RoPE (Rotary Embeddings) | ✅ |
@@ -80,8 +89,8 @@ Titans introduce a **Neural Long-term Memory (LMM)** module that learns to memor
 
 ### Test Coverage
 
-- **178 unit tests** covering all modules
-- **Integration tests** for all model variants (including TNT)
+- **228 unit tests** covering all modules
+- **Integration tests** for all model variants (including TNT and AttnRes)
 
 ---
 
@@ -301,6 +310,76 @@ See [`examples/tnt_usage.py`](examples/tnt_usage.py) for more detailed examples 
 
 ---
 
+## Attention Residuals (AttnRes)
+
+AttnRes replaces the fixed residual connections between TNT blocks with **learned softmax attention over depth**. Instead of uniformly accumulating all prior layer outputs (`h_l = h_{l-1} + f(h_{l-1})`), each layer selectively aggregates earlier representations using a learned pseudo-query vector.
+
+This addresses **PreNorm dilution** — the progressive weakening of early-layer contributions as depth grows — and provides an architecturally-aware signal for memory gating.
+
+### How It Works
+
+**Block AttnRes** groups layers into N blocks (default 8). Within each block, standard residuals apply. Across blocks, learned softmax attention selects which prior block representations matter most:
+
+```
+Standard:  h_l = Σ v_i                    (fixed unit weights)
+AttnRes:   h_l = Σ α_{i→l} · v_i          (learned softmax weights)
+```
+
+Each layer has a single pseudo-query vector `w_l ∈ R^d` (768 parameters). Total overhead for 16 layers: ~24K parameters.
+
+### Memory Gating
+
+The AttnRes attention weights also modulate the memory update learning rate. When a block's AttnRes weight is high (the model values current processing), memory writes are stronger. When low, memory writes are suppressed — keeping the Neural Memory cleaner:
+
+```
+effective_lr = theta × attnres_importance_weight
+```
+
+This is configurable independently for global and local memories.
+
+### AttnRes Quick Start
+
+```python
+import mlx.core as mx
+from titans_mlx import TitansConfig, TitansTNT
+
+config = TitansConfig(
+    dim=768,
+    num_heads=16,
+    num_layers=16,
+    vocab_size=32000,
+    chunk_size=512,
+    use_tnt=True,
+    local_chunk_sizes=[8, 16],
+    # Enable AttnRes
+    use_attn_res=True,
+    num_attnres_blocks=8,          # N=8 blocks, S=2 layers per block
+    attnres_warmup_steps=500,      # Fixed LR for first 500 steps
+    attnres_modulate_global_memory=True,
+    attnres_modulate_local_memory=False,
+)
+
+model = TitansTNT(config, variant="mac")
+mx.eval(model.parameters())
+
+input_ids = mx.random.randint(0, config.vocab_size, (2, 1024))
+logits, states = model(input_ids)
+```
+
+### Training with AttnRes
+
+```bash
+uv run python scripts/pretrain.py --model mac \
+  --dataset HuggingFaceFW/fineweb-edu \
+  --tokenizer NousResearch/Llama-2-7b-hf \
+  --dim 768 --num-layers 16 --num-heads 16 \
+  --use-attn-res \
+  --num-attnres-blocks 8 \
+  --attnres-warmup-steps 500
+```
+
+---
+
 ## Installation
 
 ### Basic Installation
@@ -424,6 +503,11 @@ uv run python scripts/pretrain.py --model mac \
 | `--vocab-size` | `32000` | Vocabulary size |
 | `--chunk-size` | `512` | Chunk size for MAC |
 | `--window-size` | `512` | Window size for MAG/MAL |
+| `--use-attn-res` | `False` | Enable Attention Residuals |
+| `--num-attnres-blocks` | `8` | AttnRes block count (N) |
+| `--attnres-warmup-steps` | `0` | Steps before AttnRes memory gating activates |
+| `--attnres-modulate-global` | `True` | Gate global memory LR with AttnRes |
+| `--attnres-modulate-local` | `False` | Gate local memory LR with AttnRes |
 | **Data** |
 | `--dataset` | - | HuggingFace dataset name (streaming) |
 | `--dataset-subset` | - | Dataset subset (e.g., sample-10BT) |
@@ -566,6 +650,12 @@ Configuration: batch=4, seq_len=256, dim=256, 4 layers
 | `use_qk_projection` | True | Q-K projection for local retrieval | TNT Eq. 7 |
 | `tnt_stage` | 1 | Training stage (1=pre-train, 2=fine-tune) | TNT Sec. 4.2 |
 | `finetune_local_chunk_sizes` | None | Smaller C_L' for stage 2 | TNT Sec. 4.2 |
+| **Attention Residuals (AttnRes)** |
+| `use_attn_res` | False | Enable Block Attention Residuals | AttnRes paper |
+| `num_attnres_blocks` | 8 | Number of AttnRes blocks (N) | AttnRes Sec. 3.2 |
+| `attnres_warmup_steps` | 0 | Steps before AttnRes memory gating activates | - |
+| `attnres_modulate_global_memory` | True | Gate global memory LR with AttnRes weights | - |
+| `attnres_modulate_local_memory` | False | Gate local memory LR with AttnRes weights | - |
 | **FFN** |
 | `ffn_mult` | 4.0 | FFN hidden dim multiplier | - |
 | `init_std` | 0.02 | Weight initialization std | - |
@@ -601,6 +691,10 @@ from titans_mlx import (
     # TNT State Persistence
     save_tnt_memory_states,
     load_tnt_memory_states,
+
+    # AttnRes (Attention Residuals)
+    BlockAttnRes,
+    AttnResMemoryGate,
 
     # Core Components
     NeuralLongTermMemory,
@@ -736,6 +830,7 @@ titans-tnt-mlx/
 │       ├── qk_projection.py    # Q-K Projection for TNT local retrieval
 │       ├── tnt_memory.py       # GlobalMemory, LocalMemory, HierarchicalMemory
 │       ├── tnt_models.py       # TNTMACBlock, TNTMAGBlock, TNTMALBlock, TitansTNT
+│       ├── attn_res.py         # BlockAttnRes, AttnResMemoryGate
 │       ├── optimizations.py    # MLX optimizations
 │       └── metal_kernels.py    # Metal kernels
 │
@@ -803,6 +898,14 @@ uv run ruff format src/ tests/ scripts/
   author={Li, Shuo and Bick, Ari and Lucchi, Aurelien and Behrouz, Ali},
   journal={arXiv preprint arXiv:2511.07343},
   year={2025}
+}
+
+@techreport{kimi2025attnres,
+  title={Attention Residuals},
+  author={Kimi Team},
+  institution={Moonshot AI},
+  year={2025},
+  note={arXiv:2603.15031}
 }
 ```
 
