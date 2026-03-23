@@ -481,6 +481,41 @@ class TestTitansLMM:
         np.testing.assert_array_equal(head_w, embed_w)
 
 
+class TestMAGBlockSubLayers:
+    def setup_method(self):
+        self.config = TitansConfig(
+            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            chunk_size=16, window_size=16,
+        )
+        self.block = MAGBlock(self.config)
+        self.batch, self.seq, self.dim = 2, 16, 32
+
+    def test_core_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        core_out, new_state = self.block.core_forward(x, state=None)
+        assert core_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_ffn_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        ffn_out = self.block.ffn_forward(x)
+        assert ffn_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_tnt_memory_selection(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            use_tnt=True, window_size=16,
+        )
+        block = MAGBlock(config)
+        from titans_mlx.tnt_memory import HierarchicalMemory
+        assert isinstance(block.memory, HierarchicalMemory)
+
+    def test_backward_compat_call(self):
+        """__call__ wrapper still works."""
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        output, state = self.block(x, state=None)
+        assert output.shape == (self.batch, self.seq, self.dim)
+
+
 class TestMAGBlockPersistentMemoryInput:
     """Verify Phase 1.1 fix: MAG memory receives persistent-augmented input."""
 

@@ -371,8 +371,12 @@ class MAGBlock(nn.Module):
         # Sliding window attention
         self.attention = SlidingWindowAttention(config)
 
-        # Long-term memory
-        self.memory = NeuralLongTermMemory(config)
+        # Config-driven memory selection
+        if config.use_tnt:
+            from titans_mlx.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
 
         # Feed-forward
         self.ffn = FeedForward(config)
@@ -389,17 +393,78 @@ class MAGBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # AttnRes (optional)
+        if config.use_attn_res:
+            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            self.attn_res_core = BlockAttnRes(config.dim)
+            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_gate = AttnResMemoryGate()
+
+    def core_forward(
+        self,
+        h: mx.array,
+        state=None,
+        memory_gate=None,
+    ):
+        """Core sub-layer: attention + memory update (on normed input) + gating.
+
+        IMPORTANT: Memory receives `normed` (pre-attention normalized input),
+        NOT y_t (the post-attention representation). This follows the MAG paper
+        equations where memory is updated with the input x, not the attention output.
+
+        Returns (core_out, new_state). core_out is the net contribution
+        (attn_out + gated), excluding h.
+        """
+        batch_size = h.shape[0]
+
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        # Get persistent memory as prefix for attention
+        persistent = self.persistent(batch_size)
+
+        # Eq. 26: y_t = Attn(x) - Attention branch
+        normed = self.norm1(h)
+        attn_out = self.attention(normed, prefix=persistent)
+        if self.dropout_p > 0:
+            attn_out = nn.Dropout(self.dropout_p)(attn_out)
+
+        # Internal residual: y_t = h + attn_out
+        y_t = h + attn_out
+
+        # Eq. 27-28: Memory receives persistent-augmented normalized input
+        # (normed = norm1(h), NOT y_t — this is the key MAG difference from MAC)
+        if persistent is not None:
+            mem_input = mx.concatenate([persistent, normed], axis=1)
+        else:
+            mem_input = normed
+        mem_out_full, new_state = self.memory(mem_input, state=state, memory_gate=memory_gate)
+        # Slice off persistent prefix from output
+        if persistent is not None:
+            mem_out = mem_out_full[:, persistent.shape[1]:, :]
+        else:
+            mem_out = mem_out_full
+
+        # Eq. 28: Gated output with learnable normalization
+        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
+
+        core_out = attn_out + gated
+        return core_out, new_state
+
+    def ffn_forward(self, h: mx.array) -> mx.array:
+        """FFN sub-layer. Returns net contribution, excludes h."""
+        normed = self.norm2(h)
+        ffn_out = self.ffn(normed)
+        if self.dropout_p > 0:
+            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
+        return ffn_out
+
     def __call__(
         self,
         x: mx.array,
         state: MemoryState | None = None,
     ) -> tuple[mx.array, MemoryState]:
-        """Forward pass for MAG block.
-
-        Following the paper (Section 4.2, Eq. 26-28):
-        1. y_t = Attn(x) - Attention on input (Eq. 26)
-        2. M_t = M_{t-1}(x_t) - Update memory with input (Eq. 27)
-        3. o_t = y_t ⊗ M*_t(x_t) - Output is element-wise product (Eq. 28)
+        """Backward-compatible wrapper: standard residuals over sub-layers.
 
         Args:
             x: Input tensor (batch, seq, dim)
@@ -408,46 +473,11 @@ class MAGBlock(nn.Module):
         Returns:
             Tuple of (output, new_state)
         """
-        batch_size = x.shape[0]
-
-        # Get persistent memory as prefix for attention
-        persistent = self.persistent(batch_size)
-
-        # Eq. 26: y_t = Attn(x) - Attention branch
-        normed = self.norm1(x)
-        attn_out = self.attention(normed, prefix=persistent)
-        if self.dropout_p > 0:
-            attn_out = nn.Dropout(self.dropout_p)(attn_out)
-        y_t = x + attn_out
-
-        # Eq. 27-28: M_t = M_{t-1}(x̃) - Memory receives persistent-augmented input
-        # Paper Eq. 28: o = y ⊗ M(x̃), where x̃ = [p₁...p_Np] || x (Eq. 26)
-        if persistent is not None:
-            mem_input = mx.concatenate([persistent, normed], axis=1)
-        else:
-            mem_input = normed
-        mem_out_full, new_state = self.memory(mem_input, state=state)
-        # Slice off persistent prefix from output
-        if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1]:, :]
-        else:
-            mem_out = mem_out_full
-
-        # Eq. 28: Gated output with learnable normalization
-        # Section 4.2: "normalize outputs y and M(x̃) using learnable vector-valued
-        # weights, followed by a non-linearity σ(·)."
-        # Section 4.4: residual connection (omitted from equations for simplicity)
-        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
-        output = y_t + gated
-
-        # Feed-forward
-        normed = self.norm2(output)
-        ffn_out = self.ffn(normed)
-        if self.dropout_p > 0:
-            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
-        output = output + ffn_out
-
-        return output, new_state
+        core_out, new_state = self.core_forward(x, state=state)
+        x = x + core_out
+        ffn_out = self.ffn_forward(x)
+        x = x + ffn_out
+        return x, new_state
 
 
 class TitansMAG(nn.Module):
