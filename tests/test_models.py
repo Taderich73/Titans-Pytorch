@@ -656,6 +656,99 @@ class TestProcessChunk:
         assert output.shape == (2, 16, 32)
 
 
+class TestTitansMACAttnRes:
+    """Test TitansMAC with AttnRes enabled."""
+
+    def test_forward_with_attn_res(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAC(config)
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits, states = model(input_ids)
+        assert logits.shape == (1, 8, 100)
+
+    def test_forward_with_attn_res_and_tnt(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, use_tnt=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAC(config)
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits, states = model(input_ids)
+        assert logits.shape == (1, 8, 100)
+
+    def test_step_count_increments(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAC(config)
+        input_ids = mx.array([[1, 2, 3, 4]])
+        model(input_ids)
+        assert model._step_count == 1
+        model(input_ids)
+        assert model._step_count == 2
+
+
+class TestTitansMAGAttnRes:
+    """Test TitansMAG with AttnRes enabled."""
+
+    def test_forward_with_attn_res(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, window_size=16, use_attn_res=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAG(config)
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits, states = model(input_ids)
+        assert logits.shape == (1, 8, 100)
+
+    def test_step_count_increments(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, window_size=16, use_attn_res=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAG(config)
+        input_ids = mx.array([[1, 2, 3, 4]])
+        model(input_ids)
+        assert model._step_count == 1
+        model(input_ids)
+        assert model._step_count == 2
+
+
+class TestTitansMALAttnRes:
+    """Test TitansMAL with AttnRes enabled."""
+
+    def test_forward_with_attn_res(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, window_size=16, use_attn_res=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAL(config)
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits, states = model(input_ids)
+        assert logits.shape == (1, 8, 100)
+
+    def test_step_count_increments(self):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, window_size=16, use_attn_res=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAL(config)
+        input_ids = mx.array([[1, 2, 3, 4]])
+        model(input_ids)
+        assert model._step_count == 1
+        model(input_ids)
+        assert model._step_count == 2
+
+
 class TestModelsIntegration:
     """Integration tests for all model variants."""
 

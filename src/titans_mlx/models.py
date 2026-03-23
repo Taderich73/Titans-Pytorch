@@ -324,57 +324,14 @@ class TitansMAC(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
 
+        # Step counter for AttnRes warmup tracking
+        self._step_count = 0
+
     def _init_weights(self) -> None:
         """Initialize weights."""
         self.embed.weight = (
             mx.random.normal(self.embed.weight.shape) * self.config.init_std
         )
-
-    def _process_single_chunk(
-        self,
-        chunk: mx.array,
-        states: list[MemoryState | None],
-    ) -> tuple[mx.array, list[MemoryState]]:
-        """Process a single chunk through all blocks."""
-        new_states = []
-        for i, block in enumerate(self.blocks):
-            chunk, new_state = block(chunk, state=states[i])
-            new_states.append(new_state)
-        return chunk, new_states
-
-    def _process_all_chunks_compiled(
-        self,
-        x: mx.array,
-        states: list[MemoryState | None],
-        chunk_size: int,
-    ) -> tuple[mx.array, list[MemoryState]]:
-        """Process all chunks with minimal Python overhead.
-
-        This function is designed to be JIT compiled.
-        """
-        seq_len = x.shape[1]
-        num_chunks = (seq_len + chunk_size - 1) // chunk_size
-
-        # Process chunks and collect outputs
-        outputs = []
-        current_states = states
-
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, seq_len)
-            chunk = x[:, start:end]
-
-            # Process through all blocks
-            for j, block in enumerate(self.blocks):
-                chunk, new_state = block(chunk, state=current_states[j])
-                if i == 0:
-                    current_states = list(current_states)  # Copy on first iteration
-                current_states[j] = new_state
-
-            outputs.append(chunk)
-
-        # Concatenate all outputs
-        return mx.concatenate(outputs, axis=1), current_states
 
     def __call__(
         self,
@@ -400,36 +357,27 @@ class TitansMAC(nn.Module):
         # Embed
         x = self.embed(input_ids)
 
-        # Fast path: if sequence fits in one chunk, skip chunking overhead
         if seq_len <= chunk_size:
-            x, new_states = self._process_single_chunk(x, states)
-            x = self.norm(x)
-            logits = self.head(x)
-            return logits, new_states
+            x, new_states = process_chunk(
+                self.blocks, x, states, self.config, self._step_count
+            )
+        else:
+            outputs = []
+            new_states = list(states)
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, seq_len)
+                chunk = x[:, chunk_start:chunk_end]
+                chunk, new_states = process_chunk(
+                    self.blocks, chunk, new_states, self.config, self._step_count
+                )
+                outputs.append(chunk)
+            x = mx.concatenate(outputs, axis=1)
 
-        # Process in chunks - collect outputs without intermediate evaluations
-        outputs = []
-        new_states = list(states)  # Make a copy
-
-        # Calculate number of chunks upfront
-        num_chunks = (seq_len + chunk_size - 1) // chunk_size
-
-        for i in range(num_chunks):
-            chunk_start = i * chunk_size
-            chunk_end = min(chunk_start + chunk_size, seq_len)
-            chunk = x[:, chunk_start:chunk_end]
-
-            # Process through blocks
-            chunk, new_states = self._process_single_chunk(chunk, new_states)
-            outputs.append(chunk)
-
-        # Concatenate all outputs at once
-        x = mx.concatenate(outputs, axis=1)
-
-        # Output projection
         x = self.norm(x)
         logits = self.head(x)
-
+        self._step_count += 1
         return logits, new_states
 
 
@@ -593,6 +541,9 @@ class TitansMAG(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
 
+        # Step counter for AttnRes warmup tracking
+        self._step_count = 0
+
     def _init_weights(self) -> None:
         """Initialize weights."""
         self.embed.weight = (
@@ -613,6 +564,9 @@ class TitansMAG(nn.Module):
         Returns:
             Tuple of (logits, new_states)
         """
+        batch_size, seq_len = input_ids.shape
+        chunk_size = self.config.chunk_size
+
         # Initialize states if needed
         if states is None:
             states = [None] * len(self.blocks)
@@ -620,16 +574,28 @@ class TitansMAG(nn.Module):
         # Embed
         x = self.embed(input_ids)
 
-        # Process through blocks
-        new_states = []
-        for i, block in enumerate(self.blocks):
-            x, new_state = block(x, state=states[i])
-            new_states.append(new_state)
+        if seq_len <= chunk_size:
+            x, new_states = process_chunk(
+                self.blocks, x, states, self.config, self._step_count
+            )
+        else:
+            outputs = []
+            new_states = list(states)
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, seq_len)
+                chunk = x[:, chunk_start:chunk_end]
+                chunk, new_states = process_chunk(
+                    self.blocks, chunk, new_states, self.config, self._step_count
+                )
+                outputs.append(chunk)
+            x = mx.concatenate(outputs, axis=1)
 
         # Output
         x = self.norm(x)
         logits = self.head(x)
-
+        self._step_count += 1
         return logits, new_states
 
 
@@ -788,6 +754,9 @@ class TitansMAL(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
 
+        # Step counter for AttnRes warmup tracking
+        self._step_count = 0
+
     def _init_weights(self) -> None:
         """Initialize weights."""
         self.embed.weight = (
@@ -808,6 +777,9 @@ class TitansMAL(nn.Module):
         Returns:
             Tuple of (logits, new_states)
         """
+        batch_size, seq_len = input_ids.shape
+        chunk_size = self.config.chunk_size
+
         # Initialize states if needed
         if states is None:
             states = [None] * len(self.blocks)
@@ -815,16 +787,28 @@ class TitansMAL(nn.Module):
         # Embed
         x = self.embed(input_ids)
 
-        # Process through blocks
-        new_states = []
-        for i, block in enumerate(self.blocks):
-            x, new_state = block(x, state=states[i])
-            new_states.append(new_state)
+        if seq_len <= chunk_size:
+            x, new_states = process_chunk(
+                self.blocks, x, states, self.config, self._step_count
+            )
+        else:
+            outputs = []
+            new_states = list(states)
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, seq_len)
+                chunk = x[:, chunk_start:chunk_end]
+                chunk, new_states = process_chunk(
+                    self.blocks, chunk, new_states, self.config, self._step_count
+                )
+                outputs.append(chunk)
+            x = mx.concatenate(outputs, axis=1)
 
         # Output
         x = self.norm(x)
         logits = self.head(x)
-
+        self._step_count += 1
         return logits, new_states
 
 
