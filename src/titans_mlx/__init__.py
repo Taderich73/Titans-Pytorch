@@ -39,13 +39,7 @@ from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
 from titans_mlx.persistent import PersistentMemory
 from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.tnt_memory import GlobalMemory, LocalMemory, HierarchicalMemory
-from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM
-from titans_mlx.tnt_models import (
-    TNTMACBlock,
-    TNTMAGBlock,
-    TNTMALBlock,
-    TitansTNT,
-)
+from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM, process_chunk
 from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
 from titans_mlx.optimizations import (
     benchmark_function,
@@ -107,11 +101,7 @@ __all__ = [
     "TitansMAG",
     "TitansMAL",
     "TitansLMM",
-    # TNT Models
-    "TNTMACBlock",
-    "TNTMAGBlock",
-    "TNTMALBlock",
-    "TitansTNT",
+    "process_chunk",
     # Optimizations
     "benchmark_function",
     "chunked_attention",
