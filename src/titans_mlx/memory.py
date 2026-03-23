@@ -725,10 +725,10 @@ class NeuralLongTermMemory(nn.Module):
         # Normalize using L2-norm (compute in float32 to avoid bfloat16 underflow)
         q_f32 = q.astype(mx.float32)
         k_f32 = k.astype(mx.float32)
-        q = (q_f32 / (mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+        q = (q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)).astype(
             q.dtype
         )
-        k = (k_f32 / (mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+        k = (k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)).astype(
             k.dtype
         )
 
@@ -942,7 +942,7 @@ class NeuralLongTermMemory(nn.Module):
         q = nn.silu(q)
         # L2-norm in float32 to avoid bfloat16 underflow
         q_f32 = q.astype(mx.float32)
-        q = (q_f32 / (mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+        q = (q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)).astype(
             q.dtype
         )
 

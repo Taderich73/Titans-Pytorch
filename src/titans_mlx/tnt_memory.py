@@ -328,7 +328,7 @@ class HierarchicalMemory(nn.Module):
                 # L2-norm in float32 to avoid bfloat16 underflow
                 k_f32 = k.astype(mx.float32)
                 k = (
-                    k_f32 / (mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True)) + 1e-8)
+                    k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)
                 ).astype(k.dtype)
 
                 # Update projection matrix

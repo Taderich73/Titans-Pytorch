@@ -538,25 +538,28 @@ def sanitize_and_clip_grads(grads: dict, grad_clip: float) -> dict:
         Sanitized and clipped gradient tree.
     """
     # Replace NaN with 0 (global norm clipping below preserves gradient direction)
-    nan_detected = False
+    nan_paths: list[str] = []
 
-    def sanitize(g):
-        nonlocal nan_detected
+    def sanitize(g, path=""):
         if isinstance(g, mx.array):
             has_nan = mx.any(mx.isnan(g))
             if has_nan:
-                nan_detected = True
+                nan_count = mx.sum(mx.isnan(g).astype(mx.int32))
+                nan_paths.append(f"{path} [{g.shape}] ({nan_count}/{g.size} NaN)")
             return mx.where(mx.isnan(g), mx.zeros_like(g), g)
         elif isinstance(g, dict):
-            return {k: sanitize(v) for k, v in g.items()}
+            return {k: sanitize(v, f"{path}.{k}") for k, v in g.items()}
         elif isinstance(g, list):
-            return [sanitize(v) for v in g]
+            return [sanitize(v, f"{path}[{i}]") for i, v in enumerate(g)]
         return g
 
-    grads = {k: sanitize(v) for k, v in grads.items()}
+    grads = {k: sanitize(v, k) for k, v in grads.items()}
 
-    if nan_detected:
-        logger.warning("NaN detected in gradients — replacing with zeros")
+    if nan_paths:
+        logger.warning(
+            "NaN detected in gradients — replacing with zeros. "
+            f"Affected params ({len(nan_paths)}):\n  " + "\n  ".join(nan_paths[:20])
+        )
 
     # Global norm clipping
     if grad_clip > 0:
