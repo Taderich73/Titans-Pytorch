@@ -3,6 +3,7 @@
 
 """Tests for Titans model variants (MLX)."""
 
+import pytest
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -835,3 +836,36 @@ class TestModelsIntegration:
             float(mx.abs(g).sum()) > 0 for _, g in flat_grads
         )
         assert has_nonzero, "Expected at least some non-zero gradients"
+
+
+class TestFlagCombinations:
+    """Verify all flag combinations produce valid forward passes."""
+
+    @pytest.mark.parametrize("model_cls", [TitansMAC, TitansMAG, TitansMAL])
+    @pytest.mark.parametrize("use_tnt", [False, True])
+    @pytest.mark.parametrize("use_attn_res", [False, True])
+    def test_forward_pass(self, model_cls, use_tnt, use_attn_res):
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, window_size=16,
+            use_tnt=use_tnt, use_attn_res=use_attn_res,
+            num_attnres_blocks=2,
+        )
+        model = model_cls(config)
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
+        logits, states = model(input_ids)
+        assert logits.shape == (1, 8, 100)
+        assert len(states) == 4
+
+
+def test_multi_chunk_attn_res():
+    """AttnRes should work when seq_len > chunk_size (multiple chunks)."""
+    config = TitansConfig(
+        dim=32, num_heads=4, num_layers=4, vocab_size=100,
+        chunk_size=8, use_attn_res=True, num_attnres_blocks=2,
+    )
+    model = TitansMAC(config)
+    # seq_len=16 > chunk_size=8 → 2 chunks
+    input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]])
+    logits, states = model(input_ids)
+    assert logits.shape == (1, 16, 100)
