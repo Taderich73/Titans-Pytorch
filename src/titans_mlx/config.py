@@ -125,13 +125,17 @@ class TitansConfig:
         return self.local_chunk_sizes
 
     @property
-    def attnres_base_block_size(self) -> int:
-        """S — base number of layers per AttnRes block.
+    def attnres_sub_layer_block_size(self) -> int:
+        """S — number of sub-layers per AttnRes block.
 
-        When num_layers is not evenly divisible by num_attnres_blocks,
-        the last block absorbs the remainder.
+        Each transformer block has 2 sub-layers (core + FFN), so the total
+        sub-layer count is num_layers * 2. When not evenly divisible by
+        num_attnres_blocks, the last block absorbs the remainder.
+
+        Returns at least 1 to prevent division-by-zero when num_layers
+        is small relative to num_attnres_blocks.
         """
-        return self.num_layers // self.num_attnres_blocks
+        return max(1, (self.num_layers * 2) // self.num_attnres_blocks)
 
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
