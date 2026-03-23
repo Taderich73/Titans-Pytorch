@@ -61,8 +61,10 @@ class RMSNorm(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         """Apply RMS normalization."""
-        rms = mx.sqrt(mx.mean(x**2, axis=-1, keepdims=True) + self.eps)
-        return x / rms * self.weight
+        orig_dtype = x.dtype
+        x_f32 = x.astype(mx.float32)
+        rms = mx.sqrt(mx.mean(x_f32 ** 2, axis=-1, keepdims=True) + self.eps)
+        return (x_f32 / rms * self.weight).astype(orig_dtype)
 
 
 def process_chunk(

@@ -845,7 +845,7 @@ class NeuralLongTermMemory(nn.Module):
         diff = decay - eta
         abs_diff = mx.abs(diff)
         is_degenerate = abs_diff < 1e-6
-        safe_diff = mx.where(is_degenerate, mx.array(1.0), diff)
+        safe_diff = mx.where(is_degenerate, mx.array(1.0), mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff + 1e-12))
 
         # --- New momentum: S_S = η^S · S_prev - θ · Σ η^{S-1-i} · u_i ---
         eta_powers = mx.power(eta, S_f - 1.0 - positions)  # (S,)

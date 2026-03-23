@@ -81,6 +81,9 @@ class BlockAttnRes(nn.Module):
         logits = self.attn_res_proj(K)
         logits = logits.squeeze(-1)  # (N, B, T)
 
+        # Clamp logits to prevent exp() overflow in softmax
+        logits = mx.clip(logits, -30.0, 30.0)
+
         # Softmax over sources dimension (axis=0)
         attn_weights = mx.softmax(logits, axis=0)  # (N, B, T)
 
