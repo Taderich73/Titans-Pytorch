@@ -36,7 +36,7 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +98,10 @@ class TrainingConfig:
     window_size: int = 512
     num_persistent_tokens: int = 16
     num_memory_layers: int = 2
+    use_tnt: bool = False
+    local_chunk_sizes: list[int] = field(default_factory=lambda: [8, 16])
+    local_shard_length: int = 2048
+    global_chunk_size: int = 2048
     use_attn_res: bool = False
     num_attnres_blocks: int = 8
     attnres_warmup_steps: int = 0
@@ -1261,6 +1265,23 @@ def main() -> None:
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
     )
 
+    # TNT Hierarchical Memory
+    parser.add_argument(
+        "--use-tnt", action="store_true", help="Enable TNT hierarchical memory (global + local)"
+    )
+    parser.add_argument(
+        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16],
+        help="Chunk sizes for local memories (one per local memory)",
+    )
+    parser.add_argument(
+        "--local-shard-length", type=int, default=2048,
+        help="Local memory reset period (tokens)",
+    )
+    parser.add_argument(
+        "--global-chunk-size", type=int, default=2048,
+        help="Global memory chunk size",
+    )
+
     # AttnRes
     parser.add_argument(
         "--use-attn-res", action="store_true", help="Enable Attention Residuals"
@@ -1425,6 +1446,10 @@ def main() -> None:
         seed=args.seed,
         synthetic_samples=args.synthetic_samples,
         dtype=args.dtype,
+        use_tnt=args.use_tnt,
+        local_chunk_sizes=args.local_chunk_sizes,
+        local_shard_length=args.local_shard_length,
+        global_chunk_size=args.global_chunk_size,
         use_attn_res=args.use_attn_res,
         num_attnres_blocks=args.num_attnres_blocks,
         attnres_warmup_steps=args.attnres_warmup_steps,
@@ -1465,6 +1490,10 @@ def main() -> None:
         num_memory_layers=config.num_memory_layers,
         dropout=0.0,  # Usually 0 for pretraining
         use_conv=False,  # Disable conv to avoid dimension issues
+        use_tnt=config.use_tnt,
+        local_chunk_sizes=config.local_chunk_sizes,
+        local_shard_length=config.local_shard_length,
+        global_chunk_size=config.global_chunk_size,
         use_attn_res=config.use_attn_res,
         num_attnres_blocks=config.num_attnres_blocks,
         attnres_warmup_steps=config.attnres_warmup_steps,
