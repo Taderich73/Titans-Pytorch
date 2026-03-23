@@ -692,16 +692,21 @@ class NeuralLongTermMemory(nn.Module):
         return_state: bool = True,
         lr_scale: float | mx.array = 1.0,
         memory_gate: mx.array | None = None,
-    ) -> tuple[mx.array, MemoryState | None]:
+        return_keys: bool = False,
+    ) -> tuple[mx.array, MemoryState | None] | tuple[mx.array, MemoryState | None, mx.array]:
         """Forward pass with memory update.
 
         Args:
             x: Input tensor (batch, seq, dim)
             state: Previous memory state (optional)
             return_state: Whether to return updated state
+            lr_scale: Multiplicative scale factor for learning rate
+            memory_gate: Optional scalar importance weight from AttnRes
+            return_keys: If True, also return the L2-normalized keys
+                (avoids redundant recomputation in TNT)
 
         Returns:
-            Tuple of (output, state) where output is (batch, seq, dim)
+            Tuple of (output, state) or (output, state, normed_keys)
         """
         batch_size = x.shape[0]
 
@@ -778,6 +783,11 @@ class NeuralLongTermMemory(nn.Module):
 
         # Output projection
         output = self.proj_out(retrieved)
+
+        if return_keys:
+            if return_state:
+                return output, new_state.detach(), k
+            return output, None, k
 
         if return_state:
             return output, new_state.detach()

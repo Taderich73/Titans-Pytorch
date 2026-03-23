@@ -155,20 +155,22 @@ class LocalMemory(nn.Module):
         x: mx.array,
         state: MemoryState | None = None,
         lr_scale: float | mx.array = 1.0,
-    ) -> tuple[mx.array, MemoryState]:
+        return_keys: bool = False,
+    ) -> tuple[mx.array, MemoryState] | tuple[mx.array, MemoryState, mx.array]:
         """Update local memory with input chunk.
 
         Args:
             x: Input tensor (batch, seq, dim)
             state: Previous local memory state
             lr_scale: Multiplicative scale factor for learning rate
+            return_keys: If True, also return L2-normalized keys
 
         Returns:
-            Tuple of (output, new_state)
+            Tuple of (output, new_state) or (output, new_state, normed_keys)
         """
         if state is None:
             state = self.init_state(x.shape[0])
-        return self.memory(x, state=state, lr_scale=lr_scale)
+        return self.memory(x, state=state, lr_scale=lr_scale, return_keys=return_keys)
 
     def retrieve(
         self,
@@ -314,29 +316,21 @@ class HierarchicalMemory(nn.Module):
             else:
                 qk_carry = state.qk_projections[i]
 
-            # Update local memory
-            local_out, new_local_state = local_mem(x, state=local_state, lr_scale=local_lr_scale)
+            # Update local memory (request cached keys if QK projection is active)
+            needs_keys = local_mem.qk_proj is not None
+            if needs_keys:
+                local_out, new_local_state, normed_keys = local_mem(
+                    x, state=local_state, lr_scale=local_lr_scale, return_keys=True,
+                )
+            else:
+                local_out, new_local_state = local_mem(x, state=local_state, lr_scale=local_lr_scale)
             new_local_states.append(new_local_state)
 
-            # Update Q-K projection state with keys from this chunk
-            if local_mem.qk_proj is not None:
-                # Extract normalized keys from the memory's projection
-                k = local_mem.memory.proj_k(x)
-                if local_mem.memory.use_conv:
-                    k = local_mem.memory.conv_k(k)[:, :seq_len, :]
-                k = nn.silu(k)
-                # L2-norm in float32 to avoid bfloat16 underflow
-                k_f32 = k.astype(mx.float32)
-                k = (
-                    k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)
-                ).astype(k.dtype)
-
-                # Update projection matrix
-                _, new_carry = local_mem.qk_proj(
-                    mx.zeros_like(x),  # queries not needed for carry update
-                    k,
-                    qk_carry,
-                )
+            # Update Q-K projection state with cached keys from the forward pass
+            if needs_keys:
+                # Fast carry-over update: accumulate k^T @ k directly
+                # instead of building full (B, C, D, D) outer products
+                new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
                 new_qk_projections.append(new_carry)
             else:
                 new_qk_projections.append(qk_carry)

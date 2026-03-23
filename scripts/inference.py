@@ -159,6 +159,26 @@ def load_model(
         tokenizer_name = str(meta.get("tokenizer_name", [None])[0])
         if tokenizer_name == "None":
             tokenizer_name = None
+
+        # TNT flags
+        use_tnt = str(meta.get("use_tnt", ["False"])[0]) == "True"
+        global_chunk_size = int(meta.get("global_chunk_size", [2048])[0])
+        local_chunk_sizes_raw = str(meta.get("local_chunk_sizes", ["8,16"])[0])
+        local_chunk_sizes = [int(c) for c in local_chunk_sizes_raw.split(",")]
+        local_shard_length = int(meta.get("local_shard_length", [2048])[0])
+        use_qk_projection = str(meta.get("use_qk_projection", ["True"])[0]) == "True"
+        tnt_stage = int(meta.get("tnt_stage", [1])[0])
+
+        # AttnRes flags
+        use_attn_res = str(meta.get("use_attn_res", ["False"])[0]) == "True"
+        num_attnres_blocks = int(meta.get("num_attnres_blocks", [8])[0])
+        attnres_warmup_steps = int(meta.get("attnres_warmup_steps", [0])[0])
+        attnres_modulate_global = (
+            str(meta.get("attnres_modulate_global_memory", ["True"])[0]) == "True"
+        )
+        attnres_modulate_local = (
+            str(meta.get("attnres_modulate_local_memory", ["False"])[0]) == "True"
+        )
     else:
         # Try to infer from checkpoint name
         logger.warning("No metadata file found, using default configuration")
@@ -172,6 +192,17 @@ def load_model(
         num_persistent_tokens = 16
         num_memory_layers = 2
         tokenizer_name = None
+        use_tnt = False
+        global_chunk_size = 2048
+        local_chunk_sizes = [8, 16]
+        local_shard_length = 2048
+        use_qk_projection = True
+        tnt_stage = 1
+        use_attn_res = False
+        num_attnres_blocks = 8
+        attnres_warmup_steps = 0
+        attnres_modulate_global = True
+        attnres_modulate_local = False
 
     config = TitansConfig(
         dim=dim,
@@ -184,6 +215,17 @@ def load_model(
         num_memory_layers=num_memory_layers,
         dropout=0.0,
         use_conv=False,  # Disable conv for compatibility
+        use_tnt=use_tnt,
+        global_chunk_size=global_chunk_size,
+        local_chunk_sizes=local_chunk_sizes,
+        local_shard_length=local_shard_length,
+        use_qk_projection=use_qk_projection,
+        tnt_stage=tnt_stage,
+        use_attn_res=use_attn_res,
+        num_attnres_blocks=num_attnres_blocks,
+        attnres_warmup_steps=attnres_warmup_steps,
+        attnres_modulate_global_memory=attnres_modulate_global,
+        attnres_modulate_local_memory=attnres_modulate_local,
     )
 
     model = create_model(model_type, config)
@@ -216,7 +258,13 @@ def load_model(
 
     mx.eval(model.parameters())
 
-    logger.info(f"Loaded {model_type.upper()} model from {checkpoint_path}")
+    flags = []
+    if config.use_tnt:
+        flags.append("TNT")
+    if config.use_attn_res:
+        flags.append("AttnRes")
+    flag_str = f" [{'+'.join(flags)}]" if flags else ""
+    logger.info(f"Loaded {model_type.upper()}{flag_str} model from {checkpoint_path}")
 
     return model, config, model_type, tokenizer_name
 

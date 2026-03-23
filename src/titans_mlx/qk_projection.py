@@ -114,6 +114,34 @@ class QKProjection(nn.Module):
 
         return projected_queries, new_carry_over
 
+    def update_carry(
+        self,
+        keys: mx.array,
+        carry_over: mx.array,
+    ) -> mx.array:
+        """Update carry-over state without building per-position projections.
+
+        The carry-over is the sum of all outer products seen so far:
+            M_new = M_old + Σ_τ k_τ k_τ^T
+
+        This is equivalent to M_old + k^T @ k (flattening batch and seq),
+        avoiding the O(B*C*D*D) intermediate tensor that
+        compute_projection_matrix creates.
+
+        Args:
+            keys: L2-normalized key vectors (batch, chunk_len, dim)
+            carry_over: Projection matrix from previous chunk (dim, dim)
+
+        Returns:
+            Updated carry-over matrix (dim, dim)
+        """
+        B, C, D = keys.shape
+        # Flatten batch and seq: (B*C, D)
+        k_flat = keys.reshape(B * C, D)
+        # Sum of outer products via matmul: (D, B*C) @ (B*C, D) -> (D, D)
+        new_carry = carry_over + (k_flat.T @ k_flat) / B
+        return new_carry
+
 
 def update_projection_state(
     carry_over: mx.array,
