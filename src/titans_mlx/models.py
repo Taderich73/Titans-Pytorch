@@ -94,8 +94,12 @@ class MACBlock(nn.Module):
         super().__init__()
         self.config = config
 
-        # Long-term memory
-        self.memory = NeuralLongTermMemory(config)
+        # Config-driven memory selection
+        if config.use_tnt:
+            from titans_mlx.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
 
         # Learned query for memory retrieval — data-independent so it cannot
         # leak current-chunk token information into the attention context.
@@ -123,19 +127,69 @@ class MACBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # AttnRes (optional)
+        if config.use_attn_res:
+            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            self.attn_res_core = BlockAttnRes(config.dim)
+            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_gate = AttnResMemoryGate()
+
+    def core_forward(
+        self,
+        h: mx.array,
+        state=None,
+        memory_gate=None,
+    ):
+        """Core sub-layer: retrieve + attention + memory update + gating.
+
+        Returns (core_out, new_state). core_out is the net contribution
+        (attn_out + gated), excluding h.
+        """
+        batch_size = h.shape[0]
+
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        # Retrieve from memory using learned query
+        query = mx.broadcast_to(self.memory_query, (batch_size, 1, self.config.dim))
+        memory_retrieved = self.memory.retrieve(query, state)
+        memory_tokens = self.norm_mem(memory_retrieved)
+
+        # Attention on [persistent || memory || norm(h)]
+        persistent = self.persistent(batch_size)
+        normed = self.norm1(h)
+        attn_out = self.attention(normed, persistent=persistent, memory=memory_tokens)
+        if self.dropout_p > 0:
+            attn_out = nn.Dropout(self.dropout_p)(attn_out)
+
+        # Internal residual: memory and gating see full representation
+        y_t = h + attn_out
+
+        # Memory update
+        mem_out, new_state = self.memory(y_t, state=state, memory_gate=memory_gate)
+
+        # Gating
+        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(
+            self.gate_norm_mem(mem_out)
+        )
+
+        core_out = attn_out + gated
+        return core_out, new_state
+
+    def ffn_forward(self, h: mx.array) -> mx.array:
+        """FFN sub-layer. Returns net contribution, excludes h."""
+        normed = self.norm2(h)
+        ffn_out = self.ffn(normed)
+        if self.dropout_p > 0:
+            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
+        return ffn_out
+
     def __call__(
         self,
         x: mx.array,
         state: MemoryState | None = None,
     ) -> tuple[mx.array, MemoryState]:
-        """Forward pass for MAC block.
-
-        Following the paper (Section 4.1, Eq. 21-25):
-        1. h_t = M*_{t-1}(q_t) - Retrieve from memory using chunk query (Eq. 21)
-        2. S̃^(t) = [persistent] || h_t || x - Concatenate (Eq. 22)
-        3. y_t = Attn(S̃^(t)) - Attention (Eq. 23)
-        4. M_t = M_{t-1}(y_t) - Update memory with attention output (Eq. 24)
-        5. o_t = y_t ⊗ M*_t(y_t) - Final output (Eq. 25)
+        """Backward-compatible wrapper: standard residuals over sub-layers.
 
         Args:
             x: Input tensor (batch, seq, dim) - single chunk/segment
@@ -144,60 +198,11 @@ class MACBlock(nn.Module):
         Returns:
             Tuple of (output, new_state)
         """
-        batch_size = x.shape[0]
-
-        # Initialize memory state if needed
-        if state is None:
-            state = self.memory.init_state(batch_size)
-
-        # Step 1 (Eq. 21): Retrieve from memory using a learned query
-        # h_t = M*_{t-1}(q_t) — the paper indexes by segment t, not per-token.
-        # Any query derived from current-chunk tokens would leak future info
-        # into the attention context (position i could attend to memory tokens
-        # that encode tokens at i+1..S-1).  A learned, data-independent query
-        # avoids this while still probing the memory state for useful context
-        # accumulated from previous chunks.
-        query = mx.broadcast_to(self.memory_query, (batch_size, 1, self.config.dim))
-        memory_retrieved = self.memory.retrieve(query, state)  # (B, 1, D)
-        memory_tokens = self.norm_mem(memory_retrieved)
-
-        # Get persistent memory tokens
-        persistent = self.persistent(batch_size)
-
-        # Steps 2-3 (Eq. 22-23): Attention with [persistent || memory || input]
-        normed = self.norm1(x)
-        attn_out = self.attention(normed, persistent=persistent, memory=memory_tokens)
-
-        # Apply dropout
-        if self.dropout_p > 0:
-            attn_out = nn.Dropout(self.dropout_p)(attn_out)
-        y_t = x + attn_out  # y_t is the attention output
-
-        # Step 4 (Eq. 24): Update memory with attention output
-        # M_t = M_{t-1}(y_t) - this updates memory weights
-        # The paper's Eq. 25 uses M*_t (updated memory), but in the batched
-        # chunk implementation, retrieving from the updated state lets position j
-        # read information from positions j+1..S-1 through the shared weight
-        # update — a within-chunk causality violation. Using the pre-update
-        # retrieval (returned by self.memory as its first output) avoids this
-        # while still providing cross-chunk memory context.
-        mem_out, new_state = self.memory(y_t, state=state)
-
-        # Step 5 (Eq. 25): Gated output with learnable normalization
-        # Section 4.2: "normalize outputs y and M(x̃) using learnable vector-valued
-        # weights, followed by a non-linearity σ(·)."
-        # Section 4.4: residual connection (omitted from equations for simplicity)
-        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
-        output = y_t + gated
-
-        # Feed-forward
-        normed = self.norm2(output)
-        ffn_out = self.ffn(normed)
-        if self.dropout_p > 0:
-            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
-        output = output + ffn_out
-
-        return output, new_state
+        core_out, new_state = self.core_forward(x, state=state)
+        x = x + core_out
+        ffn_out = self.ffn_forward(x)
+        x = x + ffn_out
+        return x, new_state
 
 
 class TitansMAC(nn.Module):

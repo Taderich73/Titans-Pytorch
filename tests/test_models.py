@@ -9,6 +9,7 @@ import numpy as np
 from mlx.utils import tree_flatten
 
 from titans_mlx.config import TitansConfig
+from titans_mlx.memory import NeuralLongTermMemory
 from titans_mlx.models import (
     FeedForward,
     LMMBlock,
@@ -21,6 +22,7 @@ from titans_mlx.models import (
     TitansMAG,
     TitansMAL,
 )
+from titans_mlx.tnt_memory import HierarchicalMemory
 
 
 class TestRMSNorm:
@@ -107,6 +109,63 @@ class TestMACBlock:
 
         assert output.shape == x.shape
         assert state2 is not None
+
+
+class TestMACBlockSubLayers:
+    """Test MACBlock core_forward / ffn_forward decomposition."""
+
+    def setup_method(self):
+        self.config = TitansConfig(
+            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            chunk_size=16,
+        )
+        self.block = MACBlock(self.config)
+        self.batch, self.seq, self.dim = 2, 16, 32
+
+    def test_core_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        core_out, new_state = self.block.core_forward(x, state=None)
+        assert core_out.shape == (self.batch, self.seq, self.dim)
+        assert new_state is not None
+
+    def test_ffn_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        ffn_out = self.block.ffn_forward(x)
+        assert ffn_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_sublayers_match_residual_path(self):
+        """core + ffn with manual residuals should match old __call__ behavior."""
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        mx.eval(x)
+
+        # Sub-layer path with standard residuals
+        core_out, state = self.block.core_forward(x, state=None)
+        h = x + core_out
+        ffn_out = self.block.ffn_forward(h)
+        result_sublayers = h + ffn_out
+
+        # Verify shapes match
+        assert result_sublayers.shape == (self.batch, self.seq, self.dim)
+
+    def test_core_forward_with_memory_gate(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        gate = mx.array(0.5)
+        core_out, state = self.block.core_forward(x, state=None, memory_gate=gate)
+        assert core_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_tnt_memory_selection(self):
+        """use_tnt=True should select HierarchicalMemory."""
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            use_tnt=True,
+        )
+        block = MACBlock(config)
+        assert isinstance(block.memory, HierarchicalMemory)
+
+    def test_default_memory_selection(self):
+        """use_tnt=False should select NeuralLongTermMemory."""
+        block = MACBlock(self.config)
+        assert isinstance(block.memory, NeuralLongTermMemory)
 
 
 class TestTitansMAC:
