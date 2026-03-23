@@ -691,6 +691,7 @@ class NeuralLongTermMemory(nn.Module):
         state: MemoryState | None = None,
         return_state: bool = True,
         lr_scale: float | mx.array = 1.0,
+        memory_gate: mx.array | None = None,
     ) -> tuple[mx.array, MemoryState | None]:
         """Forward pass with memory update.
 
@@ -751,6 +752,11 @@ class NeuralLongTermMemory(nn.Module):
         alpha = mx.mean(alpha)
         theta = mx.mean(theta)
         eta = mx.mean(eta)
+
+        # memory_gate overrides lr_scale when provided (interface alignment
+        # with HierarchicalMemory which also accepts memory_gate)
+        if memory_gate is not None:
+            lr_scale = memory_gate
 
         # Apply AttnRes modulation to learning rate
         theta = theta * lr_scale

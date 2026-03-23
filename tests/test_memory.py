@@ -281,3 +281,22 @@ class TestNeuralLongTermMemory:
             mx.eval(g)
             assert g is not None
             assert not np.any(np.isnan(np.array(g)))
+
+
+def test_memory_gate_parameter():
+    """memory_gate should modulate lr_scale."""
+    config = TitansConfig(dim=32, num_heads=4, num_layers=2, vocab_size=100)
+    mem = NeuralLongTermMemory(config)
+    x = mx.random.normal((1, 8, 32))
+    state = mem.init_state(1)
+
+    # With memory_gate=None, should behave like lr_scale=1.0
+    out_none, st_none = mem(x, state=state, memory_gate=None)
+    out_default, st_default = mem(x, state=state)
+    assert mx.allclose(out_none, out_default, atol=1e-5)
+
+    # With memory_gate=scalar, should modulate learning rate
+    gate = mx.array(0.5)
+    out_gated, _ = mem(x, state=state, memory_gate=gate)
+    out_lr, _ = mem(x, state=state, lr_scale=0.5)
+    assert mx.allclose(out_gated, out_lr, atol=1e-5)
