@@ -65,6 +65,95 @@ class RMSNorm(nn.Module):
         return x / rms * self.weight
 
 
+def process_chunk(
+    blocks: list,
+    chunk: mx.array,
+    states: list,
+    config: TitansConfig,
+    step_count: int = 0,
+) -> tuple[mx.array, list]:
+    """Process a single chunk through all blocks.
+
+    Handles both standard residuals and AttnRes paths.
+    Used by TitansMAC, TitansMAG, TitansMAL.
+
+    Args:
+        blocks: List of block modules (MACBlock, MAGBlock, or MALBlock)
+        chunk: Embedded input (batch, seq, dim)
+        states: List of memory states, one per block
+        config: Model configuration
+        step_count: Current training step (for AttnRes warmup)
+
+    Returns:
+        Tuple of (output, new_states)
+    """
+    new_states = []
+
+    if not config.use_attn_res:
+        # Standard residual path
+        x = chunk
+        for i, block in enumerate(blocks):
+            core_out, new_state = block.core_forward(x, state=states[i])
+            x = x + core_out
+            ffn_out = block.ffn_forward(x)
+            x = x + ffn_out
+            new_states.append(new_state)
+        return x, new_states
+
+    # AttnRes path — replaces residual connections per paper
+    S = config.attnres_sub_layer_block_size
+    completed_blocks: list[mx.array] = [chunk]  # b_0 = embedding
+    partial_block: mx.array | None = None
+    sub_idx = 0
+    warmup = (
+        config.attnres_warmup_steps > 0
+        and step_count < config.attnres_warmup_steps
+    )
+
+    for i, block in enumerate(blocks):
+        # --- Core sub-layer ---
+        h, attn_weights = block.attn_res_core(completed_blocks, partial_block)
+
+        # Memory gate (bypassed during warmup)
+        memory_gate = None
+        if not warmup:
+            memory_gate = block.attn_res_gate(attn_weights)
+
+        core_out, new_state = block.core_forward(h, state=states[i], memory_gate=memory_gate)
+        new_states.append(new_state)
+
+        if partial_block is None:
+            partial_block = core_out
+        else:
+            partial_block = partial_block + core_out
+        sub_idx += 1
+
+        # Block boundary check
+        if sub_idx % S == 0:
+            completed_blocks.append(partial_block)
+            partial_block = None
+
+        # --- FFN sub-layer ---
+        h, _ = block.attn_res_ffn(completed_blocks, partial_block)
+        ffn_out = block.ffn_forward(h)
+
+        if partial_block is None:
+            partial_block = ffn_out
+        else:
+            partial_block = partial_block + ffn_out
+        sub_idx += 1
+
+        # Block boundary check
+        if sub_idx % S == 0 or i == len(blocks) - 1:
+            completed_blocks.append(partial_block)
+            partial_block = None
+
+        # Track model output (last hidden state)
+        chunk = h + ffn_out
+
+    return chunk, new_states
+
+
 # =============================================================================
 # MAC: Memory as Context
 # =============================================================================

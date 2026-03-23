@@ -21,6 +21,7 @@ from titans_mlx.models import (
     TitansMAC,
     TitansMAG,
     TitansMAL,
+    process_chunk,
 )
 from titans_mlx.tnt_memory import HierarchicalMemory
 
@@ -595,6 +596,64 @@ class TestMALBlockSubLayers:
         x = mx.random.normal((self.batch, self.seq, self.dim))
         output, state = self.block(x, state=None)
         assert output.shape == (self.batch, self.seq, self.dim)
+
+
+class TestProcessChunk:
+    """Test the shared process_chunk orchestrator."""
+
+    def setup_method(self):
+        self.config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16,
+        )
+
+    def test_standard_residual_path(self):
+        """Without AttnRes, process_chunk applies standard residuals."""
+        blocks = [MACBlock(self.config) for _ in range(4)]
+        chunk = mx.random.normal((2, 16, 32))
+        states = [None] * 4
+        output, new_states = process_chunk(blocks, chunk, states, self.config, step_count=0)
+        assert output.shape == (2, 16, 32)
+        assert len(new_states) == 4
+
+    def test_attnres_path(self):
+        """With AttnRes, process_chunk uses AttnRes orchestration."""
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+        )
+        blocks = [MACBlock(config) for _ in range(4)]
+        chunk = mx.random.normal((2, 16, 32))
+        states = [None] * 4
+        output, new_states = process_chunk(blocks, chunk, states, config, step_count=0)
+        assert output.shape == (2, 16, 32)
+        assert len(new_states) == 4
+
+    def test_attnres_warmup_bypasses_gate(self):
+        """During warmup, memory_gate should be None."""
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+            attnres_warmup_steps=100,
+        )
+        blocks = [MACBlock(config) for _ in range(4)]
+        chunk = mx.random.normal((2, 16, 32))
+        states = [None] * 4
+        output, _ = process_chunk(blocks, chunk, states, config, step_count=0)
+        assert output.shape == (2, 16, 32)
+
+    def test_attnres_with_tnt_memory(self):
+        """AttnRes + TNT memory should work together."""
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            chunk_size=16, use_attn_res=True, use_tnt=True,
+            num_attnres_blocks=2,
+        )
+        blocks = [MACBlock(config) for _ in range(4)]
+        chunk = mx.random.normal((2, 16, 32))
+        states = [None] * 4
+        output, new_states = process_chunk(blocks, chunk, states, config, step_count=0)
+        assert output.shape == (2, 16, 32)
 
 
 class TestModelsIntegration:
