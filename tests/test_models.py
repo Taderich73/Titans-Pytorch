@@ -572,6 +572,31 @@ class TestGatingNormalization:
         assert not np.any(np.isinf(output_np))
 
 
+class TestMALBlockSubLayers:
+    def setup_method(self):
+        self.config = TitansConfig(
+            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            chunk_size=16, window_size=16,
+        )
+        self.block = MALBlock(self.config)
+        self.batch, self.seq, self.dim = 2, 16, 32
+
+    def test_core_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        core_out, new_state = self.block.core_forward(x, state=None)
+        assert core_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_ffn_forward_shape(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        ffn_out = self.block.ffn_forward(x)
+        assert ffn_out.shape == (self.batch, self.seq, self.dim)
+
+    def test_backward_compat_call(self):
+        x = mx.random.normal((self.batch, self.seq, self.dim))
+        output, state = self.block(x, state=None)
+        assert output.shape == (self.batch, self.seq, self.dim)
+
+
 class TestModelsIntegration:
     """Integration tests for all model variants."""
 

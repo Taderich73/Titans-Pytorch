@@ -553,9 +553,9 @@ class MALBlock(nn.Module):
     """Memory as Layer Block - MLX.
 
     Architecture:
-    1. Long-term memory processes input
-    2. Sliding window attention on memory output
-    3. Feed-forward network
+    1. Long-term memory processes input (norm1)
+    2. Sliding window attention on memory output (norm2)
+    3. Feed-forward network (norm3)
 
     Memory acts as a preprocessing layer before attention.
     """
@@ -567,8 +567,12 @@ class MALBlock(nn.Module):
         # Persistent memory
         self.persistent = PersistentMemory(config)
 
-        # Long-term memory (first layer)
-        self.memory = NeuralLongTermMemory(config)
+        # Config-driven memory selection
+        if config.use_tnt:
+            from titans_mlx.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
 
         # Sliding window attention (second layer)
         self.attention = SlidingWindowAttention(config)
@@ -576,7 +580,7 @@ class MALBlock(nn.Module):
         # Feed-forward
         self.ffn = FeedForward(config)
 
-        # Layer norms
+        # Layer norms: norm1=memory, norm2=attention, norm3=FFN
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
         self.norm3 = RMSNorm(config.dim)
@@ -584,12 +588,79 @@ class MALBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # AttnRes (optional)
+        if config.use_attn_res:
+            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            self.attn_res_core = BlockAttnRes(config.dim)
+            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_gate = AttnResMemoryGate()
+
+    def core_forward(
+        self,
+        h: mx.array,
+        state=None,
+        memory_gate=None,
+    ):
+        """Core sub-layer: memory → h_mid → attention.
+
+        MAL-specific order: memory first, then attention.
+        norm1 is for memory; norm2 is for attention.
+
+        Returns (core_out, new_state). core_out is the net contribution
+        (mem_out + attn_out), excluding h.
+        """
+        batch_size = h.shape[0]
+
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        # Get persistent memory
+        persistent = self.persistent(batch_size)
+
+        # Memory layer (Eq. 29-30: h_t = M*_{t-1}([p; x_t]))
+        normed = self.norm1(h)
+        if persistent is not None:
+            mem_input = mx.concatenate([persistent, normed], axis=1)
+        else:
+            mem_input = normed
+        mem_out_full, new_state = self.memory(
+            mem_input, state=state, memory_gate=memory_gate
+        )
+        # Slice off persistent prefix from output
+        if persistent is not None:
+            mem_out = mem_out_full[:, persistent.shape[1]:, :]
+        else:
+            mem_out = mem_out_full
+        if self.dropout_p > 0:
+            mem_out = nn.Dropout(self.dropout_p)(mem_out)
+
+        # Internal residual: attention sees h + mem contribution
+        h_mid = h + mem_out
+
+        # Attention layer with persistent prefix (uses norm2)
+        normed_mid = self.norm2(h_mid)
+        attn_out = self.attention(normed_mid, prefix=persistent)
+        if self.dropout_p > 0:
+            attn_out = nn.Dropout(self.dropout_p)(attn_out)
+
+        # Net contribution excludes original h
+        core_out = mem_out + attn_out
+        return core_out, new_state
+
+    def ffn_forward(self, h: mx.array) -> mx.array:
+        """FFN sub-layer. Uses norm3. Returns net contribution, excludes h."""
+        normed = self.norm3(h)
+        ffn_out = self.ffn(normed)
+        if self.dropout_p > 0:
+            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
+        return ffn_out
+
     def __call__(
         self,
         x: mx.array,
         state: MemoryState | None = None,
     ) -> tuple[mx.array, MemoryState]:
-        """Forward pass for MAL block.
+        """Backward-compatible wrapper: standard residuals over sub-layers.
 
         Args:
             x: Input tensor (batch, seq, dim)
@@ -598,41 +669,10 @@ class MALBlock(nn.Module):
         Returns:
             Tuple of (output, new_state)
         """
-        batch_size = x.shape[0]
-
-        # Get persistent memory
-        persistent = self.persistent(batch_size)
-
-        # Memory layer (Eq. 29-30: h_t = M*_{t-1}([p; x_t]))
-        normed = self.norm1(x)
-        if persistent is not None:
-            mem_input = mx.concatenate([persistent, normed], axis=1)
-        else:
-            mem_input = normed
-        mem_out_full, new_state = self.memory(mem_input, state=state)
-        # Slice off persistent prefix from output
-        if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1]:, :]
-        else:
-            mem_out = mem_out_full
-        if self.dropout_p > 0:
-            mem_out = nn.Dropout(self.dropout_p)(mem_out)
-        x = x + mem_out
-
-        # Attention layer with persistent prefix
-        normed = self.norm2(x)
-        attn_out = self.attention(normed, prefix=persistent)
-        if self.dropout_p > 0:
-            attn_out = nn.Dropout(self.dropout_p)(attn_out)
-        x = x + attn_out
-
-        # Feed-forward
-        normed = self.norm3(x)
-        ffn_out = self.ffn(normed)
-        if self.dropout_p > 0:
-            ffn_out = nn.Dropout(self.dropout_p)(ffn_out)
+        core_out, new_state = self.core_forward(x, state=state)
+        x = x + core_out
+        ffn_out = self.ffn_forward(x)
         x = x + ffn_out
-
         return x, new_state
 
 
