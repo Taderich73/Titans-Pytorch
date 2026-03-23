@@ -24,11 +24,13 @@ from titans_mlx.memory import (
 from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
-from titans_mlx.tnt_models import (
-    TNTMACBlock,
-    TNTMAGBlock,
-    TNTMALBlock,
-    TitansTNT,
+from titans_mlx.models import (
+    MACBlock,
+    MAGBlock,
+    MALBlock,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
 )
 
 
@@ -1011,12 +1013,12 @@ def tnt_config() -> TitansConfig:
     )
 
 
-class TestTNTMACBlock:
-    """Tests for TNTMACBlock."""
+class TestMACBlock:
+    """Tests for MACBlock."""
 
     def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass produces correct shape without initial state."""
-        block = TNTMACBlock(tnt_config)
+        block = MACBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, state = block(x)
         mx.eval(output)
@@ -1025,7 +1027,7 @@ class TestTNTMACBlock:
 
     def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass works with existing state."""
-        block = TNTMACBlock(tnt_config)
+        block = MACBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         _, state1 = block(x)
         output, state2 = block(x, state=state1)
@@ -1034,19 +1036,19 @@ class TestTNTMACBlock:
 
     def test_no_nan(self, tnt_config: TitansConfig) -> None:
         """Output contains no NaN values."""
-        block = TNTMACBlock(tnt_config)
+        block = MACBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, _ = block(x)
         mx.eval(output)
         assert not np.any(np.isnan(np.array(output)))
 
 
-class TestTNTMAGBlock:
-    """Tests for TNTMAGBlock."""
+class TestMAGBlock:
+    """Tests for MAGBlock."""
 
     def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass produces correct shape."""
-        block = TNTMAGBlock(tnt_config)
+        block = MAGBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, state = block(x)
         mx.eval(output)
@@ -1055,7 +1057,7 @@ class TestTNTMAGBlock:
 
     def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass works with existing state."""
-        block = TNTMAGBlock(tnt_config)
+        block = MAGBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         _, state1 = block(x)
         output, _ = block(x, state=state1)
@@ -1064,19 +1066,19 @@ class TestTNTMAGBlock:
 
     def test_no_nan(self, tnt_config: TitansConfig) -> None:
         """Output contains no NaN values."""
-        block = TNTMAGBlock(tnt_config)
+        block = MAGBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, _ = block(x)
         mx.eval(output)
         assert not np.any(np.isnan(np.array(output)))
 
 
-class TestTNTMALBlock:
-    """Tests for TNTMALBlock."""
+class TestMALBlock:
+    """Tests for MALBlock."""
 
     def test_forward_without_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass produces correct shape."""
-        block = TNTMALBlock(tnt_config)
+        block = MALBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, state = block(x)
         mx.eval(output)
@@ -1085,7 +1087,7 @@ class TestTNTMALBlock:
 
     def test_forward_with_state(self, tnt_config: TitansConfig) -> None:
         """Forward pass works with existing state."""
-        block = TNTMALBlock(tnt_config)
+        block = MALBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         _, state1 = block(x)
         output, _ = block(x, state=state1)
@@ -1094,7 +1096,7 @@ class TestTNTMALBlock:
 
     def test_no_nan(self, tnt_config: TitansConfig) -> None:
         """Output contains no NaN values."""
-        block = TNTMALBlock(tnt_config)
+        block = MALBlock(tnt_config)
         x = mx.random.normal((2, 16, 32))
         output, _ = block(x)
         mx.eval(output)
@@ -1102,27 +1104,29 @@ class TestTNTMALBlock:
 
 
 # ============================================================================
-# Phase 5.2: TitansTNT Model
+# Phase 5.2: TNT Model Variants
 # ============================================================================
 
 
-class TestTitansTNT:
-    """Tests for TitansTNT model."""
+class TestTNTModels:
+    """Tests for TNT model variants (TitansMAC/MAG/MAL with use_tnt=True)."""
 
-    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
-    def test_forward_shape(self, tnt_config: TitansConfig, variant: str) -> None:
+    _MODEL_CLASSES = [TitansMAC, TitansMAG, TitansMAL]
+
+    @pytest.mark.parametrize("model_cls", [TitansMAC, TitansMAG, TitansMAL])
+    def test_forward_shape(self, tnt_config: TitansConfig, model_cls: type) -> None:
         """Forward pass produces correct logits shape for all variants."""
-        model = TitansTNT(tnt_config, variant=variant)
+        model = model_cls(tnt_config)
         input_ids = mx.random.randint(0, 50, (2, 16))
         logits, states = model(input_ids)
         mx.eval(logits)
         assert logits.shape == (2, 16, 50)
         assert len(states) == 1
 
-    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
-    def test_state_threading(self, tnt_config: TitansConfig, variant: str) -> None:
+    @pytest.mark.parametrize("model_cls", [TitansMAC, TitansMAG, TitansMAL])
+    def test_state_threading(self, tnt_config: TitansConfig, model_cls: type) -> None:
         """State threads correctly across consecutive calls."""
-        model = TitansTNT(tnt_config, variant=variant)
+        model = model_cls(tnt_config)
         input_ids = mx.random.randint(0, 50, (2, 16))
 
         _, states1 = model(input_ids)
@@ -1138,8 +1142,8 @@ class TestTitansTNT:
 
     def test_multi_chunk(self, tnt_config: TitansConfig) -> None:
         """Sequences longer than chunk_size are processed in chunks."""
-        model = TitansTNT(tnt_config, variant="mac")
-        # seq_len=48 > chunk_size=16 → 3 chunks
+        model = TitansMAC(tnt_config)
+        # seq_len=48 > chunk_size=16 -> 3 chunks
         input_ids = mx.random.randint(0, 50, (2, 48))
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -1148,7 +1152,7 @@ class TestTitansTNT:
 
     def test_single_chunk_fast_path(self, tnt_config: TitansConfig) -> None:
         """Sequences <= chunk_size use the fast path."""
-        model = TitansTNT(tnt_config, variant="mac")
+        model = TitansMAC(tnt_config)
         input_ids = mx.random.randint(0, 50, (2, 8))
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -1156,32 +1160,25 @@ class TestTitansTNT:
 
     def test_weight_tying(self, tnt_config: TitansConfig) -> None:
         """Embedding and output head weights are tied."""
-        model = TitansTNT(tnt_config)
+        model = TitansMAC(tnt_config)
         head_w = np.array(model.head.weight)
         embed_w = np.array(model.embed.weight)
         np.testing.assert_array_equal(head_w, embed_w)
 
-    def test_invalid_variant_raises(self, tnt_config: TitansConfig) -> None:
-        """Invalid variant raises ValueError."""
-        with pytest.raises(ValueError, match="Unknown TNT variant"):
-            TitansTNT(tnt_config, variant="bad")
-
-    @pytest.mark.parametrize("variant", ["mac", "mag", "mal"])
-    def test_no_nan(self, tnt_config: TitansConfig, variant: str) -> None:
+    @pytest.mark.parametrize("model_cls", [TitansMAC, TitansMAG, TitansMAL])
+    def test_no_nan(self, tnt_config: TitansConfig, model_cls: type) -> None:
         """All variants produce valid (no NaN/Inf) logits."""
-        model = TitansTNT(tnt_config, variant=variant)
+        model = model_cls(tnt_config)
         input_ids = mx.random.randint(0, 50, (2, 16))
         logits, _ = model(input_ids)
         mx.eval(logits)
         logits_np = np.array(logits)
-        assert not np.any(np.isnan(logits_np)), f"{variant} produced NaN"
-        assert not np.any(np.isinf(logits_np)), f"{variant} produced Inf"
+        assert not np.any(np.isnan(logits_np)), f"{model_cls.__name__} produced NaN"
+        assert not np.any(np.isinf(logits_np)), f"{model_cls.__name__} produced Inf"
 
     def test_tnt_differs_from_standard_mac(self, tnt_config: TitansConfig) -> None:
-        """TitansTNT produces different output than TitansMAC (different architecture)."""
-        from titans_mlx.models import TitansMAC
-
-        # Use same config for both
+        """TitansMAC with use_tnt=True produces different output than use_tnt=False."""
+        # Standard config (use_tnt=False)
         mac_config = TitansConfig(
             dim=32, num_heads=2, num_layers=1, ffn_mult=2.0,
             num_memory_layers=1, memory_hidden_mult=2.0, num_persistent_tokens=2,
@@ -1192,7 +1189,7 @@ class TestTitansTNT:
         mx.random.seed(42)
         mac_model = TitansMAC(mac_config)
         mx.random.seed(42)
-        tnt_model = TitansTNT(tnt_config, variant="mac")
+        tnt_model = TitansMAC(tnt_config)
 
         input_ids = mx.random.randint(0, 50, (1, 16))
 
@@ -1208,8 +1205,8 @@ class TestTitansTNT:
         assert diff > 0.0
 
     def test_gradient_flow(self, tnt_config: TitansConfig) -> None:
-        """Gradients flow through TitansTNT via value_and_grad."""
-        model = TitansTNT(tnt_config, variant="mac")
+        """Gradients flow through TitansMAC (TNT) via value_and_grad."""
+        model = TitansMAC(tnt_config)
         input_ids = mx.random.randint(0, 50, (2, 16))
         targets = mx.random.randint(0, 50, (2, 16))
 
@@ -1281,14 +1278,14 @@ class TestTwoStageConfig:
         assert s2.num_layers == 6
 
     def test_stage2_model_instantiation(self) -> None:
-        """TitansTNT can be instantiated with stage 2 config."""
+        """TitansMAC can be instantiated with stage 2 config."""
         s1 = TitansConfig.tnt_stage1(
             dim=32, num_heads=2, num_layers=1, vocab_size=50,
             chunk_size=16, window_size=8, use_conv=False, use_rope=False,
             num_memory_layers=1,
         )
         s2 = TitansConfig.tnt_stage2(s1)
-        model = TitansTNT(s2, variant="mac")
+        model = TitansMAC(s2)
         input_ids = mx.random.randint(0, 50, (1, 16))
         logits, _ = model(input_ids)
         mx.eval(logits)
@@ -1528,7 +1525,7 @@ class TestAttnResMemoryGate(unittest.TestCase):
 
 
 class TestAttnResIntegration(unittest.TestCase):
-    """Test AttnRes integration into TNTMACBlock and TitansTNT."""
+    """Test AttnRes integration into MACBlock and TitansMAC."""
 
     def _make_config(self, use_attn_res=True, **kwargs):
         defaults = dict(
@@ -1541,37 +1538,40 @@ class TestAttnResIntegration(unittest.TestCase):
         return TitansConfig(**defaults)
 
     def test_mac_block_memory_gate_none_baseline(self):
-        """TNTMACBlock with memory_gate=None matches no-gate behavior."""
+        """MACBlock core_forward with memory_gate=None matches no-gate behavior."""
         config = self._make_config(use_attn_res=False)
-        block = TNTMACBlock(config)
+        block = MACBlock(config)
         x = mx.random.normal((2, 8, 64))
-        out1, s1 = block(x)
-        out2, s2 = block(x, memory_gate=None)
+        out1, s1 = block.core_forward(x)
+        out2, s2 = block.core_forward(x, memory_gate=None)
         mx.eval(out1, out2)
         self.assertTrue(mx.allclose(out1, out2, atol=1e-5).item())
 
     def test_mac_block_memory_gate_scalar(self):
-        """TNTMACBlock with memory_gate scalar runs without error."""
+        """MACBlock core_forward with memory_gate scalar runs without error."""
         config = self._make_config()
-        block = TNTMACBlock(config)
+        block = MACBlock(config)
         x = mx.random.normal((2, 8, 64))
-        out, state = block(x, memory_gate=mx.array(0.5))
+        core_out, state = block.core_forward(x, memory_gate=mx.array(0.5))
+        h = x + core_out
+        ffn_out = block.ffn_forward(h)
+        out = h + ffn_out
         mx.eval(out)
         self.assertEqual(out.shape, (2, 8, 64))
 
     def test_tnt_model_attnres_forward(self):
-        """TitansTNT with use_attn_res=True runs forward pass."""
+        """TitansMAC with use_attn_res=True runs forward pass."""
         config = self._make_config()
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         ids = mx.random.randint(0, 100, (2, 16))
         logits, states = model(ids)
         mx.eval(logits)
         self.assertEqual(logits.shape, (2, 16, 100))
 
     def test_tnt_model_attnres_disabled_no_nan(self):
-        """TitansTNT with use_attn_res=False produces valid output."""
+        """TitansMAC with use_attn_res=False produces valid output."""
         config = self._make_config(use_attn_res=False)
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         ids = mx.random.randint(0, 100, (2, 16))
         logits, _ = model(ids)
         mx.eval(logits)
@@ -1581,13 +1581,13 @@ class TestAttnResIntegration(unittest.TestCase):
     def test_attnres_disabled_no_extra_params(self):
         """use_attn_res=False means no AttnRes attributes on blocks."""
         config = self._make_config(use_attn_res=False)
-        block = TNTMACBlock(config)
+        block = MACBlock(config)
         self.assertFalse(hasattr(block, 'attn_res'))
 
     def test_tnt_model_gradient_flow(self):
         """Gradients flow through AttnRes path."""
         config = self._make_config()
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         ids = mx.random.randint(0, 100, (2, 16))
 
         def loss_fn(model, ids):
@@ -1601,7 +1601,7 @@ class TestAttnResIntegration(unittest.TestCase):
     def test_tnt_model_block_boundaries(self):
         """Block boundaries handled correctly with even division."""
         config = self._make_config(num_layers=4, num_attnres_blocks=2)
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         ids = mx.random.randint(0, 100, (2, 16))
         logits, states = model(ids)
         mx.eval(logits)
@@ -1611,7 +1611,7 @@ class TestAttnResIntegration(unittest.TestCase):
     def test_tnt_model_uneven_blocks(self):
         """Uneven block division works (last block absorbs remainder)."""
         config = self._make_config(num_layers=5, num_attnres_blocks=2)
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         ids = mx.random.randint(0, 100, (2, 16))
         logits, _ = model(ids)
         mx.eval(logits)
@@ -1620,7 +1620,7 @@ class TestAttnResIntegration(unittest.TestCase):
     def test_warmup_bypasses_gate(self):
         """During warmup, memory_gate should be None (bypassed)."""
         config = self._make_config(attnres_warmup_steps=100)
-        model = TitansTNT(config, variant="mac")
+        model = TitansMAC(config)
         self.assertEqual(model._step_count, 0)
         ids = mx.random.randint(0, 100, (2, 16))
         logits, _ = model(ids)
@@ -1645,15 +1645,17 @@ class TestAttnResConfig(unittest.TestCase):
         self.assertTrue(config.attnres_modulate_global_memory)
         self.assertFalse(config.attnres_modulate_local_memory)
 
-    def test_attnres_base_block_size_even(self):
-        """Block size derived correctly when evenly divisible."""
+    def test_attnres_sub_layer_block_size_even(self):
+        """Sub-layer block size derived correctly when evenly divisible."""
+        # 16 layers * 2 sub-layers = 32, 32 // 8 = 4
         config = TitansConfig(num_layers=16, num_attnres_blocks=8)
-        self.assertEqual(config.attnres_base_block_size, 2)
+        self.assertEqual(config.attnres_sub_layer_block_size, 4)
 
-    def test_attnres_base_block_size_uneven(self):
-        """Block size with remainder — last block absorbs extra."""
+    def test_attnres_sub_layer_block_size_uneven(self):
+        """Sub-layer block size with remainder — last block absorbs extra."""
+        # 12 layers * 2 sub-layers = 24, 24 // 8 = 3
         config = TitansConfig(num_layers=12, num_attnres_blocks=8)
-        self.assertEqual(config.attnres_base_block_size, 1)
+        self.assertEqual(config.attnres_sub_layer_block_size, 3)
 
     def test_attnres_serialization(self):
         """AttnRes fields survive to_dict/from_dict round-trip."""
@@ -1671,4 +1673,4 @@ class TestAttnResConfig(unittest.TestCase):
         self.assertEqual(restored.attnres_warmup_steps, 1000)
         self.assertFalse(restored.attnres_modulate_global_memory)
         self.assertTrue(restored.attnres_modulate_local_memory)
-        self.assertEqual(restored.attnres_base_block_size, config.attnres_base_block_size)
+        self.assertEqual(restored.attnres_sub_layer_block_size, config.attnres_sub_layer_block_size)

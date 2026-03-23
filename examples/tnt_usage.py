@@ -21,7 +21,9 @@ from titans_mlx import (
     HierarchicalMemory,
     LocalMemory,
     TitansConfig,
-    TitansTNT,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
     TNTMemoryState,
 )
 
@@ -137,9 +139,9 @@ def example_multi_resolution() -> None:
 
 
 def example_tnt_model() -> None:
-    """Example: Full TitansTNT model with all three variants."""
+    """Example: Full TNT models with all three variants."""
     print("\n" + "=" * 60)
-    print("TitansTNT Model (MAC, MAG, MAL variants)")
+    print("TNT Models (TitansMAC, TitansMAG, TitansMAL with use_tnt=True)")
     print("=" * 60)
 
     config = TitansConfig(
@@ -159,12 +161,12 @@ def example_tnt_model() -> None:
 
     input_ids = mx.random.randint(0, 256, (1, 32))
 
-    for variant in ["mac", "mag", "mal"]:
-        model = TitansTNT(config, variant=variant)
+    for name, model_cls in [("mac", TitansMAC), ("mag", TitansMAG), ("mal", TitansMAL)]:
+        model = model_cls(config)
         logits, states = model(input_ids)
         mx.eval(logits)
 
-        print(f"\n  Variant: {variant}")
+        print(f"\n  Variant: {name}")
         print(f"    Logits shape: {logits.shape}")
         print(f"    Num layers:   {len(states)}")
         print(f"    Step counters (layer 0): {states[0].local_step_counters}")
