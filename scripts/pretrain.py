@@ -47,7 +47,7 @@ from mlx.utils import tree_flatten
 import numpy as np
 from tqdm import tqdm
 
-from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL, TitansTNT
+from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 
 # Optional imports
 try:
@@ -386,12 +386,6 @@ class BufferedEvalDataset:
 
 def create_model(model_type: str, config: TitansConfig) -> nn.Module:
     """Create Titans model based on type."""
-    if config.use_tnt or config.use_attn_res:
-        if model_type not in ("mac", "mag", "mal"):
-            raise ValueError(
-                f"TNT/AttnRes requires variant mac, mag, or mal (got '{model_type}')"
-            )
-        return TitansTNT(config, variant=model_type)
     models = {
         "mac": TitansMAC,
         "mag": TitansMAG,
@@ -730,6 +724,18 @@ def prune_checkpoints(checkpoint_dir: Path, keep: int = 3) -> None:
         logger.info(f"Pruned old checkpoint: {old.stem}")
 
 
+def _remap_tnt_keys(weights: dict) -> dict:
+    """Remap old TNT checkpoint keys to consolidated format.
+
+    Old: blocks.N.hierarchical_memory.* -> New: blocks.N.memory.*
+    """
+    remapped = {}
+    for k, v in weights.items():
+        new_key = k.replace(".hierarchical_memory.", ".memory.")
+        remapped[new_key] = v
+    return remapped
+
+
 def load_checkpoint(
     path: Path,
     model: nn.Module,
@@ -746,7 +752,9 @@ def load_checkpoint(
     # Load weights
     weights_path = stem.with_suffix(".safetensors")
     if weights_path.exists():
-        model.load_weights(str(weights_path))
+        weights = dict(mx.load(str(weights_path)))
+        weights = _remap_tnt_keys(weights)
+        model.load_weights(list(weights.items()))
     else:
         # Try legacy npz format
         npz_path = stem.with_suffix(".npz")
@@ -758,6 +766,7 @@ def load_checkpoint(
                 if arr.dtype == object:
                     arr = arr.item()
                 weights[k] = mx.array(arr)
+        weights = _remap_tnt_keys(weights)
         model.update(weights)
 
     # Re-tie head and embedding weights (load_weights breaks the reference)
