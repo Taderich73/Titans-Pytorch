@@ -721,9 +721,15 @@ class NeuralLongTermMemory(nn.Module):
         v = nn.silu(v)
         q = nn.silu(q)
 
-        # Normalize using L2-norm
-        q = q / (mx.sqrt(mx.sum(q * q, axis=-1, keepdims=True)) + 1e-8)
-        k = k / (mx.sqrt(mx.sum(k * k, axis=-1, keepdims=True)) + 1e-8)
+        # Normalize using L2-norm (compute in float32 to avoid bfloat16 underflow)
+        q_f32 = q.astype(mx.float32)
+        k_f32 = k.astype(mx.float32)
+        q = (q_f32 / (mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+            q.dtype
+        )
+        k = (k_f32 / (mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+            k.dtype
+        )
 
         # Retrieve from memory using explicit state weights (no module mutation)
         retrieved = self.memory.forward_with_weights(q, state.weights)
@@ -895,10 +901,12 @@ class NeuralLongTermMemory(nn.Module):
             return sig * (1.0 + x * (1.0 - sig))
         elif self.config.activation == "gelu":
             # GELU derivative: 0.5*(1 + erf(x/sqrt(2))) + x * pdf(x)
+            # Compute in float32 to prevent exp overflow/underflow in bfloat16
+            x_f32 = x.astype(mx.float32)
             sqrt2 = 1.4142135623730951
-            cdf = 0.5 * (1.0 + mx.erf(x / sqrt2))
-            pdf = mx.exp(-0.5 * x * x) * 0.3989422804014327  # 1/sqrt(2*pi)
-            return cdf + x * pdf
+            cdf = 0.5 * (1.0 + mx.erf(x_f32 / sqrt2))
+            pdf = mx.exp(-0.5 * x_f32 * x_f32) * 0.3989422804014327  # 1/sqrt(2*pi)
+            return (cdf + x_f32 * pdf).astype(x.dtype)
         elif self.config.activation == "relu":
             return (x > 0).astype(x.dtype)
         else:
@@ -926,7 +934,11 @@ class NeuralLongTermMemory(nn.Module):
             q = self.conv_q(q)[:, :seq_len, :]
 
         q = nn.silu(q)
-        q = q / (mx.sqrt(mx.sum(q * q, axis=-1, keepdims=True)) + 1e-8)
+        # L2-norm in float32 to avoid bfloat16 underflow
+        q_f32 = q.astype(mx.float32)
+        q = (q_f32 / (mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True)) + 1e-8)).astype(
+            q.dtype
+        )
 
         # Retrieve using explicit state weights (no module mutation)
         retrieved = self.memory.forward_with_weights(q, state.weights)

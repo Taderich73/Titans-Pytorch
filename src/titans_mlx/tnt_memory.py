@@ -325,7 +325,11 @@ class HierarchicalMemory(nn.Module):
                 if local_mem.memory.use_conv:
                     k = local_mem.memory.conv_k(k)[:, :seq_len, :]
                 k = nn.silu(k)
-                k = k / (mx.sqrt(mx.sum(k * k, axis=-1, keepdims=True)) + 1e-8)
+                # L2-norm in float32 to avoid bfloat16 underflow
+                k_f32 = k.astype(mx.float32)
+                k = (
+                    k_f32 / (mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True)) + 1e-8)
+                ).astype(k.dtype)
 
                 # Update projection matrix
                 _, new_carry = local_mem.qk_proj(
