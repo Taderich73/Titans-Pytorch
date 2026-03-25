@@ -337,6 +337,8 @@ uv run python scripts/sft.py --model mac \
     --use-tnt --tnt-stage 2
 ```
 
+**Checkpoint compatibility**: The model architecture flags (`--use-tnt`, `--use-attn-res`, etc.) must match the checkpoint being loaded via `--init-weights`. For example, a checkpoint trained with `--use-attn-res` requires `--use-attn-res` during SFT, otherwise loading will fail with extra parameter errors.
+
 **Chat template**: Uses the tokenizer's built-in `chat_template` if available, falls back to ChatML.
 
 **Loss masking**: By default, only assistant response tokens contribute to the loss. Use `--train-on-all` to train on the full conversation.
