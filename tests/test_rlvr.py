@@ -125,3 +125,24 @@ class TestREINFORCELoss:
         loss = reinforce_loss(log_probs, rewards, baseline, masks)
         mx.eval(loss)
         assert abs(float(loss)) < 1e-6
+
+
+class TestOfflineRLDataset:
+    """Tests for offline rollout data loading."""
+
+    def test_reward_from_ground_truth(self) -> None:
+        """Rewards are computed by verifier against ground_truth."""
+        from scripts.rlvr import compute_rollout_rewards, exact_match
+
+        outputs = ["42", "wrong", "42"]
+        ground_truth = ["42"]
+
+        rewards = compute_rollout_rewards(outputs, ground_truth, exact_match)
+        assert rewards == [1.0, 0.0, 1.0]
+
+    def test_empty_outputs(self) -> None:
+        """No outputs produces empty rewards."""
+        from scripts.rlvr import compute_rollout_rewards, exact_match
+
+        rewards = compute_rollout_rewards([], ["42"], exact_match)
+        assert rewards == []

@@ -235,3 +235,186 @@ def reinforce_loss(
     advantages = rewards - baseline
     seq_log_probs = (log_probs * masks).sum(axis=-1)
     return -mx.mean(advantages * seq_log_probs)
+
+
+# =============================================================================
+# Data Utilities
+# =============================================================================
+
+
+def format_chatml(messages: list[dict]) -> str:
+    """Format a messages list into a ChatML string."""
+    parts: list[str] = []
+    for message in messages:
+        parts.append(f"{IM_START}{message['role']}\n{message['content']}{IM_END}\n")
+    return "".join(parts)
+
+
+def compute_rollout_rewards(
+    outputs: list[str],
+    ground_truth: list[str],
+    verifier: Callable,
+) -> list[float]:
+    """Score each rollout output against ground truth using the verifier."""
+    return [verifier(output, ground_truth) for output in outputs]
+
+
+def tokenize_and_pad(
+    text: str,
+    tokenizer: Any,
+    max_len: int,
+) -> tuple[list[int], list[int]]:
+    """Tokenize text, truncate/pad to max_len. Returns (token_ids, attention_mask)."""
+    has_chat_template = getattr(tokenizer, "chat_template", None) is not None
+
+    if has_chat_template:
+        ids = tokenizer.encode(text)
+    else:
+        special_tokens = []
+        existing = set(tokenizer.additional_special_tokens or [])
+        if IM_START not in existing:
+            special_tokens.append(IM_START)
+        if IM_END not in existing:
+            special_tokens.append(IM_END)
+        if special_tokens:
+            tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+        ids = tokenizer.encode(text)
+
+    ids = ids[:max_len]
+    real_len = len(ids)
+    pad_len = max_len - real_len
+    mask = [1] * real_len + [0] * pad_len
+    ids = ids + [0] * pad_len
+    return ids, mask
+
+
+# =============================================================================
+# Offline RL Dataset
+# =============================================================================
+
+
+class OfflineRLDataset:
+    """Streaming dataset for offline RL with pre-computed rollouts.
+
+    Expects HuggingFace datasets with 'prompt', 'ground_truth', and
+    'outputs' fields (e.g., allenai/Dolci-Think-RL-7B).
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        tokenizer: Any,
+        max_len: int,
+        num_rollouts: int = 8,
+        verifier: Callable = exact_match,
+        subset: str | None = None,
+        split: str = "train",
+        seed: int = 42,
+        prompt_field: str = "prompt",
+        ground_truth_field: str = "ground_truth",
+        outputs_field: str = "outputs",
+        buffer_size: int = 1000,
+    ) -> None:
+        self.dataset_name = dataset_name
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.num_rollouts = num_rollouts
+        self.verifier = verifier
+        self.subset = subset
+        self.split = split
+        self.seed = seed
+        self.prompt_field = prompt_field
+        self.ground_truth_field = ground_truth_field
+        self.outputs_field = outputs_field
+        self.buffer_size = buffer_size
+        self._iterator: Any = None
+
+    def _create_iterator(self):
+        ds = load_dataset(
+            self.dataset_name,
+            self.subset,
+            split=self.split,
+            streaming=True,
+        )
+        ds = ds.shuffle(seed=self.seed, buffer_size=self.buffer_size)
+
+        for example in ds:
+            prompt = example.get(self.prompt_field, "")
+            ground_truth = example.get(self.ground_truth_field, [])
+            outputs = example.get(self.outputs_field, [])
+
+            if not outputs or not ground_truth:
+                continue
+
+            rollouts = outputs[:self.num_rollouts]
+            if len(rollouts) < 2:
+                continue
+
+            rewards = compute_rollout_rewards(rollouts, ground_truth, self.verifier)
+
+            prompt_ids, _ = tokenize_and_pad(prompt, self.tokenizer, self.max_len)
+
+            rollout_ids_list = []
+            rollout_masks_list = []
+            for rollout_text in rollouts:
+                full_text = prompt + rollout_text
+                r_ids, r_mask = tokenize_and_pad(full_text, self.tokenizer, self.max_len)
+                rollout_ids_list.append(r_ids)
+                rollout_masks_list.append(r_mask)
+
+            yield {
+                "prompt_ids": prompt_ids,
+                "rollout_ids": rollout_ids_list,
+                "rollout_masks": rollout_masks_list,
+                "rewards": rewards,
+            }
+
+    def get_batch(self, batch_size: int) -> dict[str, mx.array] | None:
+        """Return a batch of rollout groups."""
+        if self._iterator is None:
+            self._iterator = self._create_iterator()
+
+        batch_items: list[dict] = []
+        for _ in range(batch_size):
+            try:
+                item = next(self._iterator)
+                batch_items.append(item)
+            except StopIteration:
+                self._iterator = self._create_iterator()
+                if batch_items:
+                    break
+                return None
+
+        if not batch_items:
+            return None
+
+        max_rollouts = max(len(item["rewards"]) for item in batch_items)
+
+        padded_rollout_ids = []
+        padded_rollout_masks = []
+        padded_rewards = []
+
+        for item in batch_items:
+            n = len(item["rewards"])
+            pad_n = max_rollouts - n
+
+            r_ids = item["rollout_ids"] + [[0] * self.max_len] * pad_n
+            r_masks = item["rollout_masks"] + [[0] * self.max_len] * pad_n
+            rews = item["rewards"] + [0.0] * pad_n
+
+            padded_rollout_ids.append(r_ids)
+            padded_rollout_masks.append(r_masks)
+            padded_rewards.append(rews)
+
+        return {
+            "prompt_ids": mx.array(
+                np.array([item["prompt_ids"] for item in batch_items])
+            ),
+            "rollout_ids": mx.array(np.array(padded_rollout_ids)),
+            "rollout_masks": mx.array(
+                np.array(padded_rollout_masks, dtype=np.float32)
+            ),
+            "rewards": mx.array(
+                np.array(padded_rewards, dtype=np.float32)
+            ),
+        }
