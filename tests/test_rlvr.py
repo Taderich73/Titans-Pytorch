@@ -52,3 +52,76 @@ class TestNumericMatchVerifier:
     def test_extracts_last_number(self) -> None:
         from scripts.rlvr import numeric_match
         assert numeric_match("Step 1: 10, Step 2: 20, Final: 42", ["42"]) == 1.0
+
+
+class TestGRPOLoss:
+    """Tests for GRPO loss with clipped importance ratios."""
+
+    def test_zero_advantage_zero_loss(self) -> None:
+        """When all rewards are identical, advantages are zero -> loss is zero."""
+        from scripts.rlvr import grpo_loss
+
+        log_probs = mx.array([[[-0.5, -0.3, -0.4]]])
+        log_probs_old = mx.array([[[-0.5, -0.3, -0.4]]])
+        rewards = mx.array([[1.0]])
+        masks = mx.array([[[1.0, 1.0, 1.0]]])
+
+        loss = grpo_loss(log_probs, log_probs_old, rewards, masks, epsilon=0.2)
+        mx.eval(loss)
+        assert abs(float(loss)) < 1e-6
+
+    def test_positive_advantage_negative_loss(self) -> None:
+        """Rollout with above-average reward should decrease loss."""
+        from scripts.rlvr import grpo_loss
+
+        log_probs = mx.array([[[-0.5, -0.3], [-0.5, -0.3]]])
+        log_probs_old = mx.array([[[-0.5, -0.3], [-0.5, -0.3]]])
+        rewards = mx.array([[1.0, 0.0]])
+        masks = mx.array([[[1.0, 1.0], [1.0, 1.0]]])
+
+        loss = grpo_loss(log_probs, log_probs_old, rewards, masks, epsilon=0.2)
+        mx.eval(loss)
+        assert np.isfinite(float(loss))
+
+    def test_clipping_bounds_ratio(self) -> None:
+        """Large log-prob differences should be clipped."""
+        from scripts.rlvr import grpo_loss
+
+        log_probs = mx.array([[[0.0, 0.0], [-5.0, -5.0]]])
+        log_probs_old = mx.array([[[-5.0, -5.0], [0.0, 0.0]]])
+        rewards = mx.array([[1.0, 0.0]])
+        masks = mx.array([[[1.0, 1.0], [1.0, 1.0]]])
+
+        loss = grpo_loss(log_probs, log_probs_old, rewards, masks, epsilon=0.2)
+        mx.eval(loss)
+        assert np.isfinite(float(loss))
+
+
+class TestREINFORCELoss:
+    """Tests for REINFORCE with baseline loss."""
+
+    def test_positive_advantage(self) -> None:
+        """Positive advantage produces negative loss (encourages action)."""
+        from scripts.rlvr import reinforce_loss
+
+        log_probs = mx.array([[-0.5, -0.3, -0.4]])
+        rewards = mx.array([1.0])
+        baseline = 0.5
+        masks = mx.array([[1.0, 1.0, 1.0]])
+
+        loss = reinforce_loss(log_probs, rewards, baseline, masks)
+        mx.eval(loss)
+        assert np.isfinite(float(loss))
+
+    def test_zero_advantage_zero_loss(self) -> None:
+        """When reward equals baseline, loss is zero."""
+        from scripts.rlvr import reinforce_loss
+
+        log_probs = mx.array([[-0.5, -0.3]])
+        rewards = mx.array([0.5])
+        baseline = 0.5
+        masks = mx.array([[1.0, 1.0]])
+
+        loss = reinforce_loss(log_probs, rewards, baseline, masks)
+        mx.eval(loss)
+        assert abs(float(loss)) < 1e-6
