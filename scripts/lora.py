@@ -106,9 +106,12 @@ class LoRALinear(nn.Module):
         self.lora_B = mx.zeros((rank, out_dim))
         self.scale = alpha / rank
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
+        self.enabled = True
 
     def __call__(self, x: mx.array) -> mx.array:
         base_out = self.base(x)
+        if not self.enabled:
+            return base_out
         lora_input = self.dropout(x) if self.dropout else x
         lora_out = (lora_input @ self.lora_A) @ self.lora_B * self.scale
         return base_out + lora_out
@@ -262,6 +265,17 @@ def _find_lora_modules(
                 results.append((path, child))
             results.extend(_find_lora_modules(child, path))
     return results
+
+
+def set_lora_enabled(model: nn.Module, enabled: bool) -> None:
+    """Toggle all LoRALinear adapters on/off.
+
+    When disabled, LoRALinear.__call__ returns only the base layer output.
+    Useful for computing reference model log-probs in DPO without loading
+    a second model.
+    """
+    for _path, lora_mod in _find_lora_modules(model):
+        lora_mod.enabled = enabled
 
 
 # ---------------------------------------------------------------------------

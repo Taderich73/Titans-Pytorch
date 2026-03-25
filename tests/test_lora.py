@@ -21,6 +21,7 @@ from scripts.lora import (
     load_adapters,
     merge_lora_weights,
     save_adapters,
+    set_lora_enabled,
     wrap_lora_layers,
 )
 from titans_mlx.config import TitansConfig
@@ -266,3 +267,61 @@ class TestAdapterIO:
         assert loaded_meta["alpha"] == 8.0
         assert loaded_meta["lora_targets"] == "attn"
         assert loaded_meta["chat_template"] == "chatml"
+
+
+class TestLoRAEnabled:
+    """Tests for LoRA enabled/disabled toggle."""
+
+    def test_disabled_equals_base(self) -> None:
+        """When enabled=False, output equals base layer only."""
+        mx.random.seed(42)
+        base = nn.Linear(32, 64, bias=False)
+        lora = LoRALinear(base, rank=4, alpha=8.0, dropout=0.0)
+
+        # Make lora_B nonzero so LoRA would change the output
+        lora.lora_B = mx.ones_like(lora.lora_B) * 0.1
+
+        x = mx.random.normal((2, 10, 32))
+
+        # Enabled: output differs from base
+        enabled_out = lora(x)
+        base_out = base(x)
+        mx.eval(enabled_out, base_out)
+        assert not np.allclose(np.array(enabled_out), np.array(base_out), atol=1e-6)
+
+        # Disabled: output equals base
+        lora.enabled = False
+        disabled_out = lora(x)
+        mx.eval(disabled_out)
+        np.testing.assert_allclose(
+            np.array(disabled_out), np.array(base_out), atol=1e-6
+        )
+
+    def test_enabled_default_true(self) -> None:
+        """LoRALinear.enabled defaults to True."""
+        base = nn.Linear(32, 64, bias=False)
+        lora = LoRALinear(base, rank=4, alpha=8.0, dropout=0.0)
+        assert lora.enabled is True
+
+
+class TestSetLoRAEnabled:
+    """Tests for the set_lora_enabled utility."""
+
+    def test_toggle_on_model(self) -> None:
+        """set_lora_enabled toggles all LoRA layers in a model."""
+        mx.random.seed(42)
+        config = TitansConfig(dim=64, num_heads=2, num_layers=2, vocab_size=128)
+        model = TitansMAC(config)
+        wrap_lora_layers(model, "attn", rank=4, alpha=8.0)
+
+        # All should be enabled
+        for _path, lora_mod in _find_lora_modules(model):
+            assert lora_mod.enabled is True
+
+        set_lora_enabled(model, False)
+        for _path, lora_mod in _find_lora_modules(model):
+            assert lora_mod.enabled is False
+
+        set_lora_enabled(model, True)
+        for _path, lora_mod in _find_lora_modules(model):
+            assert lora_mod.enabled is True
