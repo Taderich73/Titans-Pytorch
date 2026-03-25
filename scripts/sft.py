@@ -531,7 +531,7 @@ def masked_loss_fn(
     labels_flat = labels.reshape(-1)
     mask_flat = loss_mask.reshape(-1)
     per_token = nn.losses.cross_entropy(logits_flat, labels_flat, reduction="none")
-    loss = (per_token * mask_flat).sum() / mask_flat.sum().clip(min=1)
+    loss = (per_token * mask_flat).sum() / mx.clip(mask_flat.sum(), a_min=1, a_max=None)
     return loss, logits
 
 
