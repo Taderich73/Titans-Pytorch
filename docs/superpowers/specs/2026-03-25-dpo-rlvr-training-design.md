@@ -66,17 +66,22 @@ loss = -log(sigmoid(beta * (avg_logp_chosen - avg_logp_rejected - gamma)))
 
 **LoRA mode** (`--lora`): The frozen base model weights serve as the reference model. A forward pass without LoRA contributions produces reference log-probs; a forward pass with LoRA produces policy log-probs. Single model in memory.
 
-Implementation: `compute_reference_logprobs` helper that temporarily bypasses LoRA adapter forward passes (zeros out `lora_B` or skips the adapter) to get reference log-probs without loading a second model.
+Implementation: Add an `enabled: bool` attribute to `LoRALinear` (default `True`). When `enabled=False`, `__call__` returns only `self.base(x)`, skipping the LoRA delta. A `set_lora_enabled(model, enabled: bool)` utility walks the model tree and toggles all `LoRALinear.enabled` flags. Reference log-probs are computed with LoRA disabled; policy log-probs with LoRA enabled. This avoids array copies and MLX recompilation overhead.
 
 **Full-parameter mode**: Loads a second frozen copy of the model as the reference. Double memory cost. Script warns at startup about memory requirements.
 
 **SimPO mode**: No reference model needed in either LoRA or full-parameter mode.
 
+### Memory State Handling
+
+The model returns `(logits, states)`. For DPO, chosen and rejected sequences from the same example are independent — memory states are **reset (set to `None`) before each forward pass** (chosen, rejected, and reference). States are not carried between the two sequences of a pair, as they represent different continuations of the same prompt and cross-contamination would corrupt the loss signal.
+
 ### CLI Interface
 
 ```bash
 python scripts/dpo.py \
-    --checkpoint checkpoints/my-sft-model \
+    --model mac \
+    --resume checkpoints/my-sft-model \
     --dataset allenai/Dolci-Instruct-DPO \
     --method {dpo,simpo} \
     --beta 0.1 \
@@ -85,16 +90,21 @@ python scripts/dpo.py \
     --lora-rank 8 \
     --lora-alpha 16 \
     --lora-targets attn,ffn \
+    --lora-dropout 0.0 \
     --max-len 2048 \
     --batch-size 2 \
     --gradient-accumulation-steps 8 \
     --lr 5e-7 \
     --weight-decay 0.1 \
     --warmup-ratio 0.1 \
+    --grad-clip 1.0 \
     --epochs 3 \
+    --max-steps -1 \
     --eval-every 500 \
     --save-every 1000 \
     --checkpoint-dir checkpoints/dpo-run \
+    --use-tnt \
+    --use-attn-res \
     --wandb --wandb-project titans-dpo
 ```
 
@@ -109,6 +119,8 @@ python scripts/dpo.py \
 | `--max-len` | `2048` | Max sequence length |
 | `--batch-size` | `2` | Per-step batch size |
 | `--gradient-accumulation-steps` | `8` | Effective batch = 16 |
+| `--grad-clip` | `1.0` | Global gradient norm clip |
+| `--max-steps` | `-1` | Step limit (-1 = use epochs) |
 
 ---
 
@@ -141,11 +153,12 @@ Selected via `--mode {offline,live}`:
 ```python
 {
     "prompt_ids": (batch, prompt_len),
-    "rollout_ids": (batch, num_rollouts, seq_len),
-    "rollout_masks": (batch, num_rollouts, seq_len),
+    "rollout_ids": (batch, num_rollouts, seq_len),   # padded to max length in group
+    "rollout_masks": (batch, num_rollouts, seq_len),  # 1 for real tokens, 0 for padding
     "rewards": (batch, num_rollouts),
 }
 ```
+Rollouts have variable length — they are right-padded to the longest rollout in the batch. `rollout_masks` distinguishes real tokens from padding so log-prob sums exclude pad positions.
 
 **`LiveRLDataset`** (live mode):
 - Streams prompts + ground truth only
@@ -165,17 +178,21 @@ def verify(response: str, ground_truth: list[str]) -> float:
 **Built-in verifiers:**
 - `exact_match` — strip, normalize whitespace, case-insensitive compare
 - `numeric_match` — extract final number from response, compare to ground truth with configurable tolerance
-- `code_exec` — execute generated code against test cases in a sandboxed subprocess, return pass/fail
+- `code_exec` — execute generated code against test cases via `subprocess.run` with timeout, no network access. Deferred to v2 if sandboxing proves complex; `exact_match` and `numeric_match` ship first
 
 **Custom verifiers:** `--verifier path/to/verifier.py:function_name` loads any Python function matching the signature above.
 
 ### Loss Functions
 
-**GRPO:**
+**GRPO (with clipped importance ratios, per DeepSeekMath):**
 ```
 advantages = (rewards - mean(rewards)) / (std(rewards) + eps)
-loss = -mean(advantages * log_pi(rollout)) + kl_beta * KL(pi || ref)
+ratio = exp(log_pi(rollout) - log_pi_old(rollout))
+clipped_ratio = clip(ratio, 1 - epsilon, 1 + epsilon)
+loss = -mean(min(ratio * advantages, clipped_ratio * advantages)) + kl_beta * KL(pi || ref)
 ```
+- `epsilon` (default: 0.2) controls the clipping range, same role as PPO's clip parameter
+- `log_pi_old` is computed once before each optimization step and held fixed (no gradient)
 - Group-relative baseline eliminates need for a value model
 - KL penalty is optional (`--kl-beta`, default: 0.0)
 - Rollouts where all rewards are identical (all-pass or all-fail) produce zero advantage — skipped with a logged warning, no gradient signal
@@ -190,6 +207,10 @@ loss = -advantage * log_pi(rollout)
 - Works with `--num-rollouts 1` for minimal compute
 - Higher variance than GRPO but lower cost
 
+### Memory State Handling
+
+Same as DPO: memory states are **reset to `None` before each rollout forward pass**. Each rollout is an independent sequence — states must not leak between rollouts of the same prompt or across prompts.
+
 ### Generation (Live Mode)
 
 Reuses temperature sampling logic from `inference.py`:
@@ -202,11 +223,13 @@ Reuses temperature sampling logic from `inference.py`:
 
 ```bash
 python scripts/rlvr.py \
-    --checkpoint checkpoints/my-sft-model \
+    --model mac \
+    --resume checkpoints/my-sft-model \
     --dataset allenai/Dolci-Think-RL-7B \
     --mode {offline,live} \
     --method {grpo,reinforce} \
     --num-rollouts 8 \
+    --epsilon 0.2 \
     --verifier exact_match \
     --kl-beta 0.0 \
     --ema-decay 0.99 \
@@ -216,15 +239,19 @@ python scripts/rlvr.py \
     --lora-rank 8 \
     --lora-alpha 16 \
     --lora-targets attn,ffn \
+    --lora-dropout 0.0 \
     --batch-size 2 \
     --gradient-accumulation-steps 4 \
     --lr 1e-6 \
     --weight-decay 0.1 \
     --warmup-ratio 0.03 \
+    --grad-clip 1.0 \
     --max-steps 5000 \
     --eval-every 500 \
     --save-every 1000 \
     --checkpoint-dir checkpoints/rlvr-run \
+    --use-tnt \
+    --use-attn-res \
     --wandb --wandb-project titans-rlvr
 ```
 
@@ -235,12 +262,14 @@ python scripts/rlvr.py \
 | `--method` | `grpo` | `grpo` or `reinforce` |
 | `--mode` | `offline` | `offline` or `live` |
 | `--num-rollouts` | `8` | Rollouts per prompt |
+| `--epsilon` | `0.2` | GRPO clipping range |
 | `--kl-beta` | `0.0` | KL penalty (GRPO) |
 | `--ema-decay` | `0.99` | Baseline decay (REINFORCE) |
 | `--temperature` | `0.7` | Generation temperature (live) |
 | `--max-new-tokens` | `2048` | Generation cap (live) |
 | `--lr` | `1e-6` | Higher than DPO, lower than SFT |
 | `--batch-size` | `2` | Per-step batch size |
+| `--grad-clip` | `1.0` | Global gradient norm clip |
 
 ---
 
@@ -248,13 +277,15 @@ python scripts/rlvr.py \
 
 ### Log-Probability Computation
 
-Both scripts need per-token log-probs. Each script contains its own copy of:
+Both scripts need per-token log-probs. Each script contains its own copy (MLX-native, no PyTorch equivalents):
 
 ```python
 def compute_logprobs(model, input_ids, mask=None):
     logits, _ = model(input_ids)
-    log_probs = log_softmax(logits[:, :-1], axis=-1)
-    token_log_probs = gather(log_probs, input_ids[:, 1:])
+    # MLX log-softmax: logits - logsumexp(logits)
+    log_probs = logits[:, :-1] - mx.logsumexp(logits[:, :-1], axis=-1, keepdims=True)
+    # MLX gather: take_along_axis instead of PyTorch's gather
+    token_log_probs = mx.take_along_axis(log_probs, input_ids[:, 1:, None], axis=-1).squeeze(-1)
     if mask is not None:
         token_log_probs = token_log_probs * mask[:, 1:]
     return token_log_probs  # (batch, seq_len - 1)
@@ -269,7 +300,7 @@ Both scripts import from `lora.py`:
 - `save_adapters(model, path, metadata)`
 - `load_adapters(model, path)`
 
-Same `--lora-rank`, `--lora-targets`, `--lora-alpha` flags as existing LoRA training.
+Same `--lora-rank`, `--lora-targets`, `--lora-alpha`, `--lora-dropout` flags as existing LoRA training.
 
 ### Training Loop
 
@@ -282,7 +313,7 @@ Both scripts follow the established pattern from `pretrain.py` and `sft.py`:
 
 ### Checkpoint Compatibility
 
-Both scripts use the existing `save_checkpoint`/`load_checkpoint` format. Metadata in the checkpoint records which training stage produced it (`training_stage: "dpo"` or `training_stage: "rlvr"`). Checkpoints are interchangeable — you can chain DPO after RLVR or vice versa.
+Both scripts use the existing `save_checkpoint`/`load_checkpoint` format. A new `training_stage` metadata field is introduced — `"dpo"` or `"rlvr"` for these scripts. This is a new convention; existing scripts (`pretrain.py`, `sft.py`, `lora.py`) do not currently set this field but could be updated for consistency in a follow-up. Checkpoints are interchangeable — you can chain DPO after RLVR or vice versa.
 
 ### What's Not Included
 
