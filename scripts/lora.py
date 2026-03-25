@@ -32,17 +32,17 @@ import argparse
 import json
 import logging
 import math
-import os
 import time
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-from mlx.utils import tree_flatten
 import numpy as np
+from mlx.utils import tree_flatten
 from tqdm import tqdm
 
 from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
@@ -321,7 +321,7 @@ def merge_lora_weights(model: nn.Module) -> None:
     After merging, each LoRALinear is replaced by a plain nn.Linear
     whose weight equals ``base.weight + (lora_A @ lora_B).T * scale``.
     """
-    for full_path, attr_name, parent, child in list(
+    for _full_path, attr_name, parent, child in list(
         _recursive_find_lora(model)
     ):
         lora_mod = child

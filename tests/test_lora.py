@@ -26,7 +26,6 @@ from scripts.lora import (
 from titans_mlx.config import TitansConfig
 from titans_mlx.models import TitansMAC
 
-
 # ---------------------------------------------------------------------------
 # TestLoRALinear
 # ---------------------------------------------------------------------------

@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import logging
 import math
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,8 +35,8 @@ from typing import Any
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-from mlx.utils import tree_flatten
 import numpy as np
+from mlx.utils import tree_flatten
 from tqdm import tqdm
 
 from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
