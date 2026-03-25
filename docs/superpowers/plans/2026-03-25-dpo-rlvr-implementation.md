@@ -1447,7 +1447,7 @@ def grpo_loss(
         masks: (batch, num_rollouts, seq_len-1) token masks (aligned with log-probs).
         epsilon: Clipping range for importance ratios.
         kl_beta: KL penalty coefficient (0 = disabled).
-        ref_log_probs: (batch, num_rollouts, seq_len) reference model log-probs for KL.
+        ref_log_probs: (batch, num_rollouts, seq_len-1) reference model log-probs for KL.
 
     Returns:
         Scalar loss.
@@ -1458,7 +1458,7 @@ def grpo_loss(
     advantages = (rewards - mean_reward) / std_reward  # (batch, num_rollouts)
 
     # Sum log-probs over sequence per rollout
-    # masks shape: (batch, num_rollouts, seq_len)
+    # masks shape: (batch, num_rollouts, seq_len-1) — pre-sliced to match log-probs
     seq_log_probs = (log_probs * masks).sum(axis=-1)          # (batch, num_rollouts)
     seq_log_probs_old = (log_probs_old * masks).sum(axis=-1)  # (batch, num_rollouts)
 
@@ -1489,10 +1489,10 @@ def reinforce_loss(
     """REINFORCE loss with EMA baseline.
 
     Args:
-        log_probs: (batch, seq_len) per-token log-probs.
+        log_probs: (batch, seq_len-1) per-token log-probs (from compute_logprobs).
         rewards: (batch,) per-example rewards.
         baseline: EMA baseline value.
-        masks: (batch, seq_len) token masks.
+        masks: (batch, seq_len-1) token masks (pre-sliced to match log-probs).
 
     Returns:
         Scalar loss.
@@ -1977,6 +1977,10 @@ def compute_rlvr_grads(
     """
     batch_size, num_rollouts, seq_len = rollout_ids.shape
 
+    # Slice masks to match compute_logprobs output shape (seq_len-1)
+    # Data pipeline produces (batch, num_rollouts, seq_len), log-probs are (batch, seq_len-1)
+    shifted_masks = rollout_masks[:, :, 1:]
+
     if config.method == "grpo":
         # Skip if all rewards identical (zero variance → zero advantage)
         reward_std = mx.sqrt(mx.var(rewards, axis=1) + 1e-8)
@@ -1999,7 +2003,7 @@ def compute_rlvr_grads(
                 lp_list.append(lp)
             log_probs = mx.stack(lp_list, axis=1)
             return grpo_loss(
-                log_probs, log_probs_old, rewards, rollout_masks,
+                log_probs, log_probs_old, rewards, shifted_masks,
                 epsilon=config.epsilon, kl_beta=config.kl_beta,
             )
 
@@ -2014,7 +2018,7 @@ def compute_rlvr_grads(
 
         for i in range(num_rollouts):
             r_ids = rollout_ids[:, i, :]
-            r_mask = rollout_masks[:, i, :]
+            r_mask = shifted_masks[:, i, :]
             r_rewards = rewards[:, i]
 
             advantage = r_rewards - ema_baseline
