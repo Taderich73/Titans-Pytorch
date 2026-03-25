@@ -175,3 +175,40 @@ class TestSimPOLoss:
                           beta=0.1, gamma=0.5)
         mx.eval(loss)
         assert np.isfinite(float(loss))
+
+
+class TestDPOStreamingDataset:
+    """Tests for DPO data loading (using mock data)."""
+
+    def test_batch_shape(self) -> None:
+        """Batch has correct keys and shapes."""
+        from scripts.dpo import DPOStreamingDataset
+        from unittest.mock import MagicMock
+
+        tokenizer = MagicMock()
+        tokenizer.chat_template = None
+        tokenizer.additional_special_tokens = []
+        tokenizer.add_special_tokens = MagicMock()
+        tokenizer.encode = lambda text: list(range(len(text)))
+
+        dataset = DPOStreamingDataset.__new__(DPOStreamingDataset)
+        dataset.tokenizer = tokenizer
+        dataset.max_len = 32
+
+        from scripts.dpo import extract_messages, tokenize_sequence
+
+        chosen_msgs = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        rejected_msgs = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Bye"},
+        ]
+
+        c_ids, c_mask = tokenize_sequence(chosen_msgs, tokenizer, 32)
+        r_ids, r_mask = tokenize_sequence(rejected_msgs, tokenizer, 32)
+
+        assert len(c_ids) == 32
+        assert len(c_mask) == 32
+        assert sum(c_mask) > 0

@@ -231,3 +231,121 @@ def simpo_loss(
     """
     logits = beta * (chosen_avg_logps - rejected_avg_logps - gamma)
     return -mx.mean(logits - mx.logaddexp(mx.zeros_like(logits), logits))
+
+
+# =============================================================================
+# DPO Streaming Dataset
+# =============================================================================
+
+
+class DPOStreamingDataset:
+    """Streaming dataset for DPO preference pairs.
+
+    Expects HuggingFace datasets with 'chosen' and 'rejected' fields,
+    each containing a list of message dicts with 'role' and 'content'.
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        tokenizer: Any,
+        max_len: int,
+        subset: str | None = None,
+        split: str = "train",
+        seed: int = 42,
+        chosen_field: str = "chosen",
+        rejected_field: str = "rejected",
+        buffer_size: int = 1000,
+    ) -> None:
+        self.dataset_name = dataset_name
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.subset = subset
+        self.split = split
+        self.seed = seed
+        self.chosen_field = chosen_field
+        self.rejected_field = rejected_field
+        self.buffer_size = buffer_size
+        self._iterator: Any = None
+
+    def _create_iterator(self):
+        """Create a fresh streaming iterator of preference pairs."""
+        ds = load_dataset(
+            self.dataset_name,
+            self.subset,
+            split=self.split,
+            streaming=True,
+        )
+        ds = ds.shuffle(seed=self.seed, buffer_size=self.buffer_size)
+
+        for example in ds:
+            chosen_raw = example.get(self.chosen_field)
+            rejected_raw = example.get(self.rejected_field)
+            if chosen_raw is None or rejected_raw is None:
+                continue
+
+            try:
+                chosen_msgs = extract_messages(chosen_raw)
+                rejected_msgs = extract_messages(rejected_raw)
+
+                c_ids, c_mask = tokenize_sequence(
+                    chosen_msgs, self.tokenizer, self.max_len
+                )
+                r_ids, r_mask = tokenize_sequence(
+                    rejected_msgs, self.tokenizer, self.max_len
+                )
+            except Exception:
+                continue
+
+            yield {
+                "chosen_ids": c_ids,
+                "chosen_mask": c_mask,
+                "rejected_ids": r_ids,
+                "rejected_mask": r_mask,
+            }
+
+    def get_batch(self, batch_size: int) -> dict[str, mx.array] | None:
+        """Return a batch of preference pairs as mx.arrays.
+
+        Returns:
+            Dict with "chosen_ids", "chosen_mask", "rejected_ids",
+            "rejected_mask" as mx.arrays of shape (batch, max_len),
+            or None if exhausted.
+        """
+        if self._iterator is None:
+            self._iterator = self._create_iterator()
+
+        batch_items: list[dict] = []
+        for _ in range(batch_size):
+            try:
+                item = next(self._iterator)
+                batch_items.append(item)
+            except StopIteration:
+                self._iterator = self._create_iterator()
+                if batch_items:
+                    break
+                return None
+
+        if not batch_items:
+            return None
+
+        return {
+            "chosen_ids": mx.array(
+                np.array([item["chosen_ids"] for item in batch_items])
+            ),
+            "chosen_mask": mx.array(
+                np.array(
+                    [item["chosen_mask"] for item in batch_items],
+                    dtype=np.float32,
+                )
+            ),
+            "rejected_ids": mx.array(
+                np.array([item["rejected_ids"] for item in batch_items])
+            ),
+            "rejected_mask": mx.array(
+                np.array(
+                    [item["rejected_mask"] for item in batch_items],
+                    dtype=np.float32,
+                )
+            ),
+        }
