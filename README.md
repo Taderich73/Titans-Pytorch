@@ -3,7 +3,7 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-267%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-284%20passed-brightgreen.svg)](tests/)
 
 A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory and **Attention Residuals (AttnRes)** as composable, independent features.
 
@@ -29,6 +29,8 @@ Both TNT and AttnRes are **independent flags** that work with any block type (MA
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
+- [Supervised Fine-Tuning (SFT)](#supervised-fine-tuning-sft)
+- [LoRA Fine-Tuning](#lora-fine-tuning)
 - [Inference](#inference)
 - [Configuration Reference](#configuration-reference)
 - [API Reference](#api-reference)
@@ -208,8 +210,6 @@ uv run python scripts/pretrain.py --model mac \
   --attnres-warmup-steps 200
 ```
 
-See `train_small_tnt_attnres.sh` for a complete example.
-
 ---
 
 ## Installation
@@ -314,6 +314,104 @@ uv run python scripts/pretrain.py --model mac \
 | **Logging** |
 | `--log-every` | `10` | Log every N steps |
 | `--wandb` | `False` | Enable W&B logging |
+
+---
+
+## Supervised Fine-Tuning (SFT)
+
+Fine-tune a pretrained model on instruction-following data using streamed HuggingFace datasets with chat template formatting.
+
+```bash
+# SFT with Dolci-Instruct
+uv run python scripts/sft.py --model mac \
+    --init-weights checkpoints/best_model \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --lr 2e-5 --seq-len 2048
+
+# With TNT stage 2 fine-tuning
+uv run python scripts/sft.py --model mac \
+    --init-weights checkpoints/best_model \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --use-tnt --tnt-stage 2
+```
+
+**Chat template**: Uses the tokenizer's built-in `chat_template` if available, falls back to ChatML.
+
+**Loss masking**: By default, only assistant response tokens contribute to the loss. Use `--train-on-all` to train on the full conversation.
+
+### SFT Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dataset` | *(required)* | HuggingFace dataset (messages format) |
+| `--init-weights` | - | Pretrained checkpoint to fine-tune |
+| `--tokenizer` | `gpt2` | HuggingFace tokenizer |
+| `--lr` | `2e-5` | Learning rate |
+| `--seq-len` | `2048` | Max sequence length |
+| `--train-on-all` | `False` | Train on all tokens (not just assistant) |
+| `--messages-field` | `messages` | Field name for messages in dataset |
+| `--tnt-stage` | `1` | TNT stage (2 = halved local chunks) |
+| `--gradient-accumulation-steps` | `8` | Gradient accumulation |
+
+All model architecture flags from pretraining are supported (`--dim`, `--num-heads`, `--use-tnt`, `--use-attn-res`, etc.).
+
+---
+
+## LoRA Fine-Tuning
+
+Low-rank adapter fine-tuning — trains small adapter matrices while keeping the base model frozen. Produces lightweight adapter files that can be saved independently or merged into the base model.
+
+```bash
+# LoRA with attention projections (default)
+uv run python scripts/lora.py --model mac \
+    --init-weights checkpoints/best_model \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --lora-targets attn --lora-rank 8 --lr 1e-4
+
+# LoRA with attention + FFN layers
+uv run python scripts/lora.py --model mac \
+    --init-weights checkpoints/best_model \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --lora-targets attn,ffn
+
+# Train and merge adapters into base model
+uv run python scripts/lora.py --model mac \
+    --init-weights checkpoints/best_model \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --merge-and-save checkpoints/merged_model
+```
+
+**Adapters** are saved as `adapters.safetensors` + `adapters.meta.json` in the checkpoint directory. They can be loaded onto any compatible base model or merged permanently.
+
+### LoRA Target Layers
+
+| Preset | Layers |
+|--------|--------|
+| `attn` (default) | `proj_q`, `proj_k`, `proj_v`, `proj_out` |
+| `ffn` | `gate_proj`, `up_proj`, `down_proj` |
+| `memory` | Memory MLP layers |
+| `all` | All linear layers (except embed/head) |
+
+Combine presets with commas: `--lora-targets attn,ffn`
+
+### LoRA Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--lora-rank` | `8` | LoRA rank |
+| `--lora-alpha` | `16` | LoRA scaling factor |
+| `--lora-dropout` | `0.05` | Dropout on LoRA path |
+| `--lora-targets` | `attn` | Target layer presets |
+| `--merge-and-save` | - | Merge adapters and save full model |
+| `--lr` | `1e-4` | Learning rate (higher than SFT) |
+| `--weight-decay` | `0.01` | Weight decay (lower than SFT) |
+
+All SFT and model architecture flags are also supported.
 
 ---
 
@@ -431,13 +529,12 @@ titans-tnt-mlx/
 |   +-- metal_kernels.py
 |
 +-- scripts/
-|   +-- pretrain.py
-|   +-- inference.py
+|   +-- pretrain.py         # Pretraining on raw text
+|   +-- sft.py              # Supervised fine-tuning (chat data)
+|   +-- lora.py             # LoRA fine-tuning (adapters)
+|   +-- inference.py        # Text generation
 |
-+-- tests/                  # 267 tests
-+-- examples/
-+-- train_small.sh          # Basic MAC training
-+-- train_small_tnt_attnres.sh  # MAC + TNT + AttnRes training
++-- tests/                  # 284 tests
 ```
 
 ### Running Tests
