@@ -714,6 +714,7 @@ def save_checkpoint(
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
+        "chat_template": "none",
     }
 
     # Save using safetensors format via mlx
