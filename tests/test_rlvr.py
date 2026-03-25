@@ -146,3 +146,42 @@ class TestOfflineRLDataset:
 
         rewards = compute_rollout_rewards([], ["42"], exact_match)
         assert rewards == []
+
+
+from titans_mlx.config import TitansConfig
+from titans_mlx.models import TitansMAC
+
+
+class TestRLVRIntegration:
+    """End-to-end RLVR loss with a real model."""
+
+    def test_grpo_with_model(self) -> None:
+        """GRPO loss computation with actual model log-probs."""
+        from scripts.rlvr import compute_logprobs, grpo_loss
+
+        mx.random.seed(42)
+        config = TitansConfig(dim=64, num_heads=2, num_layers=2, vocab_size=128)
+        model = TitansMAC(config)
+
+        # 1 prompt, 2 rollouts, 5 tokens each
+        rollout_ids = mx.array([
+            [[1, 5, 10, 20, 30], [1, 5, 11, 21, 31]]
+        ])
+        masks = mx.ones((1, 2, 4))  # seq_len - 1 = 4
+
+        # Compute log-probs for each rollout
+        lps = []
+        for i in range(2):
+            lp = compute_logprobs(model, rollout_ids[:, i, :])
+            lps.append(lp)
+        log_probs = mx.stack(lps, axis=1)
+        mx.eval(log_probs)
+
+        rewards = mx.array([[1.0, 0.0]])
+
+        loss = grpo_loss(
+            log_probs, mx.stop_gradient(log_probs),
+            rewards, masks, epsilon=0.2,
+        )
+        mx.eval(loss)
+        assert np.isfinite(float(loss))

@@ -212,3 +212,67 @@ class TestDPOStreamingDataset:
         assert len(c_ids) == 32
         assert len(c_mask) == 32
         assert sum(c_mask) > 0
+
+
+from scripts.lora import wrap_lora_layers, set_lora_enabled, _find_lora_modules
+
+
+class TestDPOIntegration:
+    """End-to-end DPO loss computation with a real model."""
+
+    def test_dpo_loss_with_lora_reference(self) -> None:
+        """Full DPO forward pass: policy + reference via LoRA toggle."""
+        from scripts.dpo import compute_logprobs, dpo_loss
+
+        mx.random.seed(42)
+        config = TitansConfig(dim=64, num_heads=2, num_layers=2, vocab_size=128)
+        model = TitansMAC(config)
+        wrap_lora_layers(model, "attn", rank=4, alpha=8.0)
+
+        chosen_ids = mx.array([[1, 5, 10, 20, 30]])
+        rejected_ids = mx.array([[1, 5, 11, 21, 31]])
+
+        # Policy log-probs (LoRA enabled)
+        pi_chosen = compute_logprobs(model, chosen_ids)
+        pi_rejected = compute_logprobs(model, rejected_ids)
+
+        # Reference log-probs (LoRA disabled)
+        set_lora_enabled(model, False)
+        ref_chosen = compute_logprobs(model, chosen_ids)
+        ref_rejected = compute_logprobs(model, rejected_ids)
+        set_lora_enabled(model, True)
+
+        mx.eval(pi_chosen, pi_rejected, ref_chosen, ref_rejected)
+
+        loss = dpo_loss(
+            pi_chosen.sum(axis=1), pi_rejected.sum(axis=1),
+            ref_chosen.sum(axis=1), ref_rejected.sum(axis=1),
+            beta=0.1,
+        )
+        mx.eval(loss)
+        assert np.isfinite(float(loss))
+
+    def test_simpo_loss_no_reference(self) -> None:
+        """SimPO forward pass without any reference model."""
+        from scripts.dpo import compute_logprobs, simpo_loss
+
+        mx.random.seed(42)
+        config = TitansConfig(dim=64, num_heads=2, num_layers=2, vocab_size=128)
+        model = TitansMAC(config)
+
+        chosen_ids = mx.array([[1, 5, 10, 20, 30]])
+        rejected_ids = mx.array([[1, 5, 11, 21, 31]])
+        mask = mx.array([[1, 1, 1, 1, 1]])
+
+        chosen_lps = compute_logprobs(model, chosen_ids, mask=mask)
+        rejected_lps = compute_logprobs(model, rejected_ids, mask=mask)
+        mx.eval(chosen_lps, rejected_lps)
+
+        lengths = mx.array([4.0])
+        loss = simpo_loss(
+            chosen_lps.sum(axis=1) / lengths,
+            rejected_lps.sum(axis=1) / lengths,
+            beta=0.1, gamma=1.0,
+        )
+        mx.eval(loss)
+        assert np.isfinite(float(loss))
