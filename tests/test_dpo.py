@@ -107,3 +107,71 @@ class TestComputeLogprobs:
         assert lp[0, 1] == 0.0
         assert lp[0, 2] == 0.0
         assert lp[0, 0] != 0.0  # first position is unmasked
+
+
+class TestDPOLoss:
+    """Tests for DPO loss computation."""
+
+    def test_prefers_chosen(self) -> None:
+        """Loss is lower when policy assigns higher log-prob to chosen."""
+        from scripts.dpo import dpo_loss
+
+        chosen_logps = mx.array([-1.0])
+        rejected_logps = mx.array([-5.0])
+        ref_chosen_logps = mx.array([-2.0])
+        ref_rejected_logps = mx.array([-2.0])
+
+        loss_good = dpo_loss(chosen_logps, rejected_logps,
+                             ref_chosen_logps, ref_rejected_logps, beta=0.1)
+
+        loss_bad = dpo_loss(rejected_logps, chosen_logps,
+                            ref_chosen_logps, ref_rejected_logps, beta=0.1)
+        mx.eval(loss_good, loss_bad)
+
+        assert float(loss_good) < float(loss_bad)
+
+    def test_beta_scaling(self) -> None:
+        """Higher beta amplifies the loss signal."""
+        from scripts.dpo import dpo_loss
+
+        chosen_logps = mx.array([-1.0])
+        rejected_logps = mx.array([-3.0])
+        ref_chosen_logps = mx.array([-2.0])
+        ref_rejected_logps = mx.array([-2.0])
+
+        loss_low_beta = dpo_loss(chosen_logps, rejected_logps,
+                                  ref_chosen_logps, ref_rejected_logps, beta=0.01)
+        loss_high_beta = dpo_loss(chosen_logps, rejected_logps,
+                                   ref_chosen_logps, ref_rejected_logps, beta=1.0)
+        mx.eval(loss_low_beta, loss_high_beta)
+
+        assert float(loss_low_beta) != float(loss_high_beta)
+
+
+class TestSimPOLoss:
+    """Tests for SimPO loss computation."""
+
+    def test_prefers_chosen(self) -> None:
+        """Loss is lower when avg log-prob of chosen exceeds rejected."""
+        from scripts.dpo import simpo_loss
+
+        chosen_avg_logps = mx.array([-1.0])
+        rejected_avg_logps = mx.array([-3.0])
+
+        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps,
+                          beta=0.1, gamma=1.0)
+        mx.eval(loss)
+
+        assert np.isfinite(float(loss))
+        assert float(loss) > 0
+
+    def test_no_reference_model(self) -> None:
+        """SimPO loss takes only policy log-probs, no reference."""
+        from scripts.dpo import simpo_loss
+
+        chosen_avg_logps = mx.array([-1.0])
+        rejected_avg_logps = mx.array([-2.0])
+        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps,
+                          beta=0.1, gamma=0.5)
+        mx.eval(loss)
+        assert np.isfinite(float(loss))

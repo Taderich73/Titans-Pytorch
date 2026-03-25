@@ -179,3 +179,55 @@ def compute_logprobs(
     if mask is not None:
         token_log_probs = token_log_probs * mask[:, 1:]
     return token_log_probs
+
+
+# =============================================================================
+# Loss Functions
+# =============================================================================
+
+
+def dpo_loss(
+    chosen_logps: mx.array,
+    rejected_logps: mx.array,
+    ref_chosen_logps: mx.array,
+    ref_rejected_logps: mx.array,
+    beta: float = 0.1,
+) -> mx.array:
+    """Standard DPO loss (Rafailov et al.).
+
+    Args:
+        chosen_logps: Sum of per-token log-probs for chosen, (batch,).
+        rejected_logps: Sum of per-token log-probs for rejected, (batch,).
+        ref_chosen_logps: Reference model log-probs for chosen, (batch,).
+        ref_rejected_logps: Reference model log-probs for rejected, (batch,).
+        beta: KL penalty strength.
+
+    Returns:
+        Scalar loss.
+    """
+    log_ratio_chosen = chosen_logps - ref_chosen_logps
+    log_ratio_rejected = rejected_logps - ref_rejected_logps
+    logits = beta * (log_ratio_chosen - log_ratio_rejected)
+    # Numerically stable log-sigmoid: log(sigmoid(x)) = x - softplus(x)
+    return -mx.mean(logits - mx.logaddexp(mx.zeros_like(logits), logits))
+
+
+def simpo_loss(
+    chosen_avg_logps: mx.array,
+    rejected_avg_logps: mx.array,
+    beta: float = 0.1,
+    gamma: float = 1.0,
+) -> mx.array:
+    """SimPO loss (reference-free, length-normalized).
+
+    Args:
+        chosen_avg_logps: Mean per-token log-prob for chosen, (batch,).
+        rejected_avg_logps: Mean per-token log-prob for rejected, (batch,).
+        beta: Scaling factor.
+        gamma: Reward margin.
+
+    Returns:
+        Scalar loss.
+    """
+    logits = beta * (chosen_avg_logps - rejected_avg_logps - gamma)
+    return -mx.mean(logits - mx.logaddexp(mx.zeros_like(logits), logits))
