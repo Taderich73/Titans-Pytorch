@@ -3,7 +3,7 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-289%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-322%20passed-brightgreen.svg)](tests/)
 
 A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory and **Attention Residuals (AttnRes)** as composable, independent features.
 
@@ -31,6 +31,8 @@ Both TNT and AttnRes are **independent flags** that work with any block type (MA
 - [Pretraining](#pretraining)
 - [Supervised Fine-Tuning (SFT)](#supervised-fine-tuning-sft)
 - [LoRA Fine-Tuning](#lora-fine-tuning)
+- [DPO (Direct Preference Optimization)](#dpo-direct-preference-optimization)
+- [RLVR (Reinforcement Learning with Verifiable Rewards)](#rlvr-reinforcement-learning-with-verifiable-rewards)
 - [Inference](#inference)
 - [Configuration Reference](#configuration-reference)
 - [API Reference](#api-reference)
@@ -417,6 +419,115 @@ All SFT and model architecture flags are also supported.
 
 ---
 
+## DPO (Direct Preference Optimization)
+
+Align a model using preference pairs — chosen vs rejected responses. Supports standard DPO (with reference model) and SimPO (reference-free).
+
+```bash
+# DPO with LoRA (recommended — base model serves as reference, single model in memory)
+uv run python scripts/dpo.py --model mac \
+    --resume checkpoints/sft_model \
+    --dataset allenai/Dolci-Instruct-DPO \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --method dpo --beta 0.1 \
+    --lora --lora-targets attn,ffn
+
+# SimPO (no reference model needed)
+uv run python scripts/dpo.py --model mac \
+    --resume checkpoints/sft_model \
+    --dataset allenai/Dolci-Instruct-DPO \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --method simpo --beta 0.1 --gamma 1.0
+```
+
+**Methods:**
+- **Standard DPO** — Rafailov et al. Uses a reference model to compute KL-constrained preference loss. With `--lora`, the frozen base model automatically serves as the reference (no extra memory).
+- **SimPO** — Reference-free. Uses length-normalized average log-probabilities with a reward margin. Half the memory of standard DPO in full-parameter mode.
+
+**LoRA-as-reference trick**: When using `--lora` with standard DPO, the base model (without LoRA adapters) acts as the reference model. A `set_lora_enabled()` toggle computes reference log-probs without loading a second model copy — making DPO practical on memory-constrained Apple Silicon.
+
+### DPO Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--method` | `dpo` | `dpo` or `simpo` |
+| `--beta` | `0.1` | KL penalty / scaling strength |
+| `--gamma` | `1.0` | SimPO reward margin |
+| `--lora` | `False` | Enable LoRA (base model = reference) |
+| `--lora-rank` | `8` | LoRA rank |
+| `--lora-alpha` | `16` | LoRA scaling |
+| `--lora-targets` | `attn,ffn` | Target layers |
+| `--max-len` | `2048` | Max sequence length |
+| `--lr` | `5e-7` | Learning rate (lower than SFT) |
+| `--chosen-field` | `chosen` | Dataset field for preferred responses |
+| `--rejected-field` | `rejected` | Dataset field for rejected responses |
+
+All model architecture flags are supported (`--use-tnt`, `--use-attn-res`, etc.).
+
+---
+
+## RLVR (Reinforcement Learning with Verifiable Rewards)
+
+Train with reward signals from deterministic verifiers — no learned reward model needed. Supports GRPO (group relative policy optimization) and REINFORCE with EMA baseline.
+
+```bash
+# GRPO with offline rollouts (pre-computed)
+uv run python scripts/rlvr.py --model mac \
+    --resume checkpoints/sft_model \
+    --dataset allenai/Dolci-Think-RL-7B \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --mode offline --method grpo
+
+# REINFORCE with live generation + verification
+uv run python scripts/rlvr.py --model mac \
+    --resume checkpoints/sft_model \
+    --dataset my/prompts-dataset \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --mode live --method reinforce \
+    --verifier exact_match --num-rollouts 4
+
+# Custom verifier function
+uv run python scripts/rlvr.py --model mac \
+    --resume checkpoints/sft_model \
+    --dataset my/prompts-dataset \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --mode live --verifier path/to/verifier.py:my_function
+```
+
+**Methods:**
+- **GRPO** — Group Relative Policy Optimization (per DeepSeekMath). Uses clipped importance ratios and group-relative baselines. No value model needed — baselines are estimated from the rollout group. Requires >= 2 rollouts per prompt.
+- **REINFORCE** — Single-sample policy gradient with exponential moving average baseline. Lower compute cost, works with `--num-rollouts 1`.
+
+**Operating Modes:**
+- **Offline** — Uses pre-computed rollouts from the dataset (e.g., `allenai/Dolci-Think-RL-7B` with `prompt`, `ground_truth`, and `outputs` fields). Faster iteration, no generation overhead.
+- **Live** — Generates fresh rollouts at training time using temperature sampling, then scores them with a verifier function against `ground_truth`. More flexible but slower.
+
+**Built-in Verifiers:**
+- `exact_match` — Case-insensitive, whitespace-stripped string comparison
+- `numeric_match` — Extracts the last number from the response, compares within tolerance
+
+**Custom verifiers** via `--verifier path/to/module.py:function_name`. The function must have signature `(response: str, ground_truth: list[str]) -> float` returning a reward in [0, 1].
+
+### RLVR Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode` | `offline` | `offline` or `live` |
+| `--method` | `grpo` | `grpo` or `reinforce` |
+| `--num-rollouts` | `8` | Rollouts per prompt |
+| `--epsilon` | `0.2` | GRPO clipping range |
+| `--kl-beta` | `0.0` | KL penalty (0 = disabled) |
+| `--ema-decay` | `0.99` | REINFORCE baseline decay |
+| `--verifier` | `exact_match` | Verifier name or path:function |
+| `--temperature` | `0.7` | Generation temperature (live mode) |
+| `--max-new-tokens` | `2048` | Generation cap (live mode) |
+| `--lr` | `1e-6` | Learning rate |
+| `--max-steps` | `5000` | Training steps |
+
+All model architecture and LoRA flags are supported.
+
+---
+
 ## Inference
 
 ```bash
@@ -560,9 +671,11 @@ titans-tnt-mlx/
 |   +-- pretrain.py         # Pretraining on raw text
 |   +-- sft.py              # Supervised fine-tuning (chat data)
 |   +-- lora.py             # LoRA fine-tuning (adapters)
+|   +-- dpo.py              # DPO / SimPO preference optimization
+|   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 289 tests
++-- tests/                  # 322 tests
 ```
 
 ### Running Tests
