@@ -3,7 +3,7 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-284%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-289%20passed-brightgreen.svg)](tests/)
 
 A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory and **Attention Residuals (AttnRes)** as composable, independent features.
 
@@ -418,6 +418,7 @@ All SFT and model architecture flags are also supported.
 ## Inference
 
 ```bash
+# Generate from pretrained model
 uv run python scripts/inference.py \
     --checkpoint checkpoints/best_model.safetensors \
     --prompt "Once upon a time" \
@@ -427,7 +428,32 @@ uv run python scripts/inference.py \
 uv run python scripts/inference.py \
     --checkpoint checkpoints/best_model.safetensors \
     --interactive
+
+# Chat mode with SFT model (auto-detected from checkpoint)
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/sft_model.safetensors \
+    --interactive --stream
+
+# Force chat mode on/off
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/model.safetensors \
+    --interactive --chat
+
+# Inference with LoRA adapters
+uv run python scripts/inference.py \
+    --adapters checkpoints/final_adapters \
+    --interactive --stream
+
+# LoRA with different base checkpoint
+uv run python scripts/inference.py \
+    --adapters checkpoints/final_adapters \
+    --checkpoint checkpoints/different_base.safetensors \
+    --interactive
 ```
+
+**Chat mode** is auto-detected from checkpoint metadata. SFT and LoRA checkpoints save `chat_template: "chatml"`, which enables ChatML formatting automatically. Override with `--chat` or `--no-chat`.
+
+**LoRA adapters** are loaded via `--adapters`, which reads the adapter metadata to reconstruct the model. Use `--checkpoint` alongside `--adapters` to override the base model path.
 
 ---
 
@@ -534,7 +560,7 @@ titans-tnt-mlx/
 |   +-- lora.py             # LoRA fine-tuning (adapters)
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 284 tests
++-- tests/                  # 289 tests
 ```
 
 ### Running Tests
