@@ -3,7 +3,7 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-322%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-354%20passed-brightgreen.svg)](tests/)
 
 A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory and **Attention Residuals (AttnRes)** as composable, independent features.
 
@@ -564,6 +564,16 @@ uv run python scripts/inference.py \
     --interactive
 ```
 
+**Memory state quantization** reduces the memory footprint of the persistent state (weights + momentum) carried between chunks. Uses 4-bit weights and mixed-precision momentum (float16 for linear memory, 8-bit for deep memory). Saves 60-75% of state memory with minimal retrieval distortion.
+
+```bash
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/best_model.safetensors \
+    --quantize-memory-state \
+    --memory-state-bits 4 \
+    --interactive
+```
+
 **Chat mode** is auto-detected from checkpoint metadata. SFT and LoRA checkpoints save `chat_template: "chatml"`, which enables ChatML formatting automatically. Override with `--chat` or `--no-chat`.
 
 **LoRA adapters** are loaded via `--adapters`, which reads the adapter metadata to reconstruct the model. Use `--checkpoint` alongside `--adapters` to override the base model path.
@@ -602,6 +612,10 @@ uv run python scripts/inference.py \
 | `attnres_warmup_steps` | 0 | Steps before memory gating activates |
 | `attnres_modulate_global_memory` | True | Gate global memory LR |
 | `attnres_modulate_local_memory` | False | Gate local memory LR |
+| **Memory State Quantization** |
+| `quantize_memory_state` | False | Enable state quantization (inference) |
+| `memory_state_weight_bits` | 4 | Bit-width for weights/Q-K projections |
+| `memory_state_momentum_bits` | 8 | Bit-width for momentum (deep memory) |
 
 ---
 
@@ -644,6 +658,14 @@ from titans_mlx import (
     load_memory_states,
     save_tnt_memory_states,
     load_tnt_memory_states,
+
+    # Memory State Quantization
+    QuantizedTensor,
+    QuantizedMemoryState,
+    quantize_tensor,
+    quantize_memory_state,
+    get_weights,
+    get_momentum,
 )
 ```
 
@@ -664,6 +686,7 @@ titans-tnt-mlx/
 |   +-- attention.py        # SegmentedAttention, SlidingWindowAttention
 |   +-- persistent.py       # PersistentMemory
 |   +-- qk_projection.py    # QKProjection
+|   +-- quantize_state.py   # QuantizedTensor, QuantizedMemoryState
 |   +-- optimizations.py
 |   +-- metal_kernels.py
 |
@@ -675,7 +698,7 @@ titans-tnt-mlx/
 |   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 322 tests
++-- tests/                  # 354 tests
 ```
 
 ### Running Tests
