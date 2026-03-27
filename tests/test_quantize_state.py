@@ -523,3 +523,207 @@ class TestQuantizedSerialization:
         mx.eval(result)
 
         assert result.shape == (1, 4, 32)
+
+
+class TestRetrievalDistortion:
+    """Validate that quantization doesn't meaningfully distort retrieval."""
+
+    def test_retrieval_cosine_similarity_linear(self) -> None:
+        """4-bit quantized linear memory retrieval has high cosine similarity to original."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=64, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=False,
+        )
+        mem = NeuralLongTermMemory(config)
+
+        # Build up a state with some content
+        x = mx.random.normal((1, 16, 64))
+        mx.eval(x)
+        _, full_state = mem(x)
+        mx.eval(full_state.weights[0])
+
+        # Quantize the state
+        from titans_mlx.quantize_state import quantize_memory_state
+
+        qstate = quantize_memory_state(full_state, weight_bits=4, momentum_bits=None)
+
+        # Compare retrieval outputs across many queries
+        queries = mx.random.normal((1, 100, 64))
+        mx.eval(queries)
+
+        out_full = mem.retrieve(queries, full_state)
+        out_quant = mem.retrieve(queries, qstate)
+        mx.eval(out_full, out_quant)
+
+        # Cosine similarity per query
+        dot = mx.sum(out_full * out_quant, axis=-1)
+        norm_full = mx.sqrt(mx.sum(out_full ** 2, axis=-1) + 1e-8)
+        norm_quant = mx.sqrt(mx.sum(out_quant ** 2, axis=-1) + 1e-8)
+        cosine = dot / (norm_full * norm_quant)
+        mx.eval(cosine)
+
+        mean_cosine = mx.mean(cosine).item()
+        print(f"\nLinear memory mean cosine similarity: {mean_cosine:.6f}")
+        assert mean_cosine > 0.97, f"Mean cosine similarity too low: {mean_cosine}"
+
+    def test_retrieval_cosine_similarity_deep(self) -> None:
+        """4-bit quantized deep memory retrieval has high cosine similarity."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
+            use_conv=False, quantize_memory_state=False,
+        )
+        mem = NeuralLongTermMemory(config)
+
+        x = mx.random.normal((1, 16, 64))
+        mx.eval(x)
+        _, full_state = mem(x)
+        mx.eval(*full_state.weights)
+
+        from titans_mlx.quantize_state import quantize_memory_state
+
+        qstate = quantize_memory_state(full_state, weight_bits=4, momentum_bits=8)
+
+        queries = mx.random.normal((1, 100, 64))
+        mx.eval(queries)
+
+        out_full = mem.retrieve(queries, full_state)
+        out_quant = mem.retrieve(queries, qstate)
+        mx.eval(out_full, out_quant)
+
+        dot = mx.sum(out_full * out_quant, axis=-1)
+        norm_full = mx.sqrt(mx.sum(out_full ** 2, axis=-1) + 1e-8)
+        norm_quant = mx.sqrt(mx.sum(out_quant ** 2, axis=-1) + 1e-8)
+        cosine = dot / (norm_full * norm_quant)
+        mx.eval(cosine)
+
+        mean_cosine = mx.mean(cosine).item()
+        print(f"\nDeep memory mean cosine similarity: {mean_cosine:.6f}")
+        assert mean_cosine > 0.97, f"Mean cosine similarity too low: {mean_cosine}"
+
+
+class TestMomentumStability:
+    """Validate that quantized momentum doesn't diverge over many chunks."""
+
+    def test_linear_memory_stability_50_chunks(self) -> None:
+        """Linear memory with float16 momentum stays close to f32 baseline over 50 chunks."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        # Full-precision baseline
+        config_fp = TitansConfig(
+            dim=64, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=False,
+        )
+        mem_fp = NeuralLongTermMemory(config_fp)
+
+        # Quantized
+        config_q = TitansConfig(
+            dim=64, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        mem_q = NeuralLongTermMemory(config_q)
+
+        # Copy weights so both models are identical
+        mem_q.proj_k.weight = mem_fp.proj_k.weight
+        mem_q.proj_v.weight = mem_fp.proj_v.weight
+        mem_q.proj_q.weight = mem_fp.proj_q.weight
+        mem_q.proj_out.weight = mem_fp.proj_out.weight
+        mem_q.memory.layers[0].weight = mem_fp.memory.layers[0].weight
+        mem_q.gate_decay_proj.weight = mem_fp.gate_decay_proj.weight
+        mem_q.gate_decay_proj.bias = mem_fp.gate_decay_proj.bias
+        mem_q.gate_lr_proj.weight = mem_fp.gate_lr_proj.weight
+        mem_q.gate_lr_proj.bias = mem_fp.gate_lr_proj.bias
+        mem_q.gate_momentum_proj.weight = mem_fp.gate_momentum_proj.weight
+        mem_q.gate_momentum_proj.bias = mem_fp.gate_momentum_proj.bias
+
+        state_fp = None
+        state_q = None
+
+        for chunk in range(50):
+            x = mx.random.normal((1, 8, 64))
+            mx.eval(x)
+            _, state_fp = mem_fp(x, state=state_fp)
+            _, state_q = mem_q(x, state=state_q)
+            mx.eval(state_fp.weights[0], state_fp.momentum[0])
+
+        # Compare final weights
+        from titans_mlx.quantize_state import get_weights
+
+        w_fp = state_fp.weights[0]
+        w_q = get_weights(state_q)[0]
+        mx.eval(w_fp, w_q)
+
+        # Relative error
+        diff = mx.mean(mx.abs(w_fp - w_q)).item()
+        baseline = mx.mean(mx.abs(w_fp)).item()
+        relative_error = diff / (baseline + 1e-8)
+
+        print(f"\nLinear memory relative_error after 50 chunks: {relative_error:.4f}")
+        # float16 momentum should keep relative error small after 50 chunks
+        assert relative_error < 0.2, (
+            f"Linear memory diverged too much after 50 chunks: "
+            f"relative_error={relative_error:.4f}"
+        )
+
+    def test_deep_memory_stability_50_chunks(self) -> None:
+        """Deep memory with 8-bit momentum stays close to f32 baseline over 50 chunks."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config_fp = TitansConfig(
+            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
+            use_conv=False, quantize_memory_state=False,
+        )
+        mem_fp = NeuralLongTermMemory(config_fp)
+
+        config_q = TitansConfig(
+            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
+            use_conv=False, quantize_memory_state=True,
+            memory_state_weight_bits=4, memory_state_momentum_bits=8,
+        )
+        mem_q = NeuralLongTermMemory(config_q)
+
+        # Copy all weights
+        for attr in ("proj_k", "proj_v", "proj_q", "proj_out"):
+            getattr(mem_q, attr).weight = getattr(mem_fp, attr).weight
+        for gate in ("gate_decay_proj", "gate_lr_proj", "gate_momentum_proj"):
+            getattr(mem_q, gate).weight = getattr(mem_fp, gate).weight
+            getattr(mem_q, gate).bias = getattr(mem_fp, gate).bias
+        for j, layer in enumerate(mem_fp.memory.layers):
+            mem_q.memory.layers[j].weight = layer.weight
+
+        state_fp = None
+        state_q = None
+
+        for chunk in range(50):
+            x = mx.random.normal((1, 8, 64))
+            mx.eval(x)
+            _, state_fp = mem_fp(x, state=state_fp)
+            _, state_q = mem_q(x, state=state_q)
+            mx.eval(*state_fp.weights, *state_fp.momentum)
+
+        from titans_mlx.quantize_state import get_weights
+
+        w_fp = state_fp.weights[0]
+        w_q = get_weights(state_q)[0]
+        mx.eval(w_fp, w_q)
+
+        diff = mx.mean(mx.abs(w_fp - w_q)).item()
+        baseline = mx.mean(mx.abs(w_fp)).item()
+        relative_error = diff / (baseline + 1e-8)
+
+        print(f"\nDeep memory relative_error after 50 chunks: {relative_error:.4f}")
+        assert relative_error < 0.2, (
+            f"Deep memory diverged too much after 50 chunks: "
+            f"relative_error={relative_error:.4f}"
+        )
