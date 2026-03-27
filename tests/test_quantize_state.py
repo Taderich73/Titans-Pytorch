@@ -293,3 +293,117 @@ class TestStateAccessors:
 
         assert len(result) == 2
         assert all(r.dtype == mx.float32 for r in result)
+
+
+class TestNeuralLongTermMemoryQuantization:
+    """Tests for quantization integration in NeuralLongTermMemory."""
+
+    def test_quantized_state_returned_when_enabled(self) -> None:
+        """With quantize_memory_state=True, __call__ returns QuantizedMemoryState."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory, MemoryState
+
+        config = TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        mem = NeuralLongTermMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        output, state = mem(x)
+        mx.eval(output)
+
+        from titans_mlx.quantize_state import QuantizedMemoryState
+
+        assert isinstance(state, QuantizedMemoryState)
+
+    def test_unquantized_state_when_disabled(self) -> None:
+        """With quantize_memory_state=False, __call__ returns MemoryState."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory, MemoryState
+
+        config = TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=False,
+        )
+        mem = NeuralLongTermMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        output, state = mem(x)
+        mx.eval(output)
+
+        assert isinstance(state, MemoryState)
+
+    def test_retrieve_works_with_quantized_state(self) -> None:
+        """retrieve() works with a QuantizedMemoryState."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        mem = NeuralLongTermMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        _, state = mem(x)
+        queries = mx.random.normal((1, 4, 32))
+        mx.eval(queries)
+
+        result = mem.retrieve(queries, state)
+        mx.eval(result)
+
+        assert result.shape == (1, 4, 32)
+
+    def test_chained_updates_with_quantized_state(self) -> None:
+        """Multiple forward passes chaining quantized state work without error."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=32, num_memory_layers=1, use_conv=False,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        mem = NeuralLongTermMemory(config)
+
+        state = None
+        for _ in range(5):
+            x = mx.random.normal((1, 8, 32))
+            mx.eval(x)
+            output, state = mem(x, state=state)
+            mx.eval(output)
+
+        from titans_mlx.quantize_state import QuantizedMemoryState
+
+        assert isinstance(state, QuantizedMemoryState)
+
+    def test_deep_memory_quantized_state(self) -> None:
+        """Deep memory (L=2) returns QuantizedMemoryState with 8-bit momentum."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=32, num_memory_layers=2, memory_hidden_mult=2.0,
+            use_conv=False, quantize_memory_state=True,
+            memory_state_weight_bits=4, memory_state_momentum_bits=8,
+        )
+        mem = NeuralLongTermMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        output, state = mem(x)
+        mx.eval(output)
+
+        from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor
+
+        assert isinstance(state, QuantizedMemoryState)
+        assert all(isinstance(w, QuantizedTensor) and w.bits == 4 for w in state.weights)
+        assert all(isinstance(m, QuantizedTensor) and m.bits == 8 for m in state.momentum)

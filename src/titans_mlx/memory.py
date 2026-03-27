@@ -516,6 +516,11 @@ class NeuralLongTermMemory(nn.Module):
         # Initialize
         self._init_weights()
 
+        # Memory state quantization config
+        self.quantize_state = config.quantize_memory_state
+        self.state_weight_bits = config.memory_state_weight_bits
+        self.state_momentum_bits = config.memory_state_momentum_bits
+
     def _init_weights(self) -> None:
         """Initialize weights."""
         for module in [self.proj_k, self.proj_v, self.proj_q, self.proj_out]:
@@ -714,6 +719,11 @@ class NeuralLongTermMemory(nn.Module):
         if state is None:
             state = self.init_state(batch_size)
 
+        # Dequantize incoming state if quantized
+        from titans_mlx.quantize_state import QuantizedMemoryState  # lazy to avoid circular import
+        if isinstance(state, QuantizedMemoryState):
+            state = state.dequantize()
+
         # Project to keys, values, queries
         k = self.proj_k(x)
         v = self.proj_v(x)
@@ -784,13 +794,22 @@ class NeuralLongTermMemory(nn.Module):
         # Output projection
         output = self.proj_out(retrieved)
 
-        if return_keys:
-            if return_state:
-                return output, new_state.detach(), k
-            return output, None, k
-
         if return_state:
-            return output, new_state.detach()
+            detached = new_state.detach()
+            if self.quantize_state:
+                from titans_mlx.quantize_state import quantize_memory_state  # lazy to avoid circular import
+                is_linear = len(detached.weights) == 1
+                detached = quantize_memory_state(
+                    detached,
+                    weight_bits=self.state_weight_bits,
+                    momentum_bits=None if is_linear else self.state_momentum_bits,
+                )
+            if return_keys:
+                return output, detached, k
+            return output, detached
+
+        if return_keys:
+            return output, None, k
         return output, None
 
     def _parallel_memory_update_linear(
@@ -957,5 +976,7 @@ class NeuralLongTermMemory(nn.Module):
         )
 
         # Retrieve using explicit state weights (no module mutation)
-        retrieved = self.memory.forward_with_weights(q, state.weights)
+        from titans_mlx.quantize_state import QuantizedMemoryState, get_weights  # lazy to avoid circular import
+        weights = get_weights(state) if isinstance(state, QuantizedMemoryState) else state.weights
+        retrieved = self.memory.forward_with_weights(q, weights)
         return self.proj_out(retrieved)
