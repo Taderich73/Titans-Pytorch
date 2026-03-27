@@ -407,3 +407,59 @@ class TestNeuralLongTermMemoryQuantization:
         assert isinstance(state, QuantizedMemoryState)
         assert all(isinstance(w, QuantizedTensor) and w.bits == 4 for w in state.weights)
         assert all(isinstance(m, QuantizedTensor) and m.bits == 8 for m in state.momentum)
+
+
+class TestHierarchicalMemoryQuantization:
+    """Tests for Q-K projection quantization in HierarchicalMemory."""
+
+    def test_qk_projections_quantized_when_enabled(self) -> None:
+        """Q-K projections are QuantizedTensors when quantization is on."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.tnt_memory import HierarchicalMemory
+
+        config = TitansConfig(
+            dim=32, num_heads=2, num_layers=1, num_memory_layers=1,
+            use_conv=False, use_rope=False, use_tnt=True,
+            global_chunk_size=16, local_chunk_sizes=[4],
+            local_shard_length=64, use_qk_projection=True,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        hmem = HierarchicalMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        output, state = hmem(x)
+        mx.eval(output)
+
+        from titans_mlx.quantize_state import QuantizedTensor
+
+        # Q-K projections should be quantized
+        assert len(state.qk_projections) == 1
+        assert isinstance(state.qk_projections[0], QuantizedTensor)
+
+    def test_retrieve_works_with_quantized_qk(self) -> None:
+        """Retrieval works when Q-K projections are quantized."""
+        mx.random.seed(42)
+        from titans_mlx.config import TitansConfig
+        from titans_mlx.tnt_memory import HierarchicalMemory
+
+        config = TitansConfig(
+            dim=32, num_heads=2, num_layers=1, num_memory_layers=1,
+            use_conv=False, use_rope=False, use_tnt=True,
+            global_chunk_size=16, local_chunk_sizes=[4],
+            local_shard_length=64, use_qk_projection=True,
+            quantize_memory_state=True, memory_state_weight_bits=4,
+        )
+        hmem = HierarchicalMemory(config)
+        x = mx.random.normal((1, 8, 32))
+        mx.eval(x)
+
+        _, state = hmem(x)
+        queries = mx.random.normal((1, 4, 32))
+        mx.eval(queries)
+
+        result = hmem.retrieve(queries, state)
+        mx.eval(result)
+
+        assert result.shape == (1, 4, 32)

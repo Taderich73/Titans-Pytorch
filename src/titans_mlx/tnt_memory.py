@@ -33,6 +33,7 @@ import mlx.nn as nn
 from titans_mlx.config import TitansConfig
 from titans_mlx.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans_mlx.qk_projection import QKProjection
+from titans_mlx.quantize_state import QuantizedTensor, quantize_tensor
 
 
 class GlobalMemory(nn.Module):
@@ -337,6 +338,13 @@ class HierarchicalMemory(nn.Module):
 
             new_step_counters.append(counter + seq_len)
 
+        # Quantize Q-K projections if enabled
+        if self.config.quantize_memory_state:
+            new_qk_projections = [
+                quantize_tensor(qk, bits=self.config.memory_state_weight_bits)
+                for qk in new_qk_projections
+            ]
+
         new_state = TNTMemoryState(
             global_state=new_global_state,
             local_states=new_local_states,
@@ -379,7 +387,9 @@ class HierarchicalMemory(nn.Module):
                 # Build per-position projection from carry-over state
                 # For retrieval, we use the accumulated projection matrix
                 # as a single transform (not per-position cumsum)
-                proj_matrix = state.qk_projections[i]  # (D, D)
+                proj_matrix = state.qk_projections[i]
+                if isinstance(proj_matrix, QuantizedTensor):
+                    proj_matrix = proj_matrix.dequantize()
                 # Apply projection: q' = M_t · q
                 projected_q = queries @ proj_matrix.T  # (B, S, D)
             else:
