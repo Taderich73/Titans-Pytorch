@@ -839,8 +839,8 @@ def generate_streaming(
     # Encode prompt
     if hasattr(tokenizer, "__call__"):
         if HAS_TRANSFORMERS and not isinstance(tokenizer, SimpleTokenizer):
-            encoded = tokenizer(prompt, return_tensors="pt")
-            input_ids = mx.array(encoded["input_ids"].numpy())
+            encoded = tokenizer(prompt, return_tensors="np")
+            input_ids = mx.array(encoded["input_ids"])
         else:
             encoded = tokenizer(prompt, return_tensors="mlx")
             input_ids = encoded["input_ids"]
@@ -882,8 +882,8 @@ def benchmark_generation(
     """Benchmark generation speed."""
     # Encode prompt
     if HAS_TRANSFORMERS and not isinstance(tokenizer, SimpleTokenizer):
-        encoded = tokenizer(prompt, return_tensors="pt")
-        input_ids = mx.array(encoded["input_ids"].numpy())
+        encoded = tokenizer(prompt, return_tensors="np")
+        input_ids = mx.array(encoded["input_ids"])
     else:
         encoded = tokenizer(prompt, return_tensors="mlx")
         input_ids = encoded["input_ids"]
@@ -987,6 +987,19 @@ def main() -> None:
         default=None,
         help="Quantization bits (4 or 8)",
     )
+    parser.add_argument(
+        "--quantize-memory-state",
+        action="store_true",
+        default=False,
+        help="Enable memory state quantization for reduced memory usage",
+    )
+    parser.add_argument(
+        "--memory-state-bits",
+        type=int,
+        choices=[4, 8],
+        default=4,
+        help="Bit-width for memory state weight quantization (default: 4)",
+    )
 
     # Memory persistence arguments
     parser.add_argument(
@@ -1017,6 +1030,11 @@ def main() -> None:
         )
     else:
         parser.error("Either --checkpoint or --adapters is required")
+
+    if args.quantize_memory_state:
+        config.quantize_memory_state = True
+        config.memory_state_weight_bits = args.memory_state_bits
+        config.memory_state_momentum_bits = min(args.memory_state_bits * 2, 8)
 
     # Load tokenizer (prefer command line, fallback to saved, then simple)
     tokenizer_name = args.tokenizer or saved_tokenizer
@@ -1129,8 +1147,8 @@ def main() -> None:
                 else:
                     # Normal generation
                     if HAS_TRANSFORMERS and not isinstance(tokenizer, SimpleTokenizer):
-                        encoded = tokenizer(gen_prompt, return_tensors="pt")
-                        input_ids = mx.array(encoded["input_ids"].numpy())
+                        encoded = tokenizer(gen_prompt, return_tensors="np")
+                        input_ids = mx.array(encoded["input_ids"])
                     else:
                         encoded = tokenizer(gen_prompt, return_tensors="mlx")
                         input_ids = encoded["input_ids"]
@@ -1181,8 +1199,8 @@ def main() -> None:
         eos_id = im_end_id or getattr(tokenizer, "eos_token_id", None)
 
         if HAS_TRANSFORMERS and not isinstance(tokenizer, SimpleTokenizer):
-            encoded = tokenizer(gen_prompt, return_tensors="pt")
-            input_ids = mx.array(encoded["input_ids"].numpy())
+            encoded = tokenizer(gen_prompt, return_tensors="np")
+            input_ids = mx.array(encoded["input_ids"])
         else:
             encoded = tokenizer(gen_prompt, return_tensors="mlx")
             input_ids = encoded["input_ids"]

@@ -68,6 +68,14 @@ from titans_mlx.metal_kernels import (
     MetalRMSNorm,
     MetalRotaryEmbedding,
 )
+from titans_mlx.quantize_state import (
+    QuantizedMemoryState,
+    QuantizedTensor,
+    get_momentum,
+    get_weights,
+    quantize_memory_state,
+    quantize_tensor,
+)
 
 __version__ = "0.1.0"
 __all__ = [
@@ -127,4 +135,11 @@ __all__ = [
     "MetalFeedForward",
     "MetalRMSNorm",
     "MetalRotaryEmbedding",
+    # Memory State Quantization
+    "QuantizedTensor",
+    "QuantizedMemoryState",
+    "quantize_tensor",
+    "quantize_memory_state",
+    "get_weights",
+    "get_momentum",
 ]
