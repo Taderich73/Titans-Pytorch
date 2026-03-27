@@ -438,6 +438,66 @@ class TestHierarchicalMemoryQuantization:
         assert len(state.qk_projections) == 1
         assert isinstance(state.qk_projections[0], QuantizedTensor)
 
+class TestQuantizedSerialization:
+    """Tests for saving/loading quantized memory states."""
+
+    def test_save_load_quantized_state(self) -> None:
+        """Quantized state round-trips through save/load."""
+        import tempfile
+        from pathlib import Path
+
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState, save_memory_states, load_memory_states
+
+        state = MemoryState(
+            weights=[mx.random.normal((32, 32))],
+            momentum=[mx.random.normal((32, 32))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        from titans_mlx.quantize_state import quantize_memory_state
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "memory.npz"
+            save_memory_states([qstate], path)
+            loaded = load_memory_states(path)
+
+        assert len(loaded) == 1
+        from titans_mlx.quantize_state import QuantizedMemoryState
+
+        assert isinstance(loaded[0], QuantizedMemoryState)
+
+        # Dequantize and check shapes
+        restored = loaded[0].dequantize()
+        assert restored.weights[0].shape == (32, 32)
+        assert restored.momentum[0].shape == (32, 32)
+
+    def test_save_load_unquantized_backward_compat(self) -> None:
+        """Unquantized save/load still works (backward compatibility)."""
+        import tempfile
+        from pathlib import Path
+
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState, save_memory_states, load_memory_states
+
+        state = MemoryState(
+            weights=[mx.random.normal((32, 32))],
+            momentum=[mx.random.normal((32, 32))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "memory.npz"
+            save_memory_states([state], path)
+            loaded = load_memory_states(path)
+
+        assert len(loaded) == 1
+        assert isinstance(loaded[0], MemoryState)
+        assert loaded[0].weights[0].shape == (32, 32)
+
+
     def test_retrieve_works_with_quantized_qk(self) -> None:
         """Retrieval works when Q-K projections are quantized."""
         mx.random.seed(42)

@@ -141,40 +141,73 @@ class TNTMemoryState:
         )
 
 
-def save_memory_states(states: list[MemoryState], path: Path) -> None:
+def save_memory_states(states: list, path: Path) -> None:
     """Serialize memory states from all layers to a single .npz file.
 
+    Accepts both MemoryState and QuantizedMemoryState instances.
     Naming scheme: layer_{i}_weight_{j}, layer_{i}_momentum_{j}.
-    Includes metadata for validation on load.
+    For quantized states, additional _data/_scale/_zp/_shape/_bits keys
+    are stored alongside a top-level ``quantized`` flag.
 
     Args:
-        states: List of MemoryState, one per model layer.
+        states: List of MemoryState or QuantizedMemoryState, one per model layer.
         path: Output file path (will be saved as .npz).
     """
+    from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor  # noqa: PLC0415
+
     arrays: dict[str, np.ndarray] = {}
     arrays["num_layers"] = np.array([len(states)])
 
+    has_quantized = any(isinstance(s, QuantizedMemoryState) for s in states)
+    if has_quantized:
+        arrays["quantized"] = np.array([1])
+
     for i, state in enumerate(states):
         arrays[f"num_memory_layers_{i}"] = np.array([len(state.weights)])
-        for j, w in enumerate(state.weights):
-            arrays[f"layer_{i}_weight_{j}"] = np.array(w)
-        for j, m in enumerate(state.momentum):
-            arrays[f"layer_{i}_momentum_{j}"] = np.array(m)
+
+        if isinstance(state, QuantizedMemoryState):
+            arrays[f"layer_{i}_quantized"] = np.array([1])
+            for j, w in enumerate(state.weights):
+                # weights are always QuantizedTensor in QuantizedMemoryState
+                arrays[f"layer_{i}_weight_{j}_data"] = np.array(w.data)
+                arrays[f"layer_{i}_weight_{j}_scale"] = np.array(w.scale)
+                arrays[f"layer_{i}_weight_{j}_zp"] = np.array(w.zero_point)
+                arrays[f"layer_{i}_weight_{j}_shape"] = np.array(w.original_shape)
+                arrays[f"layer_{i}_weight_{j}_bits"] = np.array([w.bits])
+            for j, m in enumerate(state.momentum):
+                if isinstance(m, QuantizedTensor):
+                    arrays[f"layer_{i}_momentum_{j}_quantized"] = np.array([1])
+                    arrays[f"layer_{i}_momentum_{j}_data"] = np.array(m.data)
+                    arrays[f"layer_{i}_momentum_{j}_scale"] = np.array(m.scale)
+                    arrays[f"layer_{i}_momentum_{j}_zp"] = np.array(m.zero_point)
+                    arrays[f"layer_{i}_momentum_{j}_shape"] = np.array(m.original_shape)
+                    arrays[f"layer_{i}_momentum_{j}_bits"] = np.array([m.bits])
+                else:
+                    # float16 mx.array (linear memory path)
+                    arrays[f"layer_{i}_momentum_{j}_quantized"] = np.array([0])
+                    arrays[f"layer_{i}_momentum_{j}"] = np.array(m)
+        else:
+            for j, w in enumerate(state.weights):
+                arrays[f"layer_{i}_weight_{j}"] = np.array(w)
+            for j, m in enumerate(state.momentum):
+                arrays[f"layer_{i}_momentum_{j}"] = np.array(m)
 
     path = Path(path)
     np.savez(path, **arrays)
 
 
-def load_memory_states(path: Path) -> list[MemoryState]:
+def load_memory_states(path: Path) -> list:
     """Deserialize memory states from a .npz file.
 
-    Validates structure and returns list of MemoryState ready to pass to model.
+    Validates structure and returns list of MemoryState or QuantizedMemoryState
+    ready to pass to model. Detects quantized files via a top-level ``quantized``
+    flag; files without it are loaded as plain MemoryState for backward compatibility.
 
     Args:
         path: Path to .npz file saved by save_memory_states.
 
     Returns:
-        List of MemoryState, one per model layer.
+        List of MemoryState or QuantizedMemoryState, one per model layer.
 
     Raises:
         FileNotFoundError: If path does not exist.
@@ -193,27 +226,82 @@ def load_memory_states(path: Path) -> list[MemoryState]:
         raise ValueError(f"Invalid memory state file: missing 'num_layers' metadata")
 
     num_layers = int(data["num_layers"][0])
-    states: list[MemoryState] = []
+    is_quantized_file = "quantized" in data and int(data["quantized"][0]) == 1
 
-    for i in range(num_layers):
-        key = f"num_memory_layers_{i}"
-        if key not in data:
-            raise ValueError(f"Invalid memory state file: missing '{key}'")
-        num_memory_layers = int(data[key][0])
+    states: list = []
 
-        weights: list[mx.array] = []
-        momentum: list[mx.array] = []
-        for j in range(num_memory_layers):
-            wk = f"layer_{i}_weight_{j}"
-            mk = f"layer_{i}_momentum_{j}"
-            if wk not in data:
-                raise ValueError(f"Invalid memory state file: missing '{wk}'")
-            if mk not in data:
-                raise ValueError(f"Invalid memory state file: missing '{mk}'")
-            weights.append(mx.array(data[wk]))
-            momentum.append(mx.array(data[mk]))
+    if is_quantized_file:
+        from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor  # noqa: PLC0415
 
-        states.append(MemoryState(weights=weights, momentum=momentum))
+        for i in range(num_layers):
+            key = f"num_memory_layers_{i}"
+            if key not in data:
+                raise ValueError(f"Invalid memory state file: missing '{key}'")
+            num_memory_layers = int(data[key][0])
+            layer_is_quantized = (
+                f"layer_{i}_quantized" in data
+                and int(data[f"layer_{i}_quantized"][0]) == 1
+            )
+
+            if layer_is_quantized:
+                weights: list = []
+                momentum: list = []
+                for j in range(num_memory_layers):
+                    w = QuantizedTensor(
+                        data=mx.array(data[f"layer_{i}_weight_{j}_data"]),
+                        scale=mx.array(data[f"layer_{i}_weight_{j}_scale"]),
+                        zero_point=mx.array(data[f"layer_{i}_weight_{j}_zp"]),
+                        original_shape=tuple(int(x) for x in data[f"layer_{i}_weight_{j}_shape"]),
+                        bits=int(data[f"layer_{i}_weight_{j}_bits"][0]),
+                    )
+                    weights.append(w)
+
+                    mom_quantized_key = f"layer_{i}_momentum_{j}_quantized"
+                    mom_is_quantized = (
+                        mom_quantized_key in data
+                        and int(data[mom_quantized_key][0]) == 1
+                    )
+                    if mom_is_quantized:
+                        m: QuantizedTensor | mx.array = QuantizedTensor(
+                            data=mx.array(data[f"layer_{i}_momentum_{j}_data"]),
+                            scale=mx.array(data[f"layer_{i}_momentum_{j}_scale"]),
+                            zero_point=mx.array(data[f"layer_{i}_momentum_{j}_zp"]),
+                            original_shape=tuple(int(x) for x in data[f"layer_{i}_momentum_{j}_shape"]),
+                            bits=int(data[f"layer_{i}_momentum_{j}_bits"][0]),
+                        )
+                    else:
+                        m = mx.array(data[f"layer_{i}_momentum_{j}"])
+                    momentum.append(m)
+
+                states.append(QuantizedMemoryState(weights=weights, momentum=momentum))
+            else:
+                # Quantized file but this layer stored as plain arrays
+                plain_weights: list[mx.array] = []
+                plain_momentum: list[mx.array] = []
+                for j in range(num_memory_layers):
+                    plain_weights.append(mx.array(data[f"layer_{i}_weight_{j}"]))
+                    plain_momentum.append(mx.array(data[f"layer_{i}_momentum_{j}"]))
+                states.append(MemoryState(weights=plain_weights, momentum=plain_momentum))
+    else:
+        for i in range(num_layers):
+            key = f"num_memory_layers_{i}"
+            if key not in data:
+                raise ValueError(f"Invalid memory state file: missing '{key}'")
+            num_memory_layers = int(data[key][0])
+
+            plain_weights_compat: list[mx.array] = []
+            plain_momentum_compat: list[mx.array] = []
+            for j in range(num_memory_layers):
+                wk = f"layer_{i}_weight_{j}"
+                mk = f"layer_{i}_momentum_{j}"
+                if wk not in data:
+                    raise ValueError(f"Invalid memory state file: missing '{wk}'")
+                if mk not in data:
+                    raise ValueError(f"Invalid memory state file: missing '{mk}'")
+                plain_weights_compat.append(mx.array(data[wk]))
+                plain_momentum_compat.append(mx.array(data[mk]))
+
+            states.append(MemoryState(weights=plain_weights_compat, momentum=plain_momentum_compat))
 
     return states
 
