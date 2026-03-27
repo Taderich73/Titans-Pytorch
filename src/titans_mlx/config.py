@@ -88,6 +88,11 @@ class TitansConfig:
     attnres_modulate_global_memory: bool = True
     attnres_modulate_local_memory: bool = False
 
+    # Memory state quantization (inference only)
+    quantize_memory_state: bool = False
+    memory_state_weight_bits: int = 4
+    memory_state_momentum_bits: int = 8
+
     # Training
     dropout: float = 0.0
     activation: str = "silu"
@@ -170,6 +175,9 @@ class TitansConfig:
             "attnres_warmup_steps": self.attnres_warmup_steps,
             "attnres_modulate_global_memory": self.attnres_modulate_global_memory,
             "attnres_modulate_local_memory": self.attnres_modulate_local_memory,
+            "quantize_memory_state": self.quantize_memory_state,
+            "memory_state_weight_bits": self.memory_state_weight_bits,
+            "memory_state_momentum_bits": self.memory_state_momentum_bits,
             "dropout": self.dropout,
             "activation": self.activation,
             "init_std": self.init_std,

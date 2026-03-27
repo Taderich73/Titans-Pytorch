@@ -113,3 +113,29 @@ def test_attnres_sub_layer_block_size_default():
     )
     # 12 * 2 / 8 = 3
     assert config.attnres_sub_layer_block_size == 3
+
+
+class TestMemoryStateQuantizationConfig:
+    """Tests for memory state quantization config fields."""
+
+    def test_defaults(self) -> None:
+        """Memory state quantization is off by default."""
+        config = TitansConfig()
+        assert config.quantize_memory_state is False
+        assert config.memory_state_weight_bits == 4
+        assert config.memory_state_momentum_bits == 8
+
+    def test_to_dict_includes_fields(self) -> None:
+        """to_dict includes memory state quantization fields."""
+        config = TitansConfig(quantize_memory_state=True, memory_state_weight_bits=8)
+        d = config.to_dict()
+        assert d["quantize_memory_state"] is True
+        assert d["memory_state_weight_bits"] == 8
+        assert d["memory_state_momentum_bits"] == 8
+
+    def test_from_dict_round_trip(self) -> None:
+        """from_dict restores memory state quantization fields."""
+        config = TitansConfig(quantize_memory_state=True, memory_state_weight_bits=8)
+        restored = TitansConfig.from_dict(config.to_dict())
+        assert restored.quantize_memory_state is True
+        assert restored.memory_state_weight_bits == 8
