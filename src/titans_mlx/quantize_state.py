@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 
+from titans_mlx.memory import MemoryState
+
 
 @dataclass
 class QuantizedTensor:
@@ -115,3 +117,97 @@ def _unpack_4bit(
         numel *= s
     interleaved = interleaved[:numel]
     return (interleaved * scale + zero_point).reshape(original_shape)
+
+
+@dataclass
+class QuantizedMemoryState:
+    """Memory state with quantized tensors.
+
+    Mirrors MemoryState but stores weights as QuantizedTensors and
+    momentum as either QuantizedTensor (deep memory) or float16 mx.array
+    (linear memory, where momentum math is numerically sensitive).
+    """
+
+    weights: list[QuantizedTensor]
+    momentum: list[QuantizedTensor | mx.array]
+
+    def dequantize(self) -> MemoryState:
+        """Full dequantization back to MemoryState."""
+        dq_weights = [w.dequantize() for w in self.weights]
+        dq_momentum = [
+            m.dequantize() if isinstance(m, QuantizedTensor) else m.astype(mx.float32)
+            for m in self.momentum
+        ]
+        return MemoryState(weights=dq_weights, momentum=dq_momentum)
+
+    def detach(self) -> QuantizedMemoryState:
+        """Interface compatibility with MemoryState.detach()."""
+        new_weights = [
+            QuantizedTensor(
+                data=mx.stop_gradient(w.data),
+                scale=mx.stop_gradient(w.scale),
+                zero_point=mx.stop_gradient(w.zero_point),
+                original_shape=w.original_shape,
+                bits=w.bits,
+            )
+            for w in self.weights
+        ]
+        new_momentum = [
+            QuantizedTensor(
+                data=mx.stop_gradient(m.data),
+                scale=mx.stop_gradient(m.scale),
+                zero_point=mx.stop_gradient(m.zero_point),
+                original_shape=m.original_shape,
+                bits=m.bits,
+            )
+            if isinstance(m, QuantizedTensor)
+            else mx.stop_gradient(m)
+            for m in self.momentum
+        ]
+        return QuantizedMemoryState(weights=new_weights, momentum=new_momentum)
+
+
+def quantize_memory_state(
+    state: MemoryState,
+    weight_bits: int,
+    momentum_bits: int | None,
+) -> QuantizedMemoryState:
+    """Quantize a MemoryState.
+
+    Args:
+        state: Full-precision memory state to quantize.
+        weight_bits: Bit-width for weight matrices (4 or 8).
+        momentum_bits: Bit-width for momentum tensors (4 or 8), or None
+            to cast momentum to float16 (used for linear memory path
+            where momentum math is numerically sensitive).
+
+    Returns:
+        QuantizedMemoryState with quantized weights and momentum.
+    """
+    q_weights = [quantize_tensor(w, bits=weight_bits) for w in state.weights]
+
+    if momentum_bits is None:
+        q_momentum: list[QuantizedTensor | mx.array] = [
+            m.astype(mx.float16) for m in state.momentum
+        ]
+    else:
+        q_momentum = [quantize_tensor(m, bits=momentum_bits) for m in state.momentum]
+
+    return QuantizedMemoryState(weights=q_weights, momentum=q_momentum)
+
+
+def get_weights(state: MemoryState | QuantizedMemoryState) -> list[mx.array]:
+    """Extract dequantized weight matrices from either state type."""
+    if isinstance(state, QuantizedMemoryState):
+        return [w.dequantize() for w in state.weights]
+    return state.weights
+
+
+def get_momentum(state: MemoryState | QuantizedMemoryState) -> list[mx.array]:
+    """Extract dequantized momentum tensors from either state type."""
+    if isinstance(state, QuantizedMemoryState):
+        return [
+            m.dequantize() if isinstance(m, QuantizedTensor) else m.astype(mx.float32)
+            for m in state.momentum
+        ]
+    return state.momentum

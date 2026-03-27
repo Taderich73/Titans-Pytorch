@@ -113,3 +113,183 @@ class TestQuantizedTensor:
 
         with pytest.raises(ValueError, match="Unsupported bit-width"):
             quantize_tensor(original, bits=3)
+
+
+class TestQuantizedMemoryState:
+    """Tests for QuantizedMemoryState quantize/dequantize."""
+
+    def test_quantize_linear_memory_state(self) -> None:
+        """Linear memory (1 layer): weights quantized, momentum cast to float16."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((64, 64))],
+            momentum=[mx.random.normal((64, 64))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState, QuantizedTensor
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=None)
+
+        assert isinstance(qstate, QuantizedMemoryState)
+        assert isinstance(qstate.weights[0], QuantizedTensor)
+        assert qstate.weights[0].bits == 4
+        # Linear path: momentum is float16, not QuantizedTensor
+        assert isinstance(qstate.momentum[0], mx.array)
+        assert qstate.momentum[0].dtype == mx.float16
+
+    def test_quantize_deep_memory_state(self) -> None:
+        """Deep memory (2 layers): weights 4-bit, momentum 8-bit."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((64, 128)), mx.random.normal((128, 64))],
+            momentum=[mx.random.normal((64, 128)), mx.random.normal((128, 64))],
+        )
+        mx.eval(*state.weights, *state.momentum)
+
+        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState, QuantizedTensor
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=8)
+
+        assert isinstance(qstate, QuantizedMemoryState)
+        assert len(qstate.weights) == 2
+        assert all(isinstance(w, QuantizedTensor) for w in qstate.weights)
+        assert all(w.bits == 4 for w in qstate.weights)
+        assert len(qstate.momentum) == 2
+        assert all(isinstance(m, QuantizedTensor) for m in qstate.momentum)
+        assert all(m.bits == 8 for m in qstate.momentum)
+
+    def test_dequantize_round_trip(self) -> None:
+        """QuantizedMemoryState.dequantize() returns MemoryState with correct shapes."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((64, 64))],
+            momentum=[mx.random.normal((64, 64))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        from titans_mlx.quantize_state import quantize_memory_state
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=None)
+        restored = qstate.dequantize()
+
+        assert isinstance(restored, MemoryState)
+        assert restored.weights[0].shape == (64, 64)
+        assert restored.weights[0].dtype == mx.float32
+        assert restored.momentum[0].shape == (64, 64)
+        assert restored.momentum[0].dtype == mx.float32
+
+    def test_detach_interface(self) -> None:
+        """QuantizedMemoryState.detach() returns QuantizedMemoryState."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((32, 32))],
+            momentum=[mx.random.normal((32, 32))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState
+
+        qstate = quantize_memory_state(state, weight_bits=8, momentum_bits=None)
+        detached = qstate.detach()
+
+        assert isinstance(detached, QuantizedMemoryState)
+
+
+class TestStateAccessors:
+    """Tests for get_weights / get_momentum helpers."""
+
+    def test_get_weights_from_memory_state(self) -> None:
+        """get_weights passes through MemoryState weights unchanged."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        w = mx.random.normal((32, 32))
+        mx.eval(w)
+        state = MemoryState(weights=[w], momentum=[mx.zeros_like(w)])
+
+        from titans_mlx.quantize_state import get_weights
+
+        result = get_weights(state)
+        assert len(result) == 1
+        assert mx.array_equal(result[0], w)
+
+    def test_get_weights_from_quantized_state(self) -> None:
+        """get_weights dequantizes QuantizedMemoryState weights."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        w = mx.random.normal((32, 32))
+        mx.eval(w)
+        state = MemoryState(weights=[w], momentum=[mx.zeros_like(w)])
+
+        from titans_mlx.quantize_state import get_weights, quantize_memory_state
+
+        qstate = quantize_memory_state(state, weight_bits=8, momentum_bits=None)
+        result = get_weights(qstate)
+
+        assert len(result) == 1
+        assert result[0].shape == (32, 32)
+        assert result[0].dtype == mx.float32
+
+    def test_get_momentum_from_memory_state(self) -> None:
+        """get_momentum passes through MemoryState momentum unchanged."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        m = mx.random.normal((32, 32))
+        mx.eval(m)
+        state = MemoryState(weights=[mx.zeros_like(m)], momentum=[m])
+
+        from titans_mlx.quantize_state import get_momentum
+
+        result = get_momentum(state)
+        assert len(result) == 1
+        assert mx.array_equal(result[0], m)
+
+    def test_get_momentum_from_quantized_float16(self) -> None:
+        """get_momentum casts float16 momentum back to float32."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((32, 32))],
+            momentum=[mx.random.normal((32, 32))],
+        )
+        mx.eval(state.weights[0], state.momentum[0])
+
+        from titans_mlx.quantize_state import get_momentum, quantize_memory_state
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=None)
+        result = get_momentum(qstate)
+
+        assert len(result) == 1
+        assert result[0].dtype == mx.float32
+        assert result[0].shape == (32, 32)
+
+    def test_get_momentum_from_quantized_8bit(self) -> None:
+        """get_momentum dequantizes 8-bit QuantizedTensor momentum."""
+        mx.random.seed(42)
+        from titans_mlx.memory import MemoryState
+
+        state = MemoryState(
+            weights=[mx.random.normal((32, 64)), mx.random.normal((64, 32))],
+            momentum=[mx.random.normal((32, 64)), mx.random.normal((64, 32))],
+        )
+        mx.eval(*state.weights, *state.momentum)
+
+        from titans_mlx.quantize_state import get_momentum, quantize_memory_state
+
+        qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=8)
+        result = get_momentum(qstate)
+
+        assert len(result) == 2
+        assert all(r.dtype == mx.float32 for r in result)
