@@ -3,20 +3,21 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-354%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-403%20passed-brightgreen.svg)](tests/)
 
-A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory and **Attention Residuals (AttnRes)** as composable, independent features.
+A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, and **Memory State Persistence** as composable, independent features.
 
-Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution.
+Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Memory State Persistence** enables dumping, loading, forking, and merging memory states across sessions for inference-time continual learning.
 
-Both TNT and AttnRes are **independent flags** that work with any block type (MAC, MAG, MAL):
+TNT, AttnRes, and MCA are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
 
-| Flags | Memory | Residuals |
-|-------|--------|-----------|
-| (default) | Single NeuralLongTermMemory | Standard |
-| `--use-tnt` | Hierarchical (global + local) | Standard |
-| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes |
-| `--use-tnt --use-attn-res` | Hierarchical (global + local) | AttnRes |
+| Flags | Memory | Residuals | Memory Read |
+|-------|--------|-----------|-------------|
+| (default) | Single NeuralLongTermMemory | Standard | MLP only |
+| `--use-tnt` | Hierarchical (global + local) | Standard | MLP only |
+| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes | MLP only |
+| `--use-mca` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention |
+| `--use-tnt --use-attn-res --use-mca` | Hierarchical (global + local) | AttnRes | MLP + Cross-Attention |
 
 ---
 
@@ -26,6 +27,8 @@ Both TNT and AttnRes are **independent flags** that work with any block type (MA
 - [Architecture Overview](#architecture-overview)
 - [TNT: Hierarchical Memory](#tnt-hierarchical-memory)
 - [Attention Residuals (AttnRes)](#attention-residuals-attnres)
+- [Memory Cross-Attention (MCA)](#memory-cross-attention-mca)
+- [Memory State Persistence](#memory-state-persistence)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
@@ -75,7 +78,7 @@ Titans are designed around a memory perspective inspired by human cognition:
 | **Long-context** | Best | Good | Baseline | Good |
 | **Training Speed** | Medium | Fast | Fastest | Fast |
 
-All three variants (MAC, MAG, MAL) support both `--use-tnt` and `--use-attn-res` independently.
+All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `--use-mca` independently. LMM supports `--use-tnt` but not `--use-attn-res` or `--use-mca` (it has no attention mechanism).
 
 ### Neural Long-term Memory
 
@@ -94,9 +97,10 @@ Where alpha_t (decay), eta_t (momentum), theta_t (learning rate) are all data-de
 
 ### Sub-layer Architecture
 
-Each block exposes two sub-layers for composability:
+Each block exposes sub-layers for composability:
 
 - **`core_forward(h, state, memory_gate)`** — attention + memory update + gating
+- **`mca_forward(h, mem_state)`** — cross-attention to memory weight rows (at MCA insertion layers)
 - **`ffn_forward(h)`** — feed-forward network
 
 The orchestrator decides how to connect them — standard residuals or AttnRes. Blocks are agnostic to which is used.
@@ -214,6 +218,82 @@ uv run python scripts/pretrain.py --model mac \
 
 ---
 
+## Memory Cross-Attention (MCA)
+
+MCA adds cross-attention to NeuralLongTermMemory's weight matrix rows at configurable insertion layers. This gives the model a second read interface into the same memory that's already being written to by the surprise-driven update mechanism.
+
+| | MLP Retrieval (existing) | Cross-Attention (MCA) |
+|---|---|---|
+| Operation | `output = MLP(query)` | `softmax(Q @ K^T) @ V` |
+| Nature | Nonlinear function of query | Linear blend of memory directions |
+| What it captures | Precise key-value lookup | Soft discovery of relevant associations |
+
+Key properties:
+- **Reads from existing memory** — no new state, no separate memory bank
+- **Gated** — sigmoid gate initialized near-zero (-3.0 bias), so MCA has no effect until the gate learns to open
+- **Configurable insertion** — defaults to midpoint layer, supports explicit multi-layer placement
+- **AttnRes integration** — MCA becomes a third sub-layer in the AttnRes framework when both are enabled
+
+Enable with `--use-mca`. Works with MAC, MAG, MAL (not LMM — stays pure memory):
+
+```python
+from titans_mlx import TitansConfig, TitansMAC
+
+config = TitansConfig(
+    dim=512, num_heads=8, num_layers=12, vocab_size=32000,
+    chunk_size=512,
+    use_mca=True,
+    mca_num_heads=8,
+    # mca_insertion_layers=[6],  # auto = [num_layers // 2]
+)
+model = TitansMAC(config)
+```
+
+---
+
+## Memory State Persistence
+
+The `MemoryDumpManager` provides serialization, inspection, and management of NeuralLTM memory states. This enables inference-time continual learning across sessions without modifying model weights.
+
+```python
+from titans_mlx import TitansConfig, TitansMAC, MemoryDumpManager
+
+config = TitansConfig(dim=512, num_heads=8, num_layers=6, vocab_size=32000)
+model = TitansMAC(config)
+mgr = MemoryDumpManager(config)
+
+# Process some data — memory learns
+logits, states = model(input_ids)
+
+# Dump memory state to disk
+dump_path = mgr.dump(states, step_count=100, description="after legal corpus")
+
+# Later: load into a fresh session
+restored_states = mgr.load(dump_path)
+logits, states = model(new_input_ids, states=restored_states)
+```
+
+### Operations
+
+| Operation | Description |
+|-----------|-------------|
+| `dump(states)` | Serialize memory states to timestamped directory (.npz + metadata) |
+| `load(path)` | Restore memory states (strict=True validates dimensions) |
+| `inspect(path)` | Per-layer weight norms, momentum norms, metadata |
+| `diff(path_a, path_b)` | Per-layer Frobenius distance between two dumps |
+| `merge(paths, strategy)` | Combine multiple dumps (weighted_mean, max_norm, recency) |
+| `reset(states, layers)` | Zero out weights/momentum (all or specific layers) |
+| `fork(states)` | Snapshot current state without altering live state |
+
+### Use Cases
+
+- **Session continuity** — dump at end of session, load at start of next
+- **Domain adaptation** — process a specialized corpus, dump the resulting memory state, load it for domain-specific inference
+- **Memory forking** — fork before processing uncertain data, revert if the domain shift was too aggressive
+- **Memory merging** — combine memory states from multiple processing runs
+
+---
+
 ## Installation
 
 ```bash
@@ -296,6 +376,10 @@ uv run python scripts/pretrain.py --model mac \
 | `--attnres-warmup-steps` | `0` | Steps before memory gating activates |
 | `--attnres-modulate-global` | `True` | Gate global memory LR |
 | `--attnres-modulate-local` | `False` | Gate local memory LR |
+| **MCA** |
+| `--use-mca` | `False` | Enable Memory Cross-Attention |
+| `--mca-num-heads` | `8` | MCA attention heads |
+| `--mca-insertion-layers` | auto | Insertion layers (default: midpoint) |
 | **Data** |
 | `--dataset` | - | HuggingFace dataset name (streaming) |
 | `--dataset-subset` | - | Dataset subset |
@@ -616,6 +700,17 @@ uv run python scripts/inference.py \
 | `quantize_memory_state` | False | Enable state quantization (inference) |
 | `memory_state_weight_bits` | 4 | Bit-width for weights/Q-K projections |
 | `memory_state_momentum_bits` | 8 | Bit-width for momentum (deep memory) |
+| **Memory Cross-Attention** |
+| `use_mca` | False | Enable MCA at insertion layers |
+| `mca_insertion_layers` | None | Insertion layers (None = auto midpoint) |
+| `mca_num_heads` | 8 | Cross-attention heads |
+| `mca_gate_type` | "scalar" | Gate type: "scalar" or "vector" |
+| `mca_gate_bias_init` | -3.0 | Gate bias init (sigmoid(-3) ~ 0.05) |
+| **Memory Dump** |
+| `mca_auto_dump` | False | Enable automatic memory dumps |
+| `mca_dump_trigger` | "session_end" | Trigger: session_end, every_n, surprise_threshold |
+| `mca_dump_path` | "./memory_dumps/" | Dump output directory |
+| `mca_dump_keep_last_n` | 10 | Number of dumps to retain |
 
 ---
 
@@ -653,11 +748,15 @@ from titans_mlx import (
     SegmentedAttention,
     PersistentMemory,
 
+    # Memory Cross-Attention
+    MemoryCrossAttention,
+
     # State Persistence
     save_memory_states,
     load_memory_states,
     save_tnt_memory_states,
     load_tnt_memory_states,
+    MemoryDumpManager,
 
     # Memory State Quantization
     QuantizedTensor,
@@ -686,6 +785,8 @@ titans-tnt-mlx/
 |   +-- attention.py        # SegmentedAttention, SlidingWindowAttention
 |   +-- persistent.py       # PersistentMemory
 |   +-- qk_projection.py    # QKProjection
+|   +-- mca.py              # MemoryCrossAttention
+|   +-- memory_dump.py      # MemoryDumpManager (dump/load/inspect/diff/merge/fork)
 |   +-- quantize_state.py   # QuantizedTensor, QuantizedMemoryState
 |   +-- optimizations.py
 |   +-- metal_kernels.py
@@ -698,7 +799,7 @@ titans-tnt-mlx/
 |   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 354 tests
++-- tests/                  # 403 tests
 ```
 
 ### Running Tests

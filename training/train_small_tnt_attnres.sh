@@ -6,13 +6,13 @@
 # Effective batch: 32,768 tokens (batch=2 * accum=16 * seq=1024)
 uv run --extra train python scripts/pretrain.py --model mac \
   --dataset HuggingFaceFW/fineweb-edu \
-  --dataset-subset sample-10BT \
+  --dataset-subset sample-350BT \
   --tokenizer NousResearch/Llama-2-7b-hf \
-  --dim 512 --num-layers 12 --num-heads 8 \
+  --dim 768 --num-layers 16 --num-heads 16 \
   --batch-size 2 --gradient-accumulation-steps 16 \
   --seq-len 2048 --chunk-size 512 \
   --max-steps 10000 \
-  --lr 4e-4 \
+  --lr 3e-4 \
   --eval-every 200 --eval-buffer-size 100 \
   --save-every 200 \
   --log-every 10 \
@@ -23,5 +23,6 @@ uv run --extra train python scripts/pretrain.py --model mac \
   --global-chunk-size 2048 \
   --use-attn-res \
   --num-attnres-blocks 4 \
-  --attnres-warmup-steps 200 \
+  --attnres-warmup-steps 100 \
+  --resume checkpoints/small-tnt-attnres/best_model.safetensors \
   --checkpoint-dir checkpoints/small-tnt-attnres
