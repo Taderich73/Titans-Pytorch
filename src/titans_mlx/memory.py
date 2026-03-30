@@ -31,6 +31,10 @@ import numpy as np
 
 from titans_mlx.config import TitansConfig
 
+# Numerical stability constants (implementation details, not tunable)
+_L2_NORM_EPS: float = 1e-8
+_DEGENERATE_THRESHOLD: float = 1e-6
+
 
 def get_activation(name: str) -> Callable[[mx.array], mx.array]:
     """Get activation function by name."""
@@ -635,7 +639,7 @@ class NeuralLongTermMemory(nn.Module):
         # in a chunk = (1-α)^S.  For chunk_size=512:
         #   sigmoid(-6) ≈ 0.0025 → retention ≈ 0.28 per chunk (current default)
         #   sigmoid( 0) ≈ 0.5    → retention ≈ 0     (catastrophic forgetting)
-        self.gate_decay_proj.bias = mx.array([-6.0])
+        self.gate_decay_proj.bias = mx.array([self.config.gate_decay_bias_init])
         # LR gate (θ): sigmoid(0)*memory_lr = 0.5*0.1 = 0.05  — reasonable, no change
         # Momentum gate (η): sigmoid(0)*momentum = 0.5*0.9 = 0.45 — reasonable, no change
 
@@ -849,10 +853,10 @@ class NeuralLongTermMemory(nn.Module):
         q_f32 = q.astype(mx.float32)
         k_f32 = k.astype(mx.float32)
         q = (
-            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)
+            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(q.dtype)
         k = (
-            k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)
+            k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(k.dtype)
 
         # Retrieve from memory using explicit state weights (no module mutation)
@@ -985,11 +989,11 @@ class NeuralLongTermMemory(nn.Module):
         # Safe denominator for geometric series (decay - η)
         diff = decay - eta
         abs_diff = mx.abs(diff)
-        is_degenerate = abs_diff < 1e-6
+        is_degenerate = abs_diff < _DEGENERATE_THRESHOLD
         safe_diff = mx.where(
             is_degenerate,
             mx.array(1.0),
-            mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff),
+            mx.maximum(abs_diff, mx.array(_L2_NORM_EPS)) * mx.sign(diff),
         )
 
         # --- New momentum: S_S = η^S · S_prev - θ · Σ η^{S-1-i} · u_i ---
@@ -1088,7 +1092,7 @@ class NeuralLongTermMemory(nn.Module):
         # L2-norm in float32 to avoid bfloat16 underflow
         q_f32 = q.astype(mx.float32)
         q = (
-            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)
+            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(q.dtype)
 
         # Retrieve using explicit state weights (no module mutation)

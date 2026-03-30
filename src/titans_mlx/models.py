@@ -38,7 +38,7 @@ def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
         if config.use_attn_res:
             from titans_mlx.attn_res import BlockAttnRes
 
-            block.attn_res_mca = BlockAttnRes(config.dim)
+            block.attn_res_mca = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
 
 
 def _mca_forward(block: nn.Module, h: mx.array, mem_state) -> mx.array:
@@ -277,8 +277,8 @@ class MACBlock(nn.Module):
         if config.use_attn_res:
             from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 
-            self.attn_res_core = BlockAttnRes(config.dim)
-            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_core = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
+            self.attn_res_ffn = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)
@@ -500,8 +500,8 @@ class MAGBlock(nn.Module):
         if config.use_attn_res:
             from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 
-            self.attn_res_core = BlockAttnRes(config.dim)
-            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_core = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
+            self.attn_res_ffn = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)
@@ -726,8 +726,8 @@ class MALBlock(nn.Module):
         if config.use_attn_res:
             from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 
-            self.attn_res_core = BlockAttnRes(config.dim)
-            self.attn_res_ffn = BlockAttnRes(config.dim)
+            self.attn_res_core = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
+            self.attn_res_ffn = BlockAttnRes(config.dim, logit_clip=config.attnres_logit_clip)
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)

@@ -100,6 +100,12 @@ class TitansConfig:
     mca_gate_type: str = "scalar"
     mca_gate_bias_init: float = -3.0
 
+    # Gate initialization
+    gate_decay_bias_init: float = -6.0  # sigmoid(-6) ~ 0.0025 retention
+
+    # AttnRes numerical stability
+    attnres_logit_clip: float = 30.0  # symmetric clip to +/- value before softmax
+
     # Memory dump
     mca_auto_dump: bool = False
     mca_dump_trigger: str = "session_end"
@@ -216,6 +222,8 @@ class TitansConfig:
             "mca_num_heads": self.mca_num_heads,
             "mca_gate_type": self.mca_gate_type,
             "mca_gate_bias_init": self.mca_gate_bias_init,
+            "gate_decay_bias_init": self.gate_decay_bias_init,
+            "attnres_logit_clip": self.attnres_logit_clip,
             "mca_auto_dump": self.mca_auto_dump,
             "mca_dump_trigger": self.mca_dump_trigger,
             "mca_dump_path": self.mca_dump_path,

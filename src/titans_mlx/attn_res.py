@@ -31,11 +31,13 @@ class BlockAttnRes(nn.Module):
 
     Args:
         dim: Model dimension
+        logit_clip: Symmetric bound for logit clamping before softmax (default 30.0)
     """
 
-    def __init__(self, dim: int) -> None:
+    def __init__(self, dim: int, logit_clip: float = 30.0) -> None:
         super().__init__()
         self.dim = dim
+        self.logit_clip = logit_clip
         self.attn_res_norm = nn.RMSNorm(dim)
         self.attn_res_proj = nn.Linear(dim, 1, bias=False)
         # Zero-init pseudo-query for uniform initial weights
@@ -88,7 +90,7 @@ class BlockAttnRes(nn.Module):
         logits = logits.squeeze(-1)  # (N, B, T)
 
         # Clamp logits to prevent exp() overflow in softmax
-        logits = mx.clip(logits, -30.0, 30.0)
+        logits = mx.clip(logits, -self.logit_clip, self.logit_clip)
 
         # Softmax over sources dimension (axis=0)
         attn_weights = mx.softmax(logits, axis=0)  # (N, B, T)
