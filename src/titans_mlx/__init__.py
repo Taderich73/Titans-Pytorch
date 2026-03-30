@@ -76,6 +76,8 @@ from titans_mlx.quantize_state import (
     quantize_memory_state,
     quantize_tensor,
 )
+from titans_mlx.mca import MemoryCrossAttention
+from titans_mlx.memory_dump import MemoryDumpManager
 
 __version__ = "0.1.0"
 __all__ = [
@@ -142,4 +144,8 @@ __all__ = [
     "quantize_memory_state",
     "get_weights",
     "get_momentum",
+    # Memory Cross-Attention
+    "MemoryCrossAttention",
+    # Memory Dump
+    "MemoryDumpManager",
 ]

@@ -214,3 +214,60 @@ class TestModelMCA:
         logits_off, _ = model_mca_off(input_ids)
         mx.eval(logits_base, logits_off)
         np.testing.assert_allclose(np.array(logits_base), np.array(logits_off), atol=1e-5)
+
+
+from titans_mlx.memory_dump import MemoryDumpManager
+
+
+class TestPersistenceE2E:
+    """End-to-end tests for state persistence across sessions."""
+
+    def test_dump_load_resume(self, tmp_path: Path) -> None:
+        """Dump states, load into fresh model, outputs match."""
+        config = _mca_config(mca_dump_path=str(tmp_path / "dumps"))
+        model = TitansMAC(config)
+        input_ids = mx.random.randint(0, 256, (2, 32))
+
+        logits_1, states_1 = model(input_ids)
+        mx.eval(logits_1)
+
+        mgr = MemoryDumpManager(config)
+        dump_path = mgr.dump(states_1, step_count=1)
+
+        loaded_states = mgr.load(dump_path)
+
+        logits_2, _ = model(input_ids, states=loaded_states)
+        mx.eval(logits_2)
+
+        logits_3, _ = model(input_ids, states=states_1)
+        mx.eval(logits_3)
+
+        np.testing.assert_allclose(
+            np.array(logits_2), np.array(logits_3), atol=1e-4
+        )
+
+    def test_fork_and_diverge(self, tmp_path: Path) -> None:
+        """Fork state, process different data, states diverge."""
+        config = _mca_config(mca_dump_path=str(tmp_path / "dumps"))
+        model = TitansMAC(config)
+
+        input_ids = mx.random.randint(0, 256, (2, 32))
+        _, states = model(input_ids)
+        mx.eval(*[w for s in states for w in s.weights + s.momentum])
+
+        mgr = MemoryDumpManager(config)
+        fork_path = mgr.fork(states, description="before diverge")
+
+        input_ids_a = mx.zeros((2, 32), dtype=mx.int32)
+        _, states_a = model(input_ids_a, states=states)
+        mx.eval(*[w for s in states_a for w in s.weights + s.momentum])
+
+        forked_states = mgr.load(fork_path)
+        input_ids_b = mx.ones((2, 32), dtype=mx.int32) * 200
+        _, states_b = model(input_ids_b, states=forked_states)
+        mx.eval(*[w for s in states_b for w in s.weights + s.momentum])
+
+        w_a = np.array(states_a[0].weights[0])
+        w_b = np.array(states_b[0].weights[0])
+        # Different inputs produce different weight updates — states must diverge
+        assert not np.array_equal(w_a, w_b)
