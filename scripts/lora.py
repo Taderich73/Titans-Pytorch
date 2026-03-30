@@ -121,6 +121,7 @@ class LoRALinear(nn.Module):
 # Recursive tree walk
 # ---------------------------------------------------------------------------
 
+
 def _recursive_find_linear(
     module: nn.Module,
     prefix: str = "",
@@ -189,9 +190,7 @@ def wrap_lora_layers(
 
     wrapped: list[str] = []
 
-    for full_path, attr_name, parent, linear in list(
-        _recursive_find_linear(model)
-    ):
+    for full_path, attr_name, parent, linear in list(_recursive_find_linear(model)):
         # Never wrap embed or head layers
         if "embed" in full_path or "head" in full_path:
             continue
@@ -232,6 +231,7 @@ def wrap_lora_layers(
 # ---------------------------------------------------------------------------
 # Find LoRA modules
 # ---------------------------------------------------------------------------
+
 
 def _find_lora_modules(
     model: nn.Module,
@@ -281,6 +281,7 @@ def set_lora_enabled(model: nn.Module, enabled: bool) -> None:
 # ---------------------------------------------------------------------------
 # Save / Load / Merge
 # ---------------------------------------------------------------------------
+
 
 def save_adapters(model: nn.Module, path: Path, meta: dict) -> None:
     """Save LoRA adapter weights and metadata.
@@ -335,12 +336,12 @@ def merge_lora_weights(model: nn.Module) -> None:
     After merging, each LoRALinear is replaced by a plain nn.Linear
     whose weight equals ``base.weight + (lora_A @ lora_B).T * scale``.
     """
-    for _full_path, attr_name, parent, child in list(
-        _recursive_find_lora(model)
-    ):
+    for _full_path, attr_name, parent, child in list(_recursive_find_lora(model)):
         lora_mod = child
         base = lora_mod.base
-        merged_weight = base.weight + (lora_mod.lora_A @ lora_mod.lora_B).T * lora_mod.scale
+        merged_weight = (
+            base.weight + (lora_mod.lora_A @ lora_mod.lora_B).T * lora_mod.scale
+        )
 
         new_linear = nn.Linear(
             input_dims=base.weight.shape[1],
@@ -449,9 +450,7 @@ def tokenize_chat(
     has_chat_template = getattr(tokenizer, "chat_template", None) is not None
 
     if has_chat_template:
-        input_ids: list[int] = tokenizer.apply_chat_template(
-            messages, tokenize=True
-        )
+        input_ids: list[int] = tokenizer.apply_chat_template(messages, tokenize=True)
     else:
         # Ensure ChatML special tokens are registered
         special_tokens = []
@@ -461,9 +460,7 @@ def tokenize_chat(
         if IM_END not in existing:
             special_tokens.append(IM_END)
         if special_tokens:
-            tokenizer.add_special_tokens(
-                {"additional_special_tokens": special_tokens}
-            )
+            tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
 
         formatted = format_chatml(messages)
         input_ids = tokenizer.encode(formatted)
@@ -500,9 +497,7 @@ def tokenize_chat(
             if role == "assistant":
                 span_end = min(content_end, len(input_ids))
                 if content_start < span_end:
-                    assistant_content_spans.append(
-                        (content_start, span_end)
-                    )
+                    assistant_content_spans.append((content_start, span_end))
                 if eos_pos < len(input_ids):
                     eos_positions.append(eos_pos)
 
@@ -512,9 +507,7 @@ def tokenize_chat(
         for message in messages:
             if message["role"] != "assistant":
                 continue
-            content_ids = tokenizer.encode(
-                message["content"], add_special_tokens=False
-            )
+            content_ids = tokenizer.encode(message["content"], add_special_tokens=False)
             clen = len(content_ids)
             for i in range(len(input_ids) - clen + 1):
                 if input_ids[i : i + clen] == content_ids:
@@ -595,7 +588,7 @@ class LoRAConfig:
     max_steps: int = -1
     batch_size: int = 4
     gradient_accumulation_steps: int = 8
-    lr: float = 1e-4          # Higher than SFT (2e-5)
+    lr: float = 1e-4  # Higher than SFT (2e-5)
     weight_decay: float = 0.01  # Lower than SFT (0.1)
     grad_clip: float = 1.0
     warmup_ratio: float = 0.03
@@ -715,15 +708,9 @@ class SFTStreamingDataset:
             seq_len = len(item["input_ids"])
             pad_len = max_seq - seq_len
 
-            input_ids_batch.append(
-                item["input_ids"] + [pad_id] * pad_len
-            )
-            labels_batch.append(
-                item["labels"] + [pad_id] * pad_len
-            )
-            mask_batch.append(
-                item["loss_mask"] + [0] * pad_len
-            )
+            input_ids_batch.append(item["input_ids"] + [pad_id] * pad_len)
+            labels_batch.append(item["labels"] + [pad_id] * pad_len)
+            mask_batch.append(item["loss_mask"] + [0] * pad_len)
 
         return {
             "input_ids": mx.array(np.array(input_ids_batch)),
@@ -1219,17 +1206,17 @@ def train(
             _eval_grads(grads, loss)
             micro_elapsed = time.time() - micro_start
 
-            pbar.set_postfix({
-                "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
-                "uloss": f"{float(loss):.4f}",
-                "utime": f"{micro_elapsed:.1f}s",
-            })
+            pbar.set_postfix(
+                {
+                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                    "uloss": f"{float(loss):.4f}",
+                    "utime": f"{micro_elapsed:.1f}s",
+                }
+            )
 
             loss_val = float(loss)
             if math.isnan(loss_val) or math.isinf(loss_val):
-                logger.warning(
-                    f"Skipping micro-step with invalid loss: {loss_val}"
-                )
+                logger.warning(f"Skipping micro-step with invalid loss: {loss_val}")
                 continue
 
             # Accumulate gradients
@@ -1245,19 +1232,13 @@ def train(
 
             # --- Optimizer step after full accumulation window ---
             if accumulation_step >= config.gradient_accumulation_steps:
-                scale = mx.array(
-                    1.0 / config.gradient_accumulation_steps
-                )
+                scale = mx.array(1.0 / config.gradient_accumulation_steps)
                 avg_grads = _tree_scale(accumulated_grads, scale)
 
-                lr = get_lr_schedule(
-                    global_step, total_steps, warmup_steps, config.lr
-                )
+                lr = get_lr_schedule(global_step, total_steps, warmup_steps, config.lr)
                 optimizer.learning_rate = lr
 
-                apply_gradients(
-                    model, optimizer, avg_grads, config.grad_clip
-                )
+                apply_gradients(model, optimizer, avg_grads, config.grad_clip)
 
                 global_step += 1
                 accumulation_step = 0
@@ -1265,10 +1246,7 @@ def train(
                 accumulation_loss = 0.0
 
                 # Periodic checkpoint
-                if (
-                    config.save_every > 0
-                    and global_step % config.save_every == 0
-                ):
+                if config.save_every > 0 and global_step % config.save_every == 0:
                     save_checkpoint(
                         model,
                         optimizer,
@@ -1318,9 +1296,7 @@ def train(
                     and global_step % config.eval_every == 0
                     and val_dataset is not None
                 ):
-                    val_metrics = evaluate(
-                        model, val_dataset, config.batch_size
-                    )
+                    val_metrics = evaluate(model, val_dataset, config.batch_size)
                     logger.info(
                         f"Step {global_step}: "
                         f"val_loss={val_metrics['val_loss']:.4f}, "
@@ -1329,10 +1305,7 @@ def train(
 
                     if config.wandb and HAS_WANDB:
                         wandb.log(
-                            {
-                                f"val/{k}": v
-                                for k, v in val_metrics.items()
-                            },
+                            {f"val/{k}": v for k, v in val_metrics.items()},
                             step=global_step,
                         )
 
@@ -1455,19 +1428,29 @@ def main() -> None:
         "--use-tnt", action="store_true", help="Enable TNT hierarchical memory"
     )
     parser.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16],
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
         help="Chunk sizes for local memories",
     )
     parser.add_argument(
-        "--local-shard-length", type=int, default=2048,
+        "--local-shard-length",
+        type=int,
+        default=2048,
         help="Local memory reset period (tokens)",
     )
     parser.add_argument(
-        "--global-chunk-size", type=int, default=2048,
+        "--global-chunk-size",
+        type=int,
+        default=2048,
         help="Global memory chunk size",
     )
     parser.add_argument(
-        "--tnt-stage", type=int, default=1, choices=[1, 2],
+        "--tnt-stage",
+        type=int,
+        default=1,
+        choices=[1, 2],
         help="TNT training stage (1=pretrain, 2=finetune)",
     )
 
@@ -1479,41 +1462,58 @@ def main() -> None:
         "--num-attnres-blocks", type=int, default=8, help="AttnRes block count"
     )
     parser.add_argument(
-        "--attnres-warmup-steps", type=int, default=0,
+        "--attnres-warmup-steps",
+        type=int,
+        default=0,
         help="Steps before AttnRes gating activates",
     )
     parser.add_argument(
-        "--attnres-modulate-global", action="store_true", default=True,
+        "--attnres-modulate-global",
+        action="store_true",
+        default=True,
         help="Gate global memory LR with AttnRes",
     )
     parser.add_argument(
-        "--no-attnres-modulate-global", dest="attnres_modulate_global",
+        "--no-attnres-modulate-global",
+        dest="attnres_modulate_global",
         action="store_false",
     )
     parser.add_argument(
-        "--attnres-modulate-local", action="store_true", default=False,
+        "--attnres-modulate-local",
+        action="store_true",
+        default=False,
         help="Gate local memory LR with AttnRes",
     )
 
     # LoRA specific
     parser.add_argument(
-        "--lora-rank", type=int, default=8,
+        "--lora-rank",
+        type=int,
+        default=8,
         help="LoRA rank (lower = fewer params, higher = more capacity)",
     )
     parser.add_argument(
-        "--lora-alpha", type=float, default=16.0,
+        "--lora-alpha",
+        type=float,
+        default=16.0,
         help="LoRA alpha scaling factor",
     )
     parser.add_argument(
-        "--lora-dropout", type=float, default=0.05,
+        "--lora-dropout",
+        type=float,
+        default=0.05,
         help="Dropout applied to LoRA input",
     )
     parser.add_argument(
-        "--lora-targets", type=str, default="attn",
+        "--lora-targets",
+        type=str,
+        default="attn",
         help="Target layer groups: attn, ffn, memory, all (comma-separated)",
     )
     parser.add_argument(
-        "--merge-and-save", type=str, default=None,
+        "--merge-and-save",
+        type=str,
+        default=None,
         help="After training, merge LoRA weights into base model and save to this path",
     )
 
@@ -1535,11 +1535,14 @@ def main() -> None:
     )
     parser.add_argument("--seq-len", type=int, default=2048, help="Sequence length")
     parser.add_argument(
-        "--messages-field", type=str, default="messages",
+        "--messages-field",
+        type=str,
+        default="messages",
         help="Field name for messages in dataset",
     )
     parser.add_argument(
-        "--train-on-all", action="store_true",
+        "--train-on-all",
+        action="store_true",
         help="Train on all tokens (not just assistant)",
     )
 
@@ -1579,7 +1582,9 @@ def main() -> None:
         help="HuggingFace dataset for evaluation",
     )
     parser.add_argument(
-        "--eval-split", type=str, default="train",
+        "--eval-split",
+        type=str,
+        default="train",
         help="Split for eval dataset",
     )
     parser.add_argument(
@@ -1763,8 +1768,10 @@ def main() -> None:
         config.lora_alpha,
         config.lora_dropout,
     )
-    logger.info(f"LoRA rank={config.lora_rank}, alpha={config.lora_alpha}, "
-                f"targets={config.lora_targets}")
+    logger.info(
+        f"LoRA rank={config.lora_rank}, alpha={config.lora_alpha}, "
+        f"targets={config.lora_targets}"
+    )
     logger.info(f"Wrapped {len(wrapped_paths)} layers with LoRA adapters")
 
     # Count trainable vs total params

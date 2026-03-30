@@ -68,8 +68,10 @@ def main() -> None:
     print("=" * 70)
     print("WEIGHT UPDATE DIAGNOSTIC")
     print("=" * 70)
-    print(f"Config: dim={config.dim}, layers={config.num_layers}, "
-          f"use_conv={config.use_conv}")
+    print(
+        f"Config: dim={config.dim}, layers={config.num_layers}, "
+        f"use_conv={config.use_conv}"
+    )
 
     model = TitansMAC(config)
     model.set_dtype(mx.bfloat16)
@@ -118,7 +120,7 @@ def main() -> None:
             g_f32 = g.astype(mx.float32)
             total_grad_norm += float(mx.sum(g_f32 * g_f32))
             total_nan += int(mx.sum(mx.isnan(g_f32)))
-        total_grad_norm = total_grad_norm ** 0.5
+        total_grad_norm = total_grad_norm**0.5
 
         # Clip and apply (same as training)
         clipped = {}
@@ -128,6 +130,7 @@ def main() -> None:
                 g = mx.clip(g, -10.0, 10.0)
                 clipped[k] = g
             elif isinstance(g, dict):
+
                 def sanitize_dict(d):
                     out = {}
                     for kk, vv in d.items():
@@ -137,12 +140,21 @@ def main() -> None:
                         elif isinstance(vv, dict):
                             vv = sanitize_dict(vv)
                         elif isinstance(vv, list):
-                            vv = [mx.where(mx.isnan(x), mx.zeros_like(x), x)
-                                  if isinstance(x, mx.array) else x for x in vv]
-                            vv = [mx.clip(x, -10.0, 10.0)
-                                  if isinstance(x, mx.array) else x for x in vv]
+                            vv = [
+                                mx.where(mx.isnan(x), mx.zeros_like(x), x)
+                                if isinstance(x, mx.array)
+                                else x
+                                for x in vv
+                            ]
+                            vv = [
+                                mx.clip(x, -10.0, 10.0)
+                                if isinstance(x, mx.array)
+                                else x
+                                for x in vv
+                            ]
                         out[kk] = vv
                     return out
+
                 clipped[k] = sanitize_dict(g)
             else:
                 clipped[k] = g
@@ -150,8 +162,10 @@ def main() -> None:
         optimizer.update(model, clipped)
         mx.eval(model.parameters(), optimizer.state)
 
-        print(f"  Step {step}: loss={float(loss):.6f}, grad_norm={total_grad_norm:.6f}, "
-              f"nan_grads={total_nan}")
+        print(
+            f"  Step {step}: loss={float(loss):.6f}, grad_norm={total_grad_norm:.6f}, "
+            f"nan_grads={total_nan}"
+        )
 
     # Compare weights after 5 steps
     print("\n--- Weight changes after 5 optimizer steps ---\n")
@@ -162,7 +176,7 @@ def main() -> None:
             changes_by_group[group] = {"max_change": 0.0, "params": 0, "changed": 0}
 
         if key in initial_weights:
-            diff = (val.astype(mx.float32) - initial_weights[key].astype(mx.float32))
+            diff = val.astype(mx.float32) - initial_weights[key].astype(mx.float32)
             max_change = float(mx.max(mx.abs(diff)))
             changes_by_group[group]["max_change"] = max(
                 changes_by_group[group]["max_change"], max_change
@@ -196,8 +210,10 @@ def main() -> None:
     if abs(float(final_loss) - 10.3733) < 0.01:
         print("  --> Loss unchanged from random. Model is NOT learning.")
     else:
-        print(f"  --> Loss changed by {float(final_loss) - 10.3733:.4f}. "
-              "Model IS updating.")
+        print(
+            f"  --> Loss changed by {float(final_loss) - 10.3733:.4f}. "
+            "Model IS updating."
+        )
 
 
 def test_conv_forward() -> None:
@@ -234,8 +250,10 @@ def test_conv_forward() -> None:
             f"Expected (2, 16, 64), got {retrieved.shape}"
         )
 
-        print(f"  mem_layers={num_mem_layers}: __call__ shape={out.shape}, "
-              f"retrieve shape={retrieved.shape} -- OK")
+        print(
+            f"  mem_layers={num_mem_layers}: __call__ shape={out.shape}, "
+            f"retrieve shape={retrieved.shape} -- OK"
+        )
 
     print("  Conv forward pass tests PASSED")
 

@@ -853,10 +853,12 @@ class NeuralLongTermMemory(nn.Module):
         q_f32 = q.astype(mx.float32)
         k_f32 = k.astype(mx.float32)
         q = (
-            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
+            q_f32
+            / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(q.dtype)
         k = (
-            k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
+            k_f32
+            / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(k.dtype)
 
         # Retrieve from memory using explicit state weights (no module mutation)
@@ -1092,7 +1094,8 @@ class NeuralLongTermMemory(nn.Module):
         # L2-norm in float32 to avoid bfloat16 underflow
         q_f32 = q.astype(mx.float32)
         q = (
-            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
+            q_f32
+            / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + _L2_NORM_EPS)
         ).astype(q.dtype)
 
         # Retrieve using explicit state weights (no module mutation)

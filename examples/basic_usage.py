@@ -180,6 +180,7 @@ def example_titans_mac() -> None:
 
     model = TitansMAC(config)
     from mlx.utils import tree_flatten
+
     params = sum(v.size for _, v in tree_flatten(model.parameters()))
     print(f"Model parameters: {params:,}")
 
@@ -308,11 +309,13 @@ def example_training_step() -> None:
 
     # Optimizer step
     import mlx.optimizers as optim
+
     optimizer = optim.AdamW(learning_rate=1e-4)
     optimizer.update(model, grads)
     mx.eval(model.parameters(), optimizer.state, loss)
 
     import math
+
     print(f"Loss: {float(loss):.4f}")
     print(f"Perplexity: {math.exp(float(loss)):.2f}")
 

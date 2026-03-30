@@ -922,17 +922,17 @@ def train(
                 micro_elapsed = time.time() - micro_start
 
                 # Show micro-step progress within accumulation window
-                pbar.set_postfix({
-                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
-                    "μloss": f"{float(loss):.4f}",
-                    "μtime": f"{micro_elapsed:.1f}s",
-                })
+                pbar.set_postfix(
+                    {
+                        "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                        "μloss": f"{float(loss):.4f}",
+                        "μtime": f"{micro_elapsed:.1f}s",
+                    }
+                )
 
                 loss_val = float(loss)
                 if math.isnan(loss_val) or math.isinf(loss_val):
-                    logger.warning(
-                        f"Skipping micro-step with invalid loss: {loss_val}"
-                    )
+                    logger.warning(f"Skipping micro-step with invalid loss: {loss_val}")
                     continue
 
                 # Accumulate gradients
@@ -949,9 +949,7 @@ def train(
                 # --- Optimizer step after full accumulation window ---
                 if accumulation_step >= config.gradient_accumulation_steps:
                     # Average the accumulated gradients
-                    scale = mx.array(
-                        1.0 / config.gradient_accumulation_steps
-                    )
+                    scale = mx.array(1.0 / config.gradient_accumulation_steps)
                     avg_grads = _tree_scale(accumulated_grads, scale)
 
                     # Set LR once per optimizer step (not per micro-step)
@@ -961,9 +959,7 @@ def train(
                     optimizer.learning_rate = lr
 
                     # Sanitize, clip, update, eval
-                    apply_gradients(
-                        model, optimizer, avg_grads, config.grad_clip
-                    )
+                    apply_gradients(model, optimizer, avg_grads, config.grad_clip)
 
                     global_step += 1
                     accumulation_step = 0
@@ -971,10 +967,7 @@ def train(
                     accumulated_grads = None
 
                     # Periodic checkpoint (--save-every)
-                    if (
-                        config.save_every > 0
-                        and global_step % config.save_every == 0
-                    ):
+                    if config.save_every > 0 and global_step % config.save_every == 0:
                         save_checkpoint(
                             model,
                             optimizer,
@@ -1019,9 +1012,7 @@ def train(
                         and global_step % config.eval_every == 0
                         and val_dataset is not None
                     ):
-                        val_metrics = evaluate(
-                            model, val_dataset, config.batch_size
-                        )
+                        val_metrics = evaluate(model, val_dataset, config.batch_size)
                         logger.info(
                             f"Step {global_step}: "
                             f"val_loss={val_metrics['val_loss']:.4f}, "
@@ -1030,10 +1021,7 @@ def train(
 
                         if config.wandb and HAS_WANDB:
                             wandb.log(
-                                {
-                                    f"val/{k}": v
-                                    for k, v in val_metrics.items()
-                                },
+                                {f"val/{k}": v for k, v in val_metrics.items()},
                                 step=global_step,
                             )
 
@@ -1088,17 +1076,17 @@ def train(
                 micro_elapsed = time.time() - micro_start
 
                 # Show micro-step progress within accumulation window
-                pbar.set_postfix({
-                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
-                    "μloss": f"{float(loss):.4f}",
-                    "μtime": f"{micro_elapsed:.1f}s",
-                })
+                pbar.set_postfix(
+                    {
+                        "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                        "μloss": f"{float(loss):.4f}",
+                        "μtime": f"{micro_elapsed:.1f}s",
+                    }
+                )
 
                 loss_val = float(loss)
                 if math.isnan(loss_val) or math.isinf(loss_val):
-                    logger.warning(
-                        f"Skipping micro-step with invalid loss: {loss_val}"
-                    )
+                    logger.warning(f"Skipping micro-step with invalid loss: {loss_val}")
                     continue
 
                 # Accumulate gradients
@@ -1114,9 +1102,7 @@ def train(
 
                 # --- Optimizer step after full accumulation window ---
                 if accumulation_step >= config.gradient_accumulation_steps:
-                    scale = mx.array(
-                        1.0 / config.gradient_accumulation_steps
-                    )
+                    scale = mx.array(1.0 / config.gradient_accumulation_steps)
                     avg_grads = _tree_scale(accumulated_grads, scale)
 
                     lr = get_lr_schedule(
@@ -1124,9 +1110,7 @@ def train(
                     )
                     optimizer.learning_rate = lr
 
-                    apply_gradients(
-                        model, optimizer, avg_grads, config.grad_clip
-                    )
+                    apply_gradients(model, optimizer, avg_grads, config.grad_clip)
 
                     global_step += 1
                     accumulation_step = 0
@@ -1134,10 +1118,7 @@ def train(
                     accumulation_loss = 0.0
 
                     # Periodic checkpoint (--save-every)
-                    if (
-                        config.save_every > 0
-                        and global_step % config.save_every == 0
-                    ):
+                    if config.save_every > 0 and global_step % config.save_every == 0:
                         save_checkpoint(
                             model,
                             optimizer,
@@ -1164,9 +1145,7 @@ def train(
                             wandb.log(
                                 {
                                     "train/loss": avg_loss,
-                                    "train/ppl": math.exp(
-                                        min(avg_loss, 100)
-                                    ),
+                                    "train/ppl": math.exp(min(avg_loss, 100)),
                                     "train/lr": lr,
                                     "train/step": global_step,
                                 },
@@ -1182,9 +1161,7 @@ def train(
                         and global_step % config.eval_every == 0
                         and val_dataset is not None
                     ):
-                        val_metrics = evaluate(
-                            model, val_dataset, config.batch_size
-                        )
+                        val_metrics = evaluate(model, val_dataset, config.batch_size)
                         logger.info(
                             f"Step {global_step}: "
                             f"val_loss={val_metrics['val_loss']:.4f}, "
@@ -1193,10 +1170,7 @@ def train(
 
                         if config.wandb and HAS_WANDB:
                             wandb.log(
-                                {
-                                    f"val/{k}": v
-                                    for k, v in val_metrics.items()
-                                },
+                                {f"val/{k}": v for k, v in val_metrics.items()},
                                 step=global_step,
                             )
 
@@ -1282,18 +1256,27 @@ def main() -> None:
 
     # TNT Hierarchical Memory
     parser.add_argument(
-        "--use-tnt", action="store_true", help="Enable TNT hierarchical memory (global + local)"
+        "--use-tnt",
+        action="store_true",
+        help="Enable TNT hierarchical memory (global + local)",
     )
     parser.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16],
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
         help="Chunk sizes for local memories (one per local memory)",
     )
     parser.add_argument(
-        "--local-shard-length", type=int, default=2048,
+        "--local-shard-length",
+        type=int,
+        default=2048,
         help="Local memory reset period (tokens)",
     )
     parser.add_argument(
-        "--global-chunk-size", type=int, default=2048,
+        "--global-chunk-size",
+        type=int,
+        default=2048,
         help="Global memory chunk size",
     )
 
@@ -1305,19 +1288,26 @@ def main() -> None:
         "--num-attnres-blocks", type=int, default=8, help="AttnRes block count (N)"
     )
     parser.add_argument(
-        "--attnres-warmup-steps", type=int, default=0,
+        "--attnres-warmup-steps",
+        type=int,
+        default=0,
         help="Steps before AttnRes memory gating activates",
     )
     parser.add_argument(
-        "--attnres-modulate-global", action="store_true", default=True,
+        "--attnres-modulate-global",
+        action="store_true",
+        default=True,
         help="Gate global memory LR with AttnRes",
     )
     parser.add_argument(
-        "--no-attnres-modulate-global", dest="attnres_modulate_global",
+        "--no-attnres-modulate-global",
+        dest="attnres_modulate_global",
         action="store_false",
     )
     parser.add_argument(
-        "--attnres-modulate-local", action="store_true", default=False,
+        "--attnres-modulate-local",
+        action="store_true",
+        default=False,
         help="Gate local memory LR with AttnRes",
     )
 

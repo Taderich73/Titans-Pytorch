@@ -129,7 +129,9 @@ def example_multi_resolution() -> None:
     mem = HierarchicalMemory(config)
     print(f"  Num local memories: {len(mem.local_memories)}")
     for i, lm in enumerate(mem.local_memories):
-        print(f"    Local {i}: chunk_size={lm.chunk_size}, shard_length={lm.shard_length}")
+        print(
+            f"    Local {i}: chunk_size={lm.chunk_size}, shard_length={lm.shard_length}"
+        )
 
     x = mx.random.normal((1, 32, 64))
     output, state = mem(x)
@@ -188,8 +190,11 @@ def example_state_persistence() -> None:
     from titans_mlx.memory import save_tnt_memory_states, load_tnt_memory_states
 
     config = TitansConfig(
-        dim=64, num_memory_layers=1, use_conv=False,
-        use_tnt=True, local_chunk_sizes=[4, 8],
+        dim=64,
+        num_memory_layers=1,
+        use_conv=False,
+        use_tnt=True,
+        local_chunk_sizes=[4, 8],
     )
 
     mem = HierarchicalMemory(config)

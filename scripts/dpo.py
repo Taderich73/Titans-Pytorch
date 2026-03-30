@@ -87,10 +87,7 @@ def extract_messages(raw_messages: list[dict]) -> list[dict]:
     Dolci-Instruct-DPO messages contain metadata fields (country, hashed_ip,
     toxic, header, etc.) that we discard.
     """
-    return [
-        {"role": m["role"], "content": m["content"]}
-        for m in raw_messages
-    ]
+    return [{"role": m["role"], "content": m["content"]} for m in raw_messages]
 
 
 def format_chatml(messages: list[dict]) -> str:
@@ -117,9 +114,7 @@ def tokenize_sequence(
     has_chat_template = getattr(tokenizer, "chat_template", None) is not None
 
     if has_chat_template:
-        input_ids: list[int] = tokenizer.apply_chat_template(
-            messages, tokenize=True
-        )
+        input_ids: list[int] = tokenizer.apply_chat_template(messages, tokenize=True)
     else:
         special_tokens = []
         existing = set(tokenizer.additional_special_tokens or [])
@@ -128,9 +123,7 @@ def tokenize_sequence(
         if IM_END not in existing:
             special_tokens.append(IM_END)
         if special_tokens:
-            tokenizer.add_special_tokens(
-                {"additional_special_tokens": special_tokens}
-            )
+            tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
         formatted = format_chatml(messages)
         input_ids = tokenizer.encode(formatted)
 
@@ -169,9 +162,7 @@ def compute_logprobs(
     """
     logits, _ = model(input_ids)
     # Log-softmax via MLX primitives
-    log_probs = logits[:, :-1] - mx.logsumexp(
-        logits[:, :-1], axis=-1, keepdims=True
-    )
+    log_probs = logits[:, :-1] - mx.logsumexp(logits[:, :-1], axis=-1, keepdims=True)
     # Gather log-probs for actual next tokens
     token_log_probs = mx.take_along_axis(
         log_probs, input_ids[:, 1:, None], axis=-1
@@ -773,14 +764,21 @@ def compute_dpo_grads(
 ) -> tuple[mx.array, dict]:
     """Compute DPO/SimPO loss and gradients."""
     if config.method == "simpo":
+
         def simpo_loss_fn(m):
             chosen_lps = compute_logprobs(m, chosen_ids, mask=chosen_mask)
             rejected_lps = compute_logprobs(m, rejected_ids, mask=rejected_mask)
-            chosen_lengths = mx.clip(chosen_mask[:, 1:].sum(axis=1), a_min=1, a_max=None)
-            rejected_lengths = mx.clip(rejected_mask[:, 1:].sum(axis=1), a_min=1, a_max=None)
+            chosen_lengths = mx.clip(
+                chosen_mask[:, 1:].sum(axis=1), a_min=1, a_max=None
+            )
+            rejected_lengths = mx.clip(
+                rejected_mask[:, 1:].sum(axis=1), a_min=1, a_max=None
+            )
             chosen_avg = chosen_lps.sum(axis=1) / chosen_lengths
             rejected_avg = rejected_lps.sum(axis=1) / rejected_lengths
-            return simpo_loss(chosen_avg, rejected_avg, beta=config.beta, gamma=config.gamma)
+            return simpo_loss(
+                chosen_avg, rejected_avg, beta=config.beta, gamma=config.gamma
+            )
 
         loss_and_grad_fn = nn.value_and_grad(model, simpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -798,7 +796,9 @@ def compute_dpo_grads(
             set_lora_enabled(model, True)
         elif ref_model is not None:
             ref_chosen_lps = compute_logprobs(ref_model, chosen_ids, mask=chosen_mask)
-            ref_rejected_lps = compute_logprobs(ref_model, rejected_ids, mask=rejected_mask)
+            ref_rejected_lps = compute_logprobs(
+                ref_model, rejected_ids, mask=rejected_mask
+            )
             mx.eval(ref_chosen_lps, ref_rejected_lps)
             ref_chosen_sum = mx.stop_gradient(ref_chosen_lps.sum(axis=1))
             ref_rejected_sum = mx.stop_gradient(ref_rejected_lps.sum(axis=1))
@@ -808,8 +808,13 @@ def compute_dpo_grads(
         def dpo_loss_fn(m):
             c_lps = compute_logprobs(m, chosen_ids, mask=chosen_mask)
             r_lps = compute_logprobs(m, rejected_ids, mask=rejected_mask)
-            return dpo_loss(c_lps.sum(axis=1), r_lps.sum(axis=1),
-                           ref_chosen_sum, ref_rejected_sum, beta=config.beta)
+            return dpo_loss(
+                c_lps.sum(axis=1),
+                r_lps.sum(axis=1),
+                ref_chosen_sum,
+                ref_rejected_sum,
+                beta=config.beta,
+            )
 
         loss_and_grad_fn = nn.value_and_grad(model, dpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -933,17 +938,17 @@ def train(
             micro_elapsed = time.time() - micro_start
 
             # Show micro-step progress
-            pbar.set_postfix({
-                "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
-                "uloss": f"{float(loss):.4f}",
-                "utime": f"{micro_elapsed:.1f}s",
-            })
+            pbar.set_postfix(
+                {
+                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                    "uloss": f"{float(loss):.4f}",
+                    "utime": f"{micro_elapsed:.1f}s",
+                }
+            )
 
             loss_val = float(loss)
             if math.isnan(loss_val) or math.isinf(loss_val):
-                logger.warning(
-                    f"Skipping micro-step with invalid loss: {loss_val}"
-                )
+                logger.warning(f"Skipping micro-step with invalid loss: {loss_val}")
                 continue
 
             # Accumulate gradients
@@ -959,19 +964,13 @@ def train(
 
             # --- Optimizer step after full accumulation window ---
             if accumulation_step >= config.gradient_accumulation_steps:
-                scale = mx.array(
-                    1.0 / config.gradient_accumulation_steps
-                )
+                scale = mx.array(1.0 / config.gradient_accumulation_steps)
                 avg_grads = _tree_scale(accumulated_grads, scale)
 
-                lr = get_lr_schedule(
-                    global_step, total_steps, warmup_steps, config.lr
-                )
+                lr = get_lr_schedule(global_step, total_steps, warmup_steps, config.lr)
                 optimizer.learning_rate = lr
 
-                apply_gradients(
-                    model, optimizer, avg_grads, config.grad_clip
-                )
+                apply_gradients(model, optimizer, avg_grads, config.grad_clip)
 
                 global_step += 1
                 accumulation_step = 0
@@ -979,10 +978,7 @@ def train(
                 accumulation_loss = 0.0
 
                 # Periodic checkpoint
-                if (
-                    config.save_every > 0
-                    and global_step % config.save_every == 0
-                ):
+                if config.save_every > 0 and global_step % config.save_every == 0:
                     save_checkpoint(
                         model,
                         optimizer,
@@ -1075,19 +1071,29 @@ def main() -> None:
         "--use-tnt", action="store_true", help="Enable TNT hierarchical memory"
     )
     parser.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16],
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
         help="Chunk sizes for local memories",
     )
     parser.add_argument(
-        "--local-shard-length", type=int, default=2048,
+        "--local-shard-length",
+        type=int,
+        default=2048,
         help="Local memory reset period (tokens)",
     )
     parser.add_argument(
-        "--global-chunk-size", type=int, default=2048,
+        "--global-chunk-size",
+        type=int,
+        default=2048,
         help="Global memory chunk size",
     )
     parser.add_argument(
-        "--tnt-stage", type=int, default=1, choices=[1, 2],
+        "--tnt-stage",
+        type=int,
+        default=1,
+        choices=[1, 2],
         help="TNT training stage (1=pretrain, 2=finetune)",
     )
 
@@ -1099,19 +1105,26 @@ def main() -> None:
         "--num-attnres-blocks", type=int, default=8, help="AttnRes block count"
     )
     parser.add_argument(
-        "--attnres-warmup-steps", type=int, default=0,
+        "--attnres-warmup-steps",
+        type=int,
+        default=0,
         help="Steps before AttnRes gating activates",
     )
     parser.add_argument(
-        "--attnres-modulate-global", action="store_true", default=True,
+        "--attnres-modulate-global",
+        action="store_true",
+        default=True,
         help="Gate global memory LR with AttnRes",
     )
     parser.add_argument(
-        "--no-attnres-modulate-global", dest="attnres_modulate_global",
+        "--no-attnres-modulate-global",
+        dest="attnres_modulate_global",
         action="store_false",
     )
     parser.add_argument(
-        "--attnres-modulate-local", action="store_true", default=False,
+        "--attnres-modulate-local",
+        action="store_true",
+        default=False,
         help="Gate local memory LR with AttnRes",
     )
 
@@ -1123,18 +1136,23 @@ def main() -> None:
         choices=["dpo", "simpo"],
         help="Preference optimization method",
     )
-    parser.add_argument("--beta", type=float, default=0.1, help="KL penalty / scaling factor")
+    parser.add_argument(
+        "--beta", type=float, default=0.1, help="KL penalty / scaling factor"
+    )
     parser.add_argument("--gamma", type=float, default=1.0, help="SimPO reward margin")
 
     # LoRA
     parser.add_argument(
-        "--lora", action="store_true",
+        "--lora",
+        action="store_true",
         help="Use LoRA (base model serves as reference for DPO)",
     )
     parser.add_argument("--lora-rank", type=int, default=8, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=float, default=16.0, help="LoRA alpha")
     parser.add_argument(
-        "--lora-targets", type=str, default="attn,ffn",
+        "--lora-targets",
+        type=str,
+        default="attn,ffn",
         help="Comma-separated LoRA target groups: attn,ffn,memory,all",
     )
     parser.add_argument("--lora-dropout", type=float, default=0.0, help="LoRA dropout")
@@ -1155,13 +1173,19 @@ def main() -> None:
         default="gpt2",
         help="HuggingFace tokenizer",
     )
-    parser.add_argument("--max-len", type=int, default=2048, help="Maximum sequence length")
     parser.add_argument(
-        "--chosen-field", type=str, default="chosen",
+        "--max-len", type=int, default=2048, help="Maximum sequence length"
+    )
+    parser.add_argument(
+        "--chosen-field",
+        type=str,
+        default="chosen",
         help="Field name for chosen responses in dataset",
     )
     parser.add_argument(
-        "--rejected-field", type=str, default="rejected",
+        "--rejected-field",
+        type=str,
+        default="rejected",
         help="Field name for rejected responses in dataset",
     )
 
@@ -1201,7 +1225,9 @@ def main() -> None:
         help="HuggingFace dataset for evaluation",
     )
     parser.add_argument(
-        "--eval-split", type=str, default="train",
+        "--eval-split",
+        type=str,
+        default="train",
         help="Split for eval dataset",
     )
     parser.add_argument(
@@ -1386,6 +1412,7 @@ def main() -> None:
 
     if config.lora:
         from scripts.lora import wrap_lora_layers
+
         wrapped = wrap_lora_layers(
             model,
             targets=config.lora_targets,

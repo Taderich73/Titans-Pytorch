@@ -66,8 +66,7 @@ class MemoryCrossAttention(nn.Module):
             )
         if x.shape[-1] != self.dim:
             raise ValueError(
-                f"MCA expects x with last dim={self.dim}, "
-                f"got {x.shape[-1]}"
+                f"MCA expects x with last dim={self.dim}, got {x.shape[-1]}"
             )
         if memory_weights.ndim != 2:
             raise ValueError(

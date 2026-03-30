@@ -260,9 +260,7 @@ def wrap_lora_layers(
 
     wrapped: list[str] = []
 
-    for full_path, attr_name, parent, linear in list(
-        _recursive_find_linear(model)
-    ):
+    for full_path, attr_name, parent, linear in list(_recursive_find_linear(model)):
         # Never wrap embed or head layers
         if "embed" in full_path or "head" in full_path:
             continue
@@ -620,12 +618,8 @@ def load_lora_model(
         use_attn_res=meta.get("use_attn_res", False),
         num_attnres_blocks=meta.get("num_attnres_blocks", 8),
         attnres_warmup_steps=meta.get("attnres_warmup_steps", 0),
-        attnres_modulate_global_memory=meta.get(
-            "attnres_modulate_global_memory", True
-        ),
-        attnres_modulate_local_memory=meta.get(
-            "attnres_modulate_local_memory", False
-        ),
+        attnres_modulate_global_memory=meta.get("attnres_modulate_global_memory", True),
+        attnres_modulate_local_memory=meta.get("attnres_modulate_local_memory", False),
     )
 
     model = create_model(model_type, config)
@@ -1068,8 +1062,7 @@ def main() -> None:
     if args.interactive:
         # Interactive mode
         logger.info(
-            "Interactive mode. Commands: 'quit', 'reset', "
-            "'save [path]', 'load [path]'."
+            "Interactive mode. Commands: 'quit', 'reset', 'save [path]', 'load [path]'."
         )
         states = None
 
@@ -1095,7 +1088,9 @@ def main() -> None:
                     parts = prompt.strip().split(maxsplit=1)
                     save_path = parts[1] if len(parts) > 1 else "memory_state.npz"
                     if states is None:
-                        logger.warning("No memory state to save (run some prompts first).")
+                        logger.warning(
+                            "No memory state to save (run some prompts first)."
+                        )
                     else:
                         save_memory_states(states, Path(save_path))
                         logger.info(f"Memory state saved to {save_path}")

@@ -48,6 +48,7 @@ from titans_mlx import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 # Optional imports
 try:
     from transformers import AutoTokenizer, PreTrainedTokenizerBase
+
     HAS_TRANSFORMERS = True
 except ImportError:
     HAS_TRANSFORMERS = False
@@ -55,12 +56,14 @@ except ImportError:
 
 try:
     from datasets import load_dataset
+
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
 
 try:
     import wandb
+
     HAS_WANDB = True
 except ImportError:
     HAS_WANDB = False
@@ -154,9 +157,7 @@ def compute_logprobs(
         (batch, seq_len - 1) per-token log-probabilities.
     """
     logits, _ = model(input_ids)
-    log_probs = logits[:, :-1] - mx.logsumexp(
-        logits[:, :-1], axis=-1, keepdims=True
-    )
+    log_probs = logits[:, :-1] - mx.logsumexp(logits[:, :-1], axis=-1, keepdims=True)
     token_log_probs = mx.take_along_axis(
         log_probs, input_ids[:, 1:, None], axis=-1
     ).squeeze(-1)
@@ -346,7 +347,7 @@ class OfflineRLDataset:
             if not outputs or not ground_truth:
                 continue
 
-            rollouts = outputs[:self.num_rollouts]
+            rollouts = outputs[: self.num_rollouts]
             if len(rollouts) < 2:
                 continue
 
@@ -358,7 +359,9 @@ class OfflineRLDataset:
             rollout_masks_list = []
             for rollout_text in rollouts:
                 full_text = prompt + rollout_text
-                r_ids, r_mask = tokenize_and_pad(full_text, self.tokenizer, self.max_len)
+                r_ids, r_mask = tokenize_and_pad(
+                    full_text, self.tokenizer, self.max_len
+                )
                 rollout_ids_list.append(r_ids)
                 rollout_masks_list.append(r_mask)
 
@@ -411,12 +414,8 @@ class OfflineRLDataset:
                 np.array([item["prompt_ids"] for item in batch_items])
             ),
             "rollout_ids": mx.array(np.array(padded_rollout_ids)),
-            "rollout_masks": mx.array(
-                np.array(padded_rollout_masks, dtype=np.float32)
-            ),
-            "rewards": mx.array(
-                np.array(padded_rewards, dtype=np.float32)
-            ),
+            "rollout_masks": mx.array(np.array(padded_rollout_masks, dtype=np.float32)),
+            "rewards": mx.array(np.array(padded_rewards, dtype=np.float32)),
         }
 
 
@@ -971,8 +970,7 @@ def compute_rlvr_grads(
 
         batch_mean_reward = float(mx.mean(rewards))
         new_baseline = (
-            config.ema_decay * ema_baseline
-            + (1 - config.ema_decay) * batch_mean_reward
+            config.ema_decay * ema_baseline + (1 - config.ema_decay) * batch_mean_reward
         )
 
         return avg_loss, avg_grads, new_baseline
@@ -1097,17 +1095,17 @@ def train(
             micro_elapsed = time.time() - micro_start
 
             # Show micro-step progress
-            pbar.set_postfix({
-                "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
-                "uloss": f"{float(loss):.4f}",
-                "utime": f"{micro_elapsed:.1f}s",
-            })
+            pbar.set_postfix(
+                {
+                    "micro": f"{accumulation_step + 1}/{config.gradient_accumulation_steps}",
+                    "uloss": f"{float(loss):.4f}",
+                    "utime": f"{micro_elapsed:.1f}s",
+                }
+            )
 
             loss_val = float(loss)
             if math.isnan(loss_val) or math.isinf(loss_val):
-                logger.warning(
-                    f"Skipping micro-step with invalid loss: {loss_val}"
-                )
+                logger.warning(f"Skipping micro-step with invalid loss: {loss_val}")
                 continue
 
             # Accumulate gradients
@@ -1124,19 +1122,13 @@ def train(
 
             # --- Optimizer step after full accumulation window ---
             if accumulation_step >= config.gradient_accumulation_steps:
-                scale = mx.array(
-                    1.0 / config.gradient_accumulation_steps
-                )
+                scale = mx.array(1.0 / config.gradient_accumulation_steps)
                 avg_grads = _tree_scale(accumulated_grads, scale)
 
-                lr = get_lr_schedule(
-                    global_step, total_steps, warmup_steps, config.lr
-                )
+                lr = get_lr_schedule(global_step, total_steps, warmup_steps, config.lr)
                 optimizer.learning_rate = lr
 
-                apply_gradients(
-                    model, optimizer, avg_grads, config.grad_clip
-                )
+                apply_gradients(model, optimizer, avg_grads, config.grad_clip)
 
                 global_step += 1
                 accumulation_step = 0
@@ -1144,10 +1136,7 @@ def train(
                 accumulation_loss = 0.0
 
                 # Periodic checkpoint
-                if (
-                    config.save_every > 0
-                    and global_step % config.save_every == 0
-                ):
+                if config.save_every > 0 and global_step % config.save_every == 0:
                     save_checkpoint(
                         model,
                         optimizer,
@@ -1244,19 +1233,29 @@ def main() -> None:
         "--use-tnt", action="store_true", help="Enable TNT hierarchical memory"
     )
     parser.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16],
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
         help="Chunk sizes for local memories",
     )
     parser.add_argument(
-        "--local-shard-length", type=int, default=2048,
+        "--local-shard-length",
+        type=int,
+        default=2048,
         help="Local memory reset period (tokens)",
     )
     parser.add_argument(
-        "--global-chunk-size", type=int, default=2048,
+        "--global-chunk-size",
+        type=int,
+        default=2048,
         help="Global memory chunk size",
     )
     parser.add_argument(
-        "--tnt-stage", type=int, default=1, choices=[1, 2],
+        "--tnt-stage",
+        type=int,
+        default=1,
+        choices=[1, 2],
         help="TNT training stage (1=pretrain, 2=finetune)",
     )
 
@@ -1268,19 +1267,26 @@ def main() -> None:
         "--num-attnres-blocks", type=int, default=8, help="AttnRes block count"
     )
     parser.add_argument(
-        "--attnres-warmup-steps", type=int, default=0,
+        "--attnres-warmup-steps",
+        type=int,
+        default=0,
         help="Steps before AttnRes gating activates",
     )
     parser.add_argument(
-        "--attnres-modulate-global", action="store_true", default=True,
+        "--attnres-modulate-global",
+        action="store_true",
+        default=True,
         help="Gate global memory LR with AttnRes",
     )
     parser.add_argument(
-        "--no-attnres-modulate-global", dest="attnres_modulate_global",
+        "--no-attnres-modulate-global",
+        dest="attnres_modulate_global",
         action="store_false",
     )
     parser.add_argument(
-        "--attnres-modulate-local", action="store_true", default=False,
+        "--attnres-modulate-local",
+        action="store_true",
+        default=False,
         help="Gate local memory LR with AttnRes",
     )
 
@@ -1299,19 +1305,29 @@ def main() -> None:
         choices=["grpo", "reinforce"],
         help="RL optimization method",
     )
-    parser.add_argument("--num-rollouts", type=int, default=8, help="Rollouts per prompt")
+    parser.add_argument(
+        "--num-rollouts", type=int, default=8, help="Rollouts per prompt"
+    )
     parser.add_argument(
         "--epsilon", type=float, default=0.2, help="GRPO importance ratio clipping"
     )
-    parser.add_argument("--kl-beta", type=float, default=0.0, help="KL penalty coefficient")
+    parser.add_argument(
+        "--kl-beta", type=float, default=0.0, help="KL penalty coefficient"
+    )
     parser.add_argument(
         "--ema-decay", type=float, default=0.99, help="REINFORCE EMA baseline decay"
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.7, help="Sampling temperature for live mode"
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature for live mode",
     )
     parser.add_argument(
-        "--max-new-tokens", type=int, default=2048, help="Max tokens to generate per rollout"
+        "--max-new-tokens",
+        type=int,
+        default=2048,
+        help="Max tokens to generate per rollout",
     )
     parser.add_argument(
         "--verifier",
@@ -1322,13 +1338,16 @@ def main() -> None:
 
     # LoRA
     parser.add_argument(
-        "--lora", action="store_true",
+        "--lora",
+        action="store_true",
         help="Use LoRA adapters",
     )
     parser.add_argument("--lora-rank", type=int, default=8, help="LoRA rank")
     parser.add_argument("--lora-alpha", type=float, default=16.0, help="LoRA alpha")
     parser.add_argument(
-        "--lora-targets", type=str, default="attn,ffn",
+        "--lora-targets",
+        type=str,
+        default="attn,ffn",
         help="Comma-separated LoRA target groups: attn,ffn,memory,all",
     )
     parser.add_argument("--lora-dropout", type=float, default=0.0, help="LoRA dropout")
@@ -1349,17 +1368,25 @@ def main() -> None:
         default="gpt2",
         help="HuggingFace tokenizer",
     )
-    parser.add_argument("--max-len", type=int, default=2048, help="Maximum sequence length")
     parser.add_argument(
-        "--prompt-field", type=str, default="prompt",
+        "--max-len", type=int, default=2048, help="Maximum sequence length"
+    )
+    parser.add_argument(
+        "--prompt-field",
+        type=str,
+        default="prompt",
         help="Field name for prompts in dataset",
     )
     parser.add_argument(
-        "--ground-truth-field", type=str, default="ground_truth",
+        "--ground-truth-field",
+        type=str,
+        default="ground_truth",
         help="Field name for ground truth in dataset",
     )
     parser.add_argument(
-        "--outputs-field", type=str, default="outputs",
+        "--outputs-field",
+        type=str,
+        default="outputs",
         help="Field name for pre-computed rollout outputs in dataset",
     )
 
@@ -1398,7 +1425,9 @@ def main() -> None:
         help="HuggingFace dataset for evaluation",
     )
     parser.add_argument(
-        "--eval-split", type=str, default="train",
+        "--eval-split",
+        type=str,
+        default="train",
         help="Split for eval dataset",
     )
     parser.add_argument(
@@ -1533,6 +1562,7 @@ def main() -> None:
 
     # Create model config
     from titans_mlx import TitansConfig
+
     model_config = TitansConfig(
         dim=config.dim,
         num_heads=config.num_heads,
@@ -1596,6 +1626,7 @@ def main() -> None:
     # LoRA setup
     if config.lora:
         from scripts.lora import wrap_lora_layers
+
         wrapped = wrap_lora_layers(
             model,
             targets=config.lora_targets,

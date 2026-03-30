@@ -91,7 +91,7 @@ class TestBugFixes:
         # Use values just outside the threshold to exercise the non-degenerate path.
         # diff = (1 - 0.499999) - 0.500003 = -2e-6, |diff| > 1e-6
         alpha = mx.array(0.499999)  # decay = 0.500001
-        eta = mx.array(0.500003)     # diff = -2e-6 (negative, non-degenerate)
+        eta = mx.array(0.500003)  # diff = -2e-6 (negative, non-degenerate)
 
         new_state = mem._parallel_memory_update_linear(
             keys, values, state, alpha, theta=mx.array(0.05), eta=eta
