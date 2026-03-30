@@ -64,6 +64,12 @@ class BlockAttnRes(nn.Module):
         if partial_block is not None:
             sources.append(partial_block)
 
+        if not sources:
+            raise ValueError(
+                "BlockAttnRes requires at least one source: "
+                "pass non-empty blocks or a partial_block"
+            )
+
         # Single source: skip attention, weight = 1.0
         if len(sources) == 1:
             v = sources[0]

@@ -730,6 +730,7 @@ class NeuralLongTermMemory(nn.Module):
         Uses matmul instead of expand_dims for efficient gradient computation.
         """
         num_layers = len(weights)
+        assert keys.ndim == 3, f"Expected 3D keys [B, S, D], got {keys.ndim}D"
         batch_size, seq_len = keys.shape[0], keys.shape[1]
         batch_seq = batch_size * seq_len
 
@@ -960,6 +961,7 @@ class NeuralLongTermMemory(nn.Module):
         Returns:
             Updated MemoryState with new weights and momentum
         """
+        assert keys.ndim == 3, f"Expected 3D keys [B, S, D], got {keys.ndim}D"
         B, S, D = keys.shape
         W_0 = state.weights[0]
         S_prev = state.momentum[0]
@@ -987,7 +989,7 @@ class NeuralLongTermMemory(nn.Module):
         safe_diff = mx.where(
             is_degenerate,
             mx.array(1.0),
-            mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff + 1e-12),
+            mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff),
         )
 
         # --- New momentum: S_S = η^S · S_prev - θ · Σ η^{S-1-i} · u_i ---

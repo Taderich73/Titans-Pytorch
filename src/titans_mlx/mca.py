@@ -32,6 +32,7 @@ class MemoryCrossAttention(nn.Module):
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         dim = config.dim
+        self.dim = dim
         self.num_heads = config.mca_num_heads
         self.head_dim = dim // self.num_heads
 
@@ -58,6 +59,21 @@ class MemoryCrossAttention(nn.Module):
         Returns:
             Gated output [B, T, dim] — net contribution for residual add
         """
+        if x.ndim != 3:
+            raise ValueError(
+                f"MCA expects a 3D tensor x with shape [B, T, dim], "
+                f"got {x.ndim}D tensor with shape {x.shape}"
+            )
+        if x.shape[-1] != self.dim:
+            raise ValueError(
+                f"MCA expects x with last dim={self.dim}, "
+                f"got {x.shape[-1]}"
+            )
+        if memory_weights.ndim != 2:
+            raise ValueError(
+                f"MCA expects memory_weights with shape [num_rows, dim], "
+                f"got {memory_weights.ndim}D tensor with shape {memory_weights.shape}"
+            )
         B, T, dim = x.shape
         num_rows = memory_weights.shape[0]
 

@@ -43,10 +43,20 @@ def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
 
 def _mca_forward(block: nn.Module, h: mx.array, mem_state) -> mx.array:
     """MCA sub-layer: cross-attend to NeuralLTM weight rows (shared across MAC/MAG/MAL)."""
-    if hasattr(mem_state, "global_state"):
-        W = mem_state.global_state.weights[0]
-    else:
-        W = mem_state.weights[0]
+    weights = (
+        mem_state.global_state.weights
+        if hasattr(mem_state, "global_state")
+        else mem_state.weights
+    )
+    if not weights:
+        raise ValueError(
+            "MCA requires non-empty memory weights. "
+            "Check that NeuralLTM has num_memory_layers >= 1."
+        )
+    W = weights[0]
+    # Internal invariant (not a caller API contract) — NeuralLTM always
+    # produces 2D weight matrices; this catches corrupted state early.
+    assert W.ndim == 2, f"Expected 2D weight matrix, got {W.ndim}D"
     W = mx.stop_gradient(W)
     return block.mca(h, W)
 
