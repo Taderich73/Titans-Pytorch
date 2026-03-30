@@ -193,6 +193,22 @@ class TestModelMCA:
         assert logits.shape == (2, 32, 256)
         assert not np.any(np.isnan(np.array(logits)))
 
+    def test_mca_multi_layer_insertion(self) -> None:
+        """Multiple insertion layers each get MCA and produce valid output."""
+        config = _mca_config(mca_insertion_layers=[1, 3, 5])
+        model = TitansMAC(config)
+        input_ids = mx.random.randint(0, 256, (2, 32))
+
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (2, 32, 256)
+        assert not np.any(np.isnan(np.array(logits)))
+
+        # Verify correct blocks have MCA
+        mca_blocks = [i for i, b in enumerate(model.blocks) if b.has_mca]
+        assert mca_blocks == [1, 3, 5]
+
     def test_mca_no_regression_without(self) -> None:
         config_base = TitansConfig(
             dim=64, num_heads=4, num_layers=2, vocab_size=256,

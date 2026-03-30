@@ -160,28 +160,68 @@ class MemoryDumpManager:
             else:
                 weights_per_dump = [s / total_steps for s in all_steps]
 
+            is_tnt = self._is_tnt(all_states[0])
             num_layers = len(all_states[0])
             merged = []
             for layer_idx in range(num_layers):
-                layer_weights = []
-                layer_momentum = []
-
-                for w_idx in range(len(all_states[0][layer_idx].weights)):
-                    blended_w = sum(
-                        wt * mx.array(np.array(all_states[d][layer_idx].weights[w_idx]))
-                        for d, wt in enumerate(weights_per_dump)
+                if is_tnt:
+                    # Merge global state
+                    global_merged = self._merge_memory_state(
+                        [all_states[d][layer_idx].global_state for d in range(len(paths))],
+                        weights_per_dump,
                     )
-                    blended_m = sum(
-                        wt * mx.array(np.array(all_states[d][layer_idx].momentum[w_idx]))
-                        for d, wt in enumerate(weights_per_dump)
-                    )
-                    layer_weights.append(blended_w)
-                    layer_momentum.append(blended_m)
-
-                merged.append(MemoryState(weights=layer_weights, momentum=layer_momentum))
+                    # Merge each local state
+                    num_locals = len(all_states[0][layer_idx].local_states)
+                    local_merged = []
+                    for li in range(num_locals):
+                        local_merged.append(self._merge_memory_state(
+                            [all_states[d][layer_idx].local_states[li] for d in range(len(paths))],
+                            weights_per_dump,
+                        ))
+                    merged.append(TNTMemoryState(
+                        global_state=global_merged,
+                        local_states=local_merged,
+                        local_inits=all_states[0][layer_idx].local_inits,
+                        qk_projections=all_states[0][layer_idx].qk_projections,
+                        local_step_counters=all_states[0][layer_idx].local_step_counters,
+                    ))
+                else:
+                    merged.append(self._merge_memory_state(
+                        [all_states[d][layer_idx] for d in range(len(paths))],
+                        weights_per_dump,
+                    ))
             return merged
 
         raise ValueError(f"Unknown merge strategy: {strategy}")
+
+    @staticmethod
+    def _merge_memory_state(
+        states: list[MemoryState],
+        weights: list[float],
+    ) -> MemoryState:
+        """Weighted average of multiple MemoryState instances."""
+        layer_weights = []
+        layer_momentum = []
+        for w_idx in range(len(states[0].weights)):
+            blended_w = sum(
+                wt * mx.array(np.array(states[d].weights[w_idx]))
+                for d, wt in enumerate(weights)
+            )
+            blended_m = sum(
+                wt * mx.array(np.array(states[d].momentum[w_idx]))
+                for d, wt in enumerate(weights)
+            )
+            layer_weights.append(blended_w)
+            layer_momentum.append(blended_m)
+        return MemoryState(weights=layer_weights, momentum=layer_momentum)
+
+    @staticmethod
+    def _reset_memory_state(state: MemoryState) -> MemoryState:
+        """Zero out a single MemoryState."""
+        return MemoryState(
+            weights=[mx.zeros_like(w) for w in state.weights],
+            momentum=[mx.zeros_like(m) for m in state.momentum],
+        )
 
     def reset(self, states: list, layers: list[int] | None = None) -> list:
         """Reset memory weights and momentum to zeros."""
@@ -190,10 +230,16 @@ class MemoryDumpManager:
             if layers is not None and i not in layers:
                 result.append(state)
                 continue
-            result.append(MemoryState(
-                weights=[mx.zeros_like(w) for w in state.weights],
-                momentum=[mx.zeros_like(m) for m in state.momentum],
-            ))
+            if isinstance(state, TNTMemoryState):
+                result.append(TNTMemoryState(
+                    global_state=self._reset_memory_state(state.global_state),
+                    local_states=[self._reset_memory_state(ls) for ls in state.local_states],
+                    local_inits=state.local_inits,
+                    qk_projections=[mx.zeros_like(qk) for qk in state.qk_projections],
+                    local_step_counters=[0] * len(state.local_step_counters),
+                ))
+            else:
+                result.append(self._reset_memory_state(state))
         return result
 
     def fork(self, states: list, description: str | None = None) -> Path:

@@ -11,12 +11,28 @@ import numpy as np
 import pytest
 
 from titans_mlx.config import TitansConfig
-from titans_mlx.memory import MemoryState, NeuralLongTermMemory
+from titans_mlx.memory import MemoryState, TNTMemoryState, NeuralLongTermMemory
 
 
 def _make_states(config: TitansConfig, num_layers: int = 2) -> list[MemoryState]:
     memory = NeuralLongTermMemory(config)
     return [memory.init_state(batch_size=2) for _ in range(num_layers)]
+
+
+def _make_tnt_states(config: TitansConfig, num_layers: int = 2) -> list[TNTMemoryState]:
+    from titans_mlx.tnt_memory import HierarchicalMemory
+    memory = HierarchicalMemory(config)
+    return [memory.init_state(batch_size=2) for _ in range(num_layers)]
+
+
+def _tnt_config(dump_dir) -> TitansConfig:
+    return TitansConfig(
+        dim=64, num_heads=4, num_layers=2, vocab_size=256,
+        num_memory_layers=2, memory_hidden_mult=2.0,
+        use_tnt=True, global_chunk_size=32,
+        local_chunk_sizes=[4, 8], local_shard_length=32,
+        mca_dump_path=str(dump_dir),
+    )
 
 
 @pytest.fixture
@@ -183,6 +199,86 @@ class TestMergeResetFork:
             for wa, wb, wm in zip(sa.weights, sb.weights, sm.weights):
                 expected = (np.array(wa) + np.array(wb)) / 2.0
                 np.testing.assert_allclose(np.array(wm), expected, atol=1e-5)
+
+
+class TestTNTState:
+    """Tests for TNTMemoryState dump/load/reset/merge."""
+
+    def test_dump_load_tnt_roundtrip(self, dump_dir) -> None:
+        """Dump then load produces identical TNTMemoryState."""
+        from titans_mlx.memory_dump import MemoryDumpManager
+
+        config = _tnt_config(dump_dir)
+        mgr = MemoryDumpManager(config)
+        states = _make_tnt_states(config)
+        # Eval all tensors
+        for s in states:
+            mx.eval(*s.global_state.weights, *s.global_state.momentum)
+            for ls in s.local_states:
+                mx.eval(*ls.weights, *ls.momentum)
+            for init_list in s.local_inits:
+                mx.eval(*init_list)
+            mx.eval(*s.qk_projections)
+
+        dump_path = mgr.dump(states, step_count=50, description="tnt test")
+        assert dump_path.exists()
+
+        meta = json.loads((dump_path / "metadata.json").read_text())
+        assert meta["use_tnt"] is True
+
+        loaded = mgr.load(dump_path)
+        assert len(loaded) == len(states)
+
+        for orig, rest in zip(states, loaded):
+            # Global state
+            for ow, rw in zip(orig.global_state.weights, rest.global_state.weights):
+                np.testing.assert_allclose(np.array(ow), np.array(rw), atol=1e-6)
+            for om, rm in zip(orig.global_state.momentum, rest.global_state.momentum):
+                np.testing.assert_allclose(np.array(om), np.array(rm), atol=1e-6)
+
+    def test_reset_tnt_full(self, dump_dir) -> None:
+        """Full reset zeros TNT global and local states."""
+        from titans_mlx.memory_dump import MemoryDumpManager
+
+        config = _tnt_config(dump_dir)
+        mgr = MemoryDumpManager(config)
+        states = _make_tnt_states(config)
+        for s in states:
+            mx.eval(*s.global_state.weights, *s.global_state.momentum)
+            for ls in s.local_states:
+                mx.eval(*ls.weights, *ls.momentum)
+
+        reset_states = mgr.reset(states)
+        for s in reset_states:
+            assert isinstance(s, TNTMemoryState)
+            for w in s.global_state.weights:
+                mx.eval(w)
+                assert mx.max(mx.abs(w)).item() < 1e-10
+            for ls in s.local_states:
+                for w in ls.weights:
+                    mx.eval(w)
+                    assert mx.max(mx.abs(w)).item() < 1e-10
+
+    def test_reset_tnt_partial(self, dump_dir) -> None:
+        """Partial reset only resets specified TNT layers."""
+        from titans_mlx.memory_dump import MemoryDumpManager
+
+        config = _tnt_config(dump_dir)
+        mgr = MemoryDumpManager(config)
+        states = _make_tnt_states(config)
+        for s in states:
+            mx.eval(*s.global_state.weights, *s.global_state.momentum)
+            for ls in s.local_states:
+                mx.eval(*ls.weights, *ls.momentum)
+
+        reset_states = mgr.reset(states, layers=[0])
+        # Layer 0 global should be zeroed
+        for w in reset_states[0].global_state.weights:
+            mx.eval(w)
+            assert mx.max(mx.abs(w)).item() < 1e-10
+        # Layer 1 should be unchanged
+        for ow, rw in zip(states[1].global_state.weights, reset_states[1].global_state.weights):
+            np.testing.assert_allclose(np.array(ow), np.array(rw), atol=1e-6)
 
 
 class TestPruning:

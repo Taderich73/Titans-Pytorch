@@ -28,6 +28,27 @@ from titans_mlx.memory import MemoryState, NeuralLongTermMemory
 from titans_mlx.persistent import PersistentMemory
 
 
+def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
+    """Initialize MCA components on a block (shared across MAC/MAG/MAL)."""
+    block.has_mca = layer_idx in config.mca_active_insertion_layers
+    if block.has_mca:
+        from titans_mlx.mca import MemoryCrossAttention
+        block.mca = MemoryCrossAttention(config)
+        if config.use_attn_res:
+            from titans_mlx.attn_res import BlockAttnRes
+            block.attn_res_mca = BlockAttnRes(config.dim)
+
+
+def _mca_forward(block: nn.Module, h: mx.array, mem_state) -> mx.array:
+    """MCA sub-layer: cross-attend to NeuralLTM weight rows (shared across MAC/MAG/MAL)."""
+    if hasattr(mem_state, "global_state"):
+        W = mem_state.global_state.weights[0]
+    else:
+        W = mem_state.weights[0]
+    W = mx.stop_gradient(W)
+    return block.mca(h, W)
+
+
 class FeedForward(nn.Module):
     """Feed-forward network with gating (following recent architectures) - MLX."""
 
@@ -246,22 +267,11 @@ class MACBlock(nn.Module):
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)
-        self.has_mca = layer_idx in config.mca_active_insertion_layers
-        if self.has_mca:
-            from titans_mlx.mca import MemoryCrossAttention
-            self.mca = MemoryCrossAttention(config)
-            if config.use_attn_res:
-                from titans_mlx.attn_res import BlockAttnRes
-                self.attn_res_mca = BlockAttnRes(config.dim)
+        _init_mca(self, config, layer_idx)
 
     def mca_forward(self, h: mx.array, mem_state) -> mx.array:
         """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
-        if hasattr(mem_state, "global_state"):
-            W = mem_state.global_state.weights[0]
-        else:
-            W = mem_state.weights[0]
-        W = mx.stop_gradient(W)
-        return self.mca(h, W)
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,
@@ -478,22 +488,11 @@ class MAGBlock(nn.Module):
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)
-        self.has_mca = layer_idx in config.mca_active_insertion_layers
-        if self.has_mca:
-            from titans_mlx.mca import MemoryCrossAttention
-            self.mca = MemoryCrossAttention(config)
-            if config.use_attn_res:
-                from titans_mlx.attn_res import BlockAttnRes
-                self.attn_res_mca = BlockAttnRes(config.dim)
+        _init_mca(self, config, layer_idx)
 
     def mca_forward(self, h: mx.array, mem_state) -> mx.array:
         """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
-        if hasattr(mem_state, "global_state"):
-            W = mem_state.global_state.weights[0]
-        else:
-            W = mem_state.weights[0]
-        W = mx.stop_gradient(W)
-        return self.mca(h, W)
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,
@@ -709,22 +708,11 @@ class MALBlock(nn.Module):
             self.attn_res_gate = AttnResMemoryGate()
 
         # MCA (optional, only at insertion layers)
-        self.has_mca = layer_idx in config.mca_active_insertion_layers
-        if self.has_mca:
-            from titans_mlx.mca import MemoryCrossAttention
-            self.mca = MemoryCrossAttention(config)
-            if config.use_attn_res:
-                from titans_mlx.attn_res import BlockAttnRes
-                self.attn_res_mca = BlockAttnRes(config.dim)
+        _init_mca(self, config, layer_idx)
 
     def mca_forward(self, h: mx.array, mem_state) -> mx.array:
         """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
-        if hasattr(mem_state, "global_state"):
-            W = mem_state.global_state.weights[0]
-        else:
-            W = mem_state.weights[0]
-        W = mx.stop_gradient(W)
-        return self.mca(h, W)
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,

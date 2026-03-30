@@ -103,8 +103,6 @@ class TitansConfig:
     # Memory dump
     mca_auto_dump: bool = False
     mca_dump_trigger: str = "session_end"
-    mca_dump_every_n: int = 1000
-    mca_dump_surprise_threshold: float = 0.85
     mca_dump_path: str = "./memory_dumps/"
     mca_dump_keep_last_n: int = 10
 
@@ -220,8 +218,6 @@ class TitansConfig:
             "mca_gate_bias_init": self.mca_gate_bias_init,
             "mca_auto_dump": self.mca_auto_dump,
             "mca_dump_trigger": self.mca_dump_trigger,
-            "mca_dump_every_n": self.mca_dump_every_n,
-            "mca_dump_surprise_threshold": self.mca_dump_surprise_threshold,
             "mca_dump_path": self.mca_dump_path,
             "mca_dump_keep_last_n": self.mca_dump_keep_last_n,
             "dropout": self.dropout,
