@@ -97,6 +97,12 @@ def process_chunk(
         for i, block in enumerate(blocks):
             core_out, new_state = block.core_forward(x, state=states[i])
             x = x + core_out
+
+            # MCA sub-layer (only at insertion layers)
+            if hasattr(block, "has_mca") and block.has_mca:
+                mca_out = block.mca_forward(x, new_state)
+                x = x + mca_out
+
             ffn_out = block.ffn_forward(x)
             x = x + ffn_out
             new_states.append(new_state)
@@ -134,6 +140,20 @@ def process_chunk(
         if sub_idx % S == 0:
             completed_blocks.append(partial_block)
             partial_block = None
+
+        # --- MCA sub-layer (only at insertion layers) ---
+        if hasattr(block, "has_mca") and block.has_mca:
+            h_mca, _ = block.attn_res_mca(completed_blocks, partial_block)
+            mca_out = block.mca_forward(h_mca, new_state)
+
+            if partial_block is None:
+                partial_block = mca_out
+            else:
+                partial_block = partial_block + mca_out
+            sub_idx += 1
+            if sub_idx % S == 0:
+                completed_blocks.append(partial_block)
+                partial_block = None
 
         # --- FFN sub-layer ---
         h, _ = block.attn_res_ffn(completed_blocks, partial_block)
@@ -181,7 +201,7 @@ class MACBlock(nn.Module):
     - Long-term memory continues learning (weight updates)
     """
 
-    def __init__(self, config: TitansConfig) -> None:
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__()
         self.config = config
 
@@ -224,6 +244,24 @@ class MACBlock(nn.Module):
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
+
+        # MCA (optional, only at insertion layers)
+        self.has_mca = layer_idx in config.mca_active_insertion_layers
+        if self.has_mca:
+            from titans_mlx.mca import MemoryCrossAttention
+            self.mca = MemoryCrossAttention(config)
+            if config.use_attn_res:
+                from titans_mlx.attn_res import BlockAttnRes
+                self.attn_res_mca = BlockAttnRes(config.dim)
+
+    def mca_forward(self, h: mx.array, mem_state) -> mx.array:
+        """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
+        if hasattr(mem_state, "global_state"):
+            W = mem_state.global_state.weights[0]
+        else:
+            W = mem_state.weights[0]
+        W = mx.stop_gradient(W)
+        return self.mca(h, W)
 
     def core_forward(
         self,
@@ -316,7 +354,7 @@ class TitansMAC(nn.Module):
         self.embed = nn.Embedding(config.vocab_size, config.dim)
 
         # Stack of MAC blocks
-        self.blocks = [MACBlock(config) for _ in range(config.num_layers)]
+        self.blocks = [MACBlock(config, layer_idx=i) for i in range(config.num_layers)]
 
         # Output normalization and head
         self.norm = RMSNorm(config.dim)
@@ -400,7 +438,7 @@ class MAGBlock(nn.Module):
     while memory provides fading long-range context.
     """
 
-    def __init__(self, config: TitansConfig) -> None:
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__()
         self.config = config
 
@@ -438,6 +476,24 @@ class MAGBlock(nn.Module):
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
+
+        # MCA (optional, only at insertion layers)
+        self.has_mca = layer_idx in config.mca_active_insertion_layers
+        if self.has_mca:
+            from titans_mlx.mca import MemoryCrossAttention
+            self.mca = MemoryCrossAttention(config)
+            if config.use_attn_res:
+                from titans_mlx.attn_res import BlockAttnRes
+                self.attn_res_mca = BlockAttnRes(config.dim)
+
+    def mca_forward(self, h: mx.array, mem_state) -> mx.array:
+        """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
+        if hasattr(mem_state, "global_state"):
+            W = mem_state.global_state.weights[0]
+        else:
+            W = mem_state.weights[0]
+        W = mx.stop_gradient(W)
+        return self.mca(h, W)
 
     def core_forward(
         self,
@@ -534,7 +590,7 @@ class TitansMAG(nn.Module):
         self.embed = nn.Embedding(config.vocab_size, config.dim)
 
         # Stack of MAG blocks
-        self.blocks = [MAGBlock(config) for _ in range(config.num_layers)]
+        self.blocks = [MAGBlock(config, layer_idx=i) for i in range(config.num_layers)]
 
         # Output
         self.norm = RMSNorm(config.dim)
@@ -617,7 +673,7 @@ class MALBlock(nn.Module):
     Memory acts as a preprocessing layer before attention.
     """
 
-    def __init__(self, config: TitansConfig) -> None:
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__()
         self.config = config
 
@@ -651,6 +707,24 @@ class MALBlock(nn.Module):
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
+
+        # MCA (optional, only at insertion layers)
+        self.has_mca = layer_idx in config.mca_active_insertion_layers
+        if self.has_mca:
+            from titans_mlx.mca import MemoryCrossAttention
+            self.mca = MemoryCrossAttention(config)
+            if config.use_attn_res:
+                from titans_mlx.attn_res import BlockAttnRes
+                self.attn_res_mca = BlockAttnRes(config.dim)
+
+    def mca_forward(self, h: mx.array, mem_state) -> mx.array:
+        """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
+        if hasattr(mem_state, "global_state"):
+            W = mem_state.global_state.weights[0]
+        else:
+            W = mem_state.weights[0]
+        W = mx.stop_gradient(W)
+        return self.mca(h, W)
 
     def core_forward(
         self,
@@ -747,7 +821,7 @@ class TitansMAL(nn.Module):
         self.embed = nn.Embedding(config.vocab_size, config.dim)
 
         # Stack of MAL blocks
-        self.blocks = [MALBlock(config) for _ in range(config.num_layers)]
+        self.blocks = [MALBlock(config, layer_idx=i) for i in range(config.num_layers)]
 
         # Output
         self.norm = RMSNorm(config.dim)
