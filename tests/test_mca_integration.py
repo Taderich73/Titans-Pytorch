@@ -3,21 +3,38 @@
 
 """Integration tests for Memory Cross-Attention with model variants."""
 
-import mlx.core as mx
-import numpy as np
-import pytest
 from pathlib import Path
 
+import mlx.core as mx
+import numpy as np
+
 from titans_mlx.config import TitansConfig
-from titans_mlx.models import MACBlock, MAGBlock, MALBlock, TitansLMM, TitansMAC, TitansMAG, TitansMAL, process_chunk
+from titans_mlx.models import (
+    MACBlock,
+    MAGBlock,
+    MALBlock,
+    TitansLMM,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
+    process_chunk,
+)
 
 
 def _mca_config(**kwargs) -> TitansConfig:
     defaults = dict(
-        dim=64, num_heads=4, num_layers=6, vocab_size=256,
-        use_mca=True, mca_num_heads=4, mca_insertion_layers=[3],
-        num_memory_layers=2, memory_hidden_mult=2.0,
-        num_persistent_tokens=4, chunk_size=32, window_size=16,
+        dim=64,
+        num_heads=4,
+        num_layers=6,
+        vocab_size=256,
+        use_mca=True,
+        mca_num_heads=4,
+        mca_insertion_layers=[3],
+        num_memory_layers=2,
+        memory_hidden_mult=2.0,
+        num_persistent_tokens=4,
+        chunk_size=32,
+        window_size=16,
         max_seq_len=256,
     )
     defaults.update(kwargs)
@@ -69,8 +86,14 @@ class TestBlockMCA:
 
     def test_backward_compat_layer_idx_default(self) -> None:
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=6, vocab_size=256,
-            num_persistent_tokens=4, chunk_size=32, window_size=16, max_seq_len=256,
+            dim=64,
+            num_heads=4,
+            num_layers=6,
+            vocab_size=256,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            max_seq_len=256,
         )
         block = MACBlock(config)
         assert block.has_mca is False
@@ -91,7 +114,8 @@ class TestProcessChunkMCA:
     def test_process_chunk_attnres_with_mca(self) -> None:
         config = _mca_config(
             mca_insertion_layers=[1],
-            use_attn_res=True, num_attnres_blocks=4,
+            use_attn_res=True,
+            num_attnres_blocks=4,
         )
         blocks = [MACBlock(config, layer_idx=i) for i in range(config.num_layers)]
         chunk = mx.random.normal((2, 16, 64))
@@ -103,8 +127,14 @@ class TestProcessChunkMCA:
 
     def test_process_chunk_no_mca_unchanged(self) -> None:
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            num_persistent_tokens=4, chunk_size=32, window_size=16, max_seq_len=256,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            max_seq_len=256,
         )
         blocks = [MACBlock(config, layer_idx=i) for i in range(config.num_layers)]
         chunk = mx.random.normal((2, 16, 64))
@@ -161,8 +191,10 @@ class TestModelMCA:
 
     def test_mca_with_tnt(self) -> None:
         config = _mca_config(
-            use_tnt=True, global_chunk_size=32,
-            local_chunk_sizes=[4, 8], local_shard_length=32,
+            use_tnt=True,
+            global_chunk_size=32,
+            local_chunk_sizes=[4, 8],
+            local_shard_length=32,
         )
         model = TitansMAC(config)
         input_ids = mx.random.randint(0, 256, (2, 32))
@@ -182,9 +214,12 @@ class TestModelMCA:
 
     def test_mca_with_tnt_and_attn_res(self) -> None:
         config = _mca_config(
-            use_tnt=True, global_chunk_size=32,
-            local_chunk_sizes=[4, 8], local_shard_length=32,
-            use_attn_res=True, num_attnres_blocks=4,
+            use_tnt=True,
+            global_chunk_size=32,
+            local_chunk_sizes=[4, 8],
+            local_shard_length=32,
+            use_attn_res=True,
+            num_attnres_blocks=4,
         )
         model = TitansMAC(config)
         input_ids = mx.random.randint(0, 256, (2, 32))
@@ -211,12 +246,24 @@ class TestModelMCA:
 
     def test_mca_no_regression_without(self) -> None:
         config_base = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            num_persistent_tokens=4, chunk_size=32, window_size=16, max_seq_len=256,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            max_seq_len=256,
         )
         config_mca_off = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            num_persistent_tokens=4, chunk_size=32, window_size=16, max_seq_len=256,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            max_seq_len=256,
             use_mca=False,
         )
         mx.random.seed(42)
@@ -229,7 +276,9 @@ class TestModelMCA:
         mx.random.seed(99)
         logits_off, _ = model_mca_off(input_ids)
         mx.eval(logits_base, logits_off)
-        np.testing.assert_allclose(np.array(logits_base), np.array(logits_off), atol=1e-5)
+        np.testing.assert_allclose(
+            np.array(logits_base), np.array(logits_off), atol=1e-5
+        )
 
 
 from titans_mlx.memory_dump import MemoryDumpManager
@@ -258,9 +307,7 @@ class TestPersistenceE2E:
         logits_3, _ = model(input_ids, states=states_1)
         mx.eval(logits_3)
 
-        np.testing.assert_allclose(
-            np.array(logits_2), np.array(logits_3), atol=1e-4
-        )
+        np.testing.assert_allclose(np.array(logits_2), np.array(logits_3), atol=1e-4)
 
     def test_fork_and_diverge(self, tmp_path: Path) -> None:
         """Fork state, process different data, states diverge."""

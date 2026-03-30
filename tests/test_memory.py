@@ -187,9 +187,7 @@ class TestNeuralLongTermMemory:
         assert output.shape == x.shape
         assert state is None
 
-    def test_init_state(
-        self, default_config: TitansConfig, batch_size: int
-    ) -> None:
+    def test_init_state(self, default_config: TitansConfig, batch_size: int) -> None:
         """Test memory state initialization."""
         memory = NeuralLongTermMemory(default_config)
 

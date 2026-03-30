@@ -100,8 +100,12 @@ class TestTitansConfig:
 def test_attnres_sub_layer_block_size():
     """Sub-layer block size accounts for 2 sub-layers per block."""
     config = TitansConfig(
-        dim=32, num_heads=4, num_layers=12, vocab_size=100,
-        use_attn_res=True, num_attnres_blocks=4,
+        dim=32,
+        num_heads=4,
+        num_layers=12,
+        vocab_size=100,
+        use_attn_res=True,
+        num_attnres_blocks=4,
     )
     # 12 layers * 2 sub-layers / 4 blocks = 6 sub-layers per block
     assert config.attnres_sub_layer_block_size == 6
@@ -110,8 +114,12 @@ def test_attnres_sub_layer_block_size():
 def test_attnres_sub_layer_block_size_default():
     """Default 8 blocks with 12 layers."""
     config = TitansConfig(
-        dim=32, num_heads=4, num_layers=12, vocab_size=100,
-        use_attn_res=True, num_attnres_blocks=8,
+        dim=32,
+        num_heads=4,
+        num_layers=12,
+        vocab_size=100,
+        use_attn_res=True,
+        num_attnres_blocks=8,
     )
     # 12 * 2 / 8 = 3
     assert config.attnres_sub_layer_block_size == 3
@@ -189,8 +197,10 @@ class TestMCAConfig:
         """AttnRes sub-layer block size accounts for MCA layers."""
         base = TitansConfig(num_layers=6, num_attnres_blocks=4)
         mca = TitansConfig(
-            num_layers=6, num_attnres_blocks=4,
-            use_mca=True, mca_insertion_layers=[3],
+            num_layers=6,
+            num_attnres_blocks=4,
+            use_mca=True,
+            mca_insertion_layers=[3],
         )
         assert base.attnres_sub_layer_block_size == 3
         assert mca.attnres_sub_layer_block_size == 3
@@ -198,7 +208,9 @@ class TestMCAConfig:
     def test_mca_in_to_dict(self) -> None:
         """MCA fields round-trip through to_dict/from_dict."""
         config = TitansConfig(
-            use_mca=True, mca_insertion_layers=[4], mca_num_heads=4,
+            use_mca=True,
+            mca_insertion_layers=[4],
+            mca_num_heads=4,
         )
         d = config.to_dict()
         assert d["use_mca"] is True

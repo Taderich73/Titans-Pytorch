@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from titans_mlx.config import TitansConfig
-from titans_mlx.memory import MemoryState, TNTMemoryState, NeuralLongTermMemory
+from titans_mlx.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 
 
 def _make_states(config: TitansConfig, num_layers: int = 2) -> list[MemoryState]:
@@ -21,16 +21,23 @@ def _make_states(config: TitansConfig, num_layers: int = 2) -> list[MemoryState]
 
 def _make_tnt_states(config: TitansConfig, num_layers: int = 2) -> list[TNTMemoryState]:
     from titans_mlx.tnt_memory import HierarchicalMemory
+
     memory = HierarchicalMemory(config)
     return [memory.init_state(batch_size=2) for _ in range(num_layers)]
 
 
 def _tnt_config(dump_dir) -> TitansConfig:
     return TitansConfig(
-        dim=64, num_heads=4, num_layers=2, vocab_size=256,
-        num_memory_layers=2, memory_hidden_mult=2.0,
-        use_tnt=True, global_chunk_size=32,
-        local_chunk_sizes=[4, 8], local_shard_length=32,
+        dim=64,
+        num_heads=4,
+        num_layers=2,
+        vocab_size=256,
+        num_memory_layers=2,
+        memory_hidden_mult=2.0,
+        use_tnt=True,
+        global_chunk_size=32,
+        local_chunk_sizes=[4, 8],
+        local_shard_length=32,
         mca_dump_path=str(dump_dir),
     )
 
@@ -43,8 +50,12 @@ def dump_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def dump_config(dump_dir: Path) -> TitansConfig:
     return TitansConfig(
-        dim=64, num_heads=4, num_layers=2, vocab_size=256,
-        num_memory_layers=2, memory_hidden_mult=2.0,
+        dim=64,
+        num_heads=4,
+        num_layers=2,
+        vocab_size=256,
+        num_memory_layers=2,
+        memory_hidden_mult=2.0,
         mca_dump_path=str(dump_dir),
     )
 
@@ -52,6 +63,7 @@ def dump_config(dump_dir: Path) -> TitansConfig:
 class TestDumpRoundTrip:
     def test_dump_load_memory_state(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -68,6 +80,7 @@ class TestDumpRoundTrip:
 
     def test_metadata_content(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -82,13 +95,18 @@ class TestDumpRoundTrip:
 
     def test_dump_strict_mismatch(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
         dump_path = mgr.dump(states)
         different_config = TitansConfig(
-            dim=32, num_heads=2, num_layers=2, vocab_size=256,
-            num_memory_layers=2, memory_hidden_mult=2.0,
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            vocab_size=256,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
             mca_dump_path=str(dump_dir),
         )
         mgr2 = MemoryDumpManager(different_config)
@@ -99,6 +117,7 @@ class TestDumpRoundTrip:
 class TestInspect:
     def test_inspect_returns_stats(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -114,6 +133,7 @@ class TestInspect:
 class TestDiff:
     def test_diff_identical(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -125,6 +145,7 @@ class TestDiff:
 
     def test_diff_after_update(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         memory = NeuralLongTermMemory(dump_config)
         states = [memory.init_state(2) for _ in range(2)]
@@ -144,6 +165,7 @@ class TestDiff:
 class TestMergeResetFork:
     def test_reset_full(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -158,6 +180,7 @@ class TestMergeResetFork:
 
     def test_reset_partial(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -170,6 +193,7 @@ class TestMergeResetFork:
 
     def test_fork_no_mutation(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states = _make_states(dump_config)
         mx.eval(*[w for s in states for w in s.weights + s.momentum])
@@ -184,6 +208,7 @@ class TestMergeResetFork:
 
     def test_merge_weighted_mean(self, dump_config, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         mgr = MemoryDumpManager(dump_config)
         states_a = _make_states(dump_config)
         states_b = _make_states(dump_config)
@@ -277,17 +302,25 @@ class TestTNTState:
             mx.eval(w)
             assert mx.max(mx.abs(w)).item() < 1e-10
         # Layer 1 should be unchanged
-        for ow, rw in zip(states[1].global_state.weights, reset_states[1].global_state.weights):
+        for ow, rw in zip(
+            states[1].global_state.weights, reset_states[1].global_state.weights
+        ):
             np.testing.assert_allclose(np.array(ow), np.array(rw), atol=1e-6)
 
 
 class TestPruning:
     def test_prunes_old_dumps(self, dump_dir) -> None:
         from titans_mlx.memory_dump import MemoryDumpManager
+
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            num_memory_layers=2, memory_hidden_mult=2.0,
-            mca_dump_path=str(dump_dir), mca_dump_keep_last_n=3,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            mca_dump_path=str(dump_dir),
+            mca_dump_keep_last_n=3,
         )
         mgr = MemoryDumpManager(config)
         states = _make_states(config)

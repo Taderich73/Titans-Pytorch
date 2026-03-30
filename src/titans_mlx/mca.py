@@ -75,7 +75,7 @@ class MemoryCrossAttention(nn.Module):
         V = mx.broadcast_to(V, (B, self.num_heads, num_rows, self.head_dim))
 
         # Scaled dot-product attention (no causal mask — all rows visible)
-        scale = self.head_dim ** -0.5
+        scale = self.head_dim**-0.5
         attn_scores = Q @ K.transpose(0, 1, 3, 2) * scale
         attn_weights = mx.softmax(attn_scores, axis=-1)
         attn_out = attn_weights @ V  # [B, heads, T, head_dim]

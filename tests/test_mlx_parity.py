@@ -206,9 +206,7 @@ class TestGradientComputation:
 
         for w_old, w_new in zip(state.weights, new_state.weights, strict=True):
             mx.eval(w_old, w_new)
-            assert not np.allclose(
-                np.array(w_old), np.array(w_new), rtol=1e-3
-            )
+            assert not np.allclose(np.array(w_old), np.array(w_new), rtol=1e-3)
 
 
 class TestChunkedProcessing:

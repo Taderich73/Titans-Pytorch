@@ -3,10 +3,10 @@
 
 """Tests for Titans model variants (MLX)."""
 
-import pytest
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+import pytest
 from mlx.utils import tree_flatten
 
 from titans_mlx.config import TitansConfig
@@ -118,7 +118,10 @@ class TestMACBlockSubLayers:
 
     def setup_method(self):
         self.config = TitansConfig(
-            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            dim=32,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=100,
             chunk_size=16,
         )
         self.block = MACBlock(self.config)
@@ -158,7 +161,10 @@ class TestMACBlockSubLayers:
     def test_tnt_memory_selection(self):
         """use_tnt=True should select HierarchicalMemory."""
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=2, vocab_size=100,
+            dim=32,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=100,
             use_tnt=True,
         )
         block = MACBlock(config)
@@ -173,15 +179,11 @@ class TestMACBlockSubLayers:
 class TestTitansMAC:
     """Tests for TitansMAC model."""
 
-    def test_forward(
-        self, small_config: TitansConfig, batch_size: int
-    ) -> None:
+    def test_forward(self, small_config: TitansConfig, batch_size: int) -> None:
         """Test full forward pass."""
         model = TitansMAC(small_config)
         seq_len = small_config.chunk_size * 2
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -211,17 +213,13 @@ class TestTitansMAC:
         assert logits2.shape[0] == batch_size
         assert len(states2) == small_config.num_layers
 
-    def test_chunking(
-        self, small_config: TitansConfig, batch_size: int
-    ) -> None:
+    def test_chunking(self, small_config: TitansConfig, batch_size: int) -> None:
         """Test sequence is processed in chunks."""
         model = TitansMAC(small_config)
         chunk_size = small_config.chunk_size
         seq_len = chunk_size * 3
 
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
         logits, _ = model(input_ids)
         mx.eval(logits)
 
@@ -281,9 +279,7 @@ class TestTitansMAG:
     ) -> None:
         """Test full forward pass."""
         model = TitansMAG(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -300,9 +296,7 @@ class TestTitansMAG:
     ) -> None:
         """Test forward with continuing states."""
         model = TitansMAG(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         _, states1 = model(input_ids)
         mx.eval(states1[0].weights[0])
@@ -362,9 +356,7 @@ class TestTitansMAL:
     ) -> None:
         """Test full forward pass."""
         model = TitansMAL(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -381,9 +373,7 @@ class TestTitansMAL:
     ) -> None:
         """Test forward with continuing states."""
         model = TitansMAL(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         _, states1 = model(input_ids)
         mx.eval(states1[0].weights[0])
@@ -443,9 +433,7 @@ class TestTitansLMM:
     ) -> None:
         """Test full forward pass."""
         model = TitansLMM(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         logits, states = model(input_ids)
         mx.eval(logits)
@@ -462,9 +450,7 @@ class TestTitansLMM:
     ) -> None:
         """Test forward with continuing states."""
         model = TitansLMM(small_config)
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         _, states1 = model(input_ids)
         mx.eval(states1[0].weights[0])
@@ -486,8 +472,12 @@ class TestTitansLMM:
 class TestMAGBlockSubLayers:
     def setup_method(self):
         self.config = TitansConfig(
-            dim=32, num_heads=4, num_layers=2, vocab_size=100,
-            chunk_size=16, window_size=16,
+            dim=32,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
         )
         self.block = MAGBlock(self.config)
         self.batch, self.seq, self.dim = 2, 16, 32
@@ -504,11 +494,16 @@ class TestMAGBlockSubLayers:
 
     def test_tnt_memory_selection(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=2, vocab_size=100,
-            use_tnt=True, window_size=16,
+            dim=32,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=100,
+            use_tnt=True,
+            window_size=16,
         )
         block = MAGBlock(config)
         from titans_mlx.tnt_memory import HierarchicalMemory
+
         assert isinstance(block.memory, HierarchicalMemory)
 
     def test_backward_compat_call(self):
@@ -577,8 +572,12 @@ class TestGatingNormalization:
 class TestMALBlockSubLayers:
     def setup_method(self):
         self.config = TitansConfig(
-            dim=32, num_heads=4, num_layers=2, vocab_size=100,
-            chunk_size=16, window_size=16,
+            dim=32,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
         )
         self.block = MALBlock(self.config)
         self.batch, self.seq, self.dim = 2, 16, 32
@@ -604,7 +603,10 @@ class TestProcessChunk:
 
     def setup_method(self):
         self.config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
             chunk_size=16,
         )
 
@@ -613,15 +615,22 @@ class TestProcessChunk:
         blocks = [MACBlock(self.config) for _ in range(4)]
         chunk = mx.random.normal((2, 16, 32))
         states = [None] * 4
-        output, new_states = process_chunk(blocks, chunk, states, self.config, step_count=0)
+        output, new_states = process_chunk(
+            blocks, chunk, states, self.config, step_count=0
+        )
         assert output.shape == (2, 16, 32)
         assert len(new_states) == 4
 
     def test_attnres_path(self):
         """With AttnRes, process_chunk uses AttnRes orchestration."""
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         blocks = [MACBlock(config) for _ in range(4)]
         chunk = mx.random.normal((2, 16, 32))
@@ -633,8 +642,13 @@ class TestProcessChunk:
     def test_attnres_warmup_bypasses_gate(self):
         """During warmup, memory_gate should be None."""
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            num_attnres_blocks=2,
             attnres_warmup_steps=100,
         )
         blocks = [MACBlock(config) for _ in range(4)]
@@ -646,8 +660,13 @@ class TestProcessChunk:
     def test_attnres_with_tnt_memory(self):
         """AttnRes + TNT memory should work together."""
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, use_tnt=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            use_tnt=True,
             num_attnres_blocks=2,
         )
         blocks = [MACBlock(config) for _ in range(4)]
@@ -662,8 +681,13 @@ class TestTitansMACAttnRes:
 
     def test_forward_with_attn_res(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAC(config)
         input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8]])
@@ -672,8 +696,13 @@ class TestTitansMACAttnRes:
 
     def test_forward_with_attn_res_and_tnt(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, use_tnt=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            use_tnt=True,
             num_attnres_blocks=2,
         )
         model = TitansMAC(config)
@@ -683,8 +712,13 @@ class TestTitansMACAttnRes:
 
     def test_step_count_increments(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, use_attn_res=True, num_attnres_blocks=2,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAC(config)
         input_ids = mx.array([[1, 2, 3, 4]])
@@ -699,8 +733,13 @@ class TestTitansMAGAttnRes:
 
     def test_forward_with_attn_res(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, window_size=16, use_attn_res=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
+            use_attn_res=True,
             num_attnres_blocks=2,
         )
         model = TitansMAG(config)
@@ -710,8 +749,13 @@ class TestTitansMAGAttnRes:
 
     def test_step_count_increments(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, window_size=16, use_attn_res=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
+            use_attn_res=True,
             num_attnres_blocks=2,
         )
         model = TitansMAG(config)
@@ -727,8 +771,13 @@ class TestTitansMALAttnRes:
 
     def test_forward_with_attn_res(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, window_size=16, use_attn_res=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
+            use_attn_res=True,
             num_attnres_blocks=2,
         )
         model = TitansMAL(config)
@@ -738,8 +787,13 @@ class TestTitansMALAttnRes:
 
     def test_step_count_increments(self):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, window_size=16, use_attn_res=True,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
+            use_attn_res=True,
             num_attnres_blocks=2,
         )
         model = TitansMAL(config)
@@ -758,9 +812,7 @@ class TestModelsIntegration:
     ) -> None:
         """Test all models produce valid logits."""
         seq_len = 16
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         models = [
             TitansMAC(small_config),
@@ -786,9 +838,7 @@ class TestModelsIntegration:
     ) -> None:
         """Test all models return memory states."""
         seq_len = 16
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         models = [
             TitansMAC(small_config),
@@ -800,9 +850,7 @@ class TestModelsIntegration:
         for model in models:
             _, states = model(input_ids)
 
-            assert states is not None, (
-                f"{type(model).__name__} returned None states"
-            )
+            assert states is not None, f"{type(model).__name__} returned None states"
             assert len(states) == small_config.num_layers
 
     def test_gradient_flow_via_value_and_grad(
@@ -810,12 +858,8 @@ class TestModelsIntegration:
     ) -> None:
         """Test gradients flow through models using mx.value_and_grad."""
         seq_len = 16
-        input_ids = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
-        targets = mx.random.randint(
-            0, small_config.vocab_size, (batch_size, seq_len)
-        )
+        input_ids = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
+        targets = mx.random.randint(0, small_config.vocab_size, (batch_size, seq_len))
 
         model = TitansLMM(small_config)
 
@@ -823,18 +867,14 @@ class TestModelsIntegration:
             logits, _ = model(input_ids)
             logits_flat = logits.reshape(-1, small_config.vocab_size)
             targets_flat = targets.reshape(-1)
-            return nn.losses.cross_entropy(
-                logits_flat, targets_flat
-            ).mean()
+            return nn.losses.cross_entropy(logits_flat, targets_flat).mean()
 
         loss, grads = nn.value_and_grad(model, loss_fn)(model)
         mx.eval(loss)
 
         assert float(loss) > 0
         flat_grads = tree_flatten(grads)
-        has_nonzero = any(
-            float(mx.abs(g).sum()) > 0 for _, g in flat_grads
-        )
+        has_nonzero = any(float(mx.abs(g).sum()) > 0 for _, g in flat_grads)
         assert has_nonzero, "Expected at least some non-zero gradients"
 
 
@@ -846,9 +886,14 @@ class TestFlagCombinations:
     @pytest.mark.parametrize("use_attn_res", [False, True])
     def test_forward_pass(self, model_cls, use_tnt, use_attn_res):
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=4, vocab_size=100,
-            chunk_size=16, window_size=16,
-            use_tnt=use_tnt, use_attn_res=use_attn_res,
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            chunk_size=16,
+            window_size=16,
+            use_tnt=use_tnt,
+            use_attn_res=use_attn_res,
             num_attnres_blocks=2,
         )
         model = model_cls(config)
@@ -861,8 +906,13 @@ class TestFlagCombinations:
 def test_multi_chunk_attn_res():
     """AttnRes should work when seq_len > chunk_size (multiple chunks)."""
     config = TitansConfig(
-        dim=32, num_heads=4, num_layers=4, vocab_size=100,
-        chunk_size=8, use_attn_res=True, num_attnres_blocks=2,
+        dim=32,
+        num_heads=4,
+        num_layers=4,
+        vocab_size=100,
+        chunk_size=8,
+        use_attn_res=True,
+        num_attnres_blocks=2,
     )
     model = TitansMAC(config)
     # seq_len=16 > chunk_size=8 → 2 chunks

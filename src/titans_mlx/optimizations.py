@@ -18,8 +18,9 @@ These optimizations leverage MLX's unique features:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Callable
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -71,7 +72,7 @@ def get_causal_mask(seq_len: int) -> mx.array:
     Returns:
         Lower triangular boolean mask (seq_len, seq_len)
     """
-    return mx.tril(mx.ones((seq_len, seq_len), dtype=mx.bool_))
+    return mx.tril(mx.ones((seq_len, seq_len), dtype=mx.bool_))  # type: ignore[call-arg]
 
 
 @lru_cache(maxsize=32)
@@ -331,12 +332,12 @@ def evaluate_all(*arrays: mx.array) -> None:
 
 
 def benchmark_function(
-    fn: Callable,
-    *args,
+    fn: Callable[..., Any],
+    *args: Any,
     warmup: int = 3,
     repeat: int = 10,
-    **kwargs,
-) -> dict:
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Benchmark a function on Apple Silicon.
 
     Args:

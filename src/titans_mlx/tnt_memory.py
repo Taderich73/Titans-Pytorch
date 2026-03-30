@@ -127,7 +127,7 @@ class LocalMemory(nn.Module):
         """Learnable initial weights for periodic reset."""
         return self._w_init
 
-    def init_state(self, batch_size: int) -> MemoryState:
+    def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
         """Initialize local memory with learnable W_init."""
         weights = [mx.array(w) for w in self._w_init]
         momentum = [mx.zeros_like(w) for w in weights]
@@ -239,12 +239,9 @@ class HierarchicalMemory(nn.Module):
         """
         global_state = self.global_memory.init_state(batch_size)
         local_states = [lm.init_state(batch_size) for lm in self.local_memories]
-        local_inits = [
-            [mx.array(w) for w in lm.w_init] for lm in self.local_memories
-        ]
+        local_inits = [[mx.array(w) for w in lm.w_init] for lm in self.local_memories]
         qk_projections = [
-            mx.zeros((self.config.dim, self.config.dim))
-            for _ in self.local_memories
+            mx.zeros((self.config.dim, self.config.dim)) for _ in self.local_memories
         ]
         local_step_counters = [0] * len(self.local_memories)
 
@@ -321,10 +318,15 @@ class HierarchicalMemory(nn.Module):
             needs_keys = local_mem.qk_proj is not None
             if needs_keys:
                 local_out, new_local_state, normed_keys = local_mem(
-                    x, state=local_state, lr_scale=local_lr_scale, return_keys=True,
+                    x,
+                    state=local_state,
+                    lr_scale=local_lr_scale,
+                    return_keys=True,
                 )
             else:
-                local_out, new_local_state = local_mem(x, state=local_state, lr_scale=local_lr_scale)
+                local_out, new_local_state = local_mem(
+                    x, state=local_state, lr_scale=local_lr_scale
+                )
             new_local_states.append(new_local_state)
 
             # Update Q-K projection state with cached keys from the forward pass

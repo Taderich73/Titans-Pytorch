@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 
 from titans_mlx.config import TitansConfig
@@ -121,11 +120,13 @@ class TestDPOLoss:
         ref_chosen_logps = mx.array([-2.0])
         ref_rejected_logps = mx.array([-2.0])
 
-        loss_good = dpo_loss(chosen_logps, rejected_logps,
-                             ref_chosen_logps, ref_rejected_logps, beta=0.1)
+        loss_good = dpo_loss(
+            chosen_logps, rejected_logps, ref_chosen_logps, ref_rejected_logps, beta=0.1
+        )
 
-        loss_bad = dpo_loss(rejected_logps, chosen_logps,
-                            ref_chosen_logps, ref_rejected_logps, beta=0.1)
+        loss_bad = dpo_loss(
+            rejected_logps, chosen_logps, ref_chosen_logps, ref_rejected_logps, beta=0.1
+        )
         mx.eval(loss_good, loss_bad)
 
         assert float(loss_good) < float(loss_bad)
@@ -139,10 +140,16 @@ class TestDPOLoss:
         ref_chosen_logps = mx.array([-2.0])
         ref_rejected_logps = mx.array([-2.0])
 
-        loss_low_beta = dpo_loss(chosen_logps, rejected_logps,
-                                  ref_chosen_logps, ref_rejected_logps, beta=0.01)
-        loss_high_beta = dpo_loss(chosen_logps, rejected_logps,
-                                   ref_chosen_logps, ref_rejected_logps, beta=1.0)
+        loss_low_beta = dpo_loss(
+            chosen_logps,
+            rejected_logps,
+            ref_chosen_logps,
+            ref_rejected_logps,
+            beta=0.01,
+        )
+        loss_high_beta = dpo_loss(
+            chosen_logps, rejected_logps, ref_chosen_logps, ref_rejected_logps, beta=1.0
+        )
         mx.eval(loss_low_beta, loss_high_beta)
 
         assert float(loss_low_beta) != float(loss_high_beta)
@@ -158,8 +165,7 @@ class TestSimPOLoss:
         chosen_avg_logps = mx.array([-1.0])
         rejected_avg_logps = mx.array([-3.0])
 
-        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps,
-                          beta=0.1, gamma=1.0)
+        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps, beta=0.1, gamma=1.0)
         mx.eval(loss)
 
         assert np.isfinite(float(loss))
@@ -171,8 +177,7 @@ class TestSimPOLoss:
 
         chosen_avg_logps = mx.array([-1.0])
         rejected_avg_logps = mx.array([-2.0])
-        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps,
-                          beta=0.1, gamma=0.5)
+        loss = simpo_loss(chosen_avg_logps, rejected_avg_logps, beta=0.1, gamma=0.5)
         mx.eval(loss)
         assert np.isfinite(float(loss))
 
@@ -182,8 +187,9 @@ class TestDPOStreamingDataset:
 
     def test_batch_shape(self) -> None:
         """Batch has correct keys and shapes."""
-        from scripts.dpo import DPOStreamingDataset
         from unittest.mock import MagicMock
+
+        from scripts.dpo import DPOStreamingDataset
 
         tokenizer = MagicMock()
         tokenizer.chat_template = None
@@ -195,7 +201,7 @@ class TestDPOStreamingDataset:
         dataset.tokenizer = tokenizer
         dataset.max_len = 32
 
-        from scripts.dpo import extract_messages, tokenize_sequence
+        from scripts.dpo import tokenize_sequence
 
         chosen_msgs = [
             {"role": "user", "content": "Hi"},
@@ -214,7 +220,7 @@ class TestDPOStreamingDataset:
         assert sum(c_mask) > 0
 
 
-from scripts.lora import wrap_lora_layers, set_lora_enabled, _find_lora_modules
+from scripts.lora import set_lora_enabled, wrap_lora_layers
 
 
 class TestDPOIntegration:
@@ -245,8 +251,10 @@ class TestDPOIntegration:
         mx.eval(pi_chosen, pi_rejected, ref_chosen, ref_rejected)
 
         loss = dpo_loss(
-            pi_chosen.sum(axis=1), pi_rejected.sum(axis=1),
-            ref_chosen.sum(axis=1), ref_rejected.sum(axis=1),
+            pi_chosen.sum(axis=1),
+            pi_rejected.sum(axis=1),
+            ref_chosen.sum(axis=1),
+            ref_rejected.sum(axis=1),
             beta=0.1,
         )
         mx.eval(loss)
@@ -272,7 +280,8 @@ class TestDPOIntegration:
         loss = simpo_loss(
             chosen_lps.sum(axis=1) / lengths,
             rejected_lps.sum(axis=1) / lengths,
-            beta=0.1, gamma=1.0,
+            beta=0.1,
+            gamma=1.0,
         )
         mx.eval(loss)
         assert np.isfinite(float(loss))

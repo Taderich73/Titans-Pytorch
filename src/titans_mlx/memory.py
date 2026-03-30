@@ -21,9 +21,9 @@ MLX-specific optimizations:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -103,8 +103,7 @@ class TNTMemoryState:
             global_state=self.global_state.detach(),
             local_states=[s.detach() for s in self.local_states],
             local_inits=[
-                [mx.stop_gradient(w) for w in init]
-                for init in self.local_inits
+                [mx.stop_gradient(w) for w in init] for init in self.local_inits
             ],
             qk_projections=[mx.stop_gradient(m) for m in self.qk_projections],
             local_step_counters=list(self.local_step_counters),
@@ -153,7 +152,10 @@ def save_memory_states(states: list, path: Path) -> None:
         states: List of MemoryState or QuantizedMemoryState, one per model layer.
         path: Output file path (will be saved as .npz).
     """
-    from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor  # noqa: PLC0415
+    from titans_mlx.quantize_state import (  # noqa: PLC0415
+        QuantizedMemoryState,
+        QuantizedTensor,
+    )
 
     arrays: dict[str, np.ndarray] = {}
     arrays["num_layers"] = np.array([len(states)])
@@ -223,7 +225,7 @@ def load_memory_states(path: Path) -> list:
     data = np.load(str(path))
 
     if "num_layers" not in data:
-        raise ValueError(f"Invalid memory state file: missing 'num_layers' metadata")
+        raise ValueError("Invalid memory state file: missing 'num_layers' metadata")
 
     num_layers = int(data["num_layers"][0])
     is_quantized_file = "quantized" in data and int(data["quantized"][0]) == 1
@@ -231,7 +233,10 @@ def load_memory_states(path: Path) -> list:
     states: list = []
 
     if is_quantized_file:
-        from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor  # noqa: PLC0415
+        from titans_mlx.quantize_state import (  # noqa: PLC0415
+            QuantizedMemoryState,
+            QuantizedTensor,
+        )
 
         for i in range(num_layers):
             key = f"num_memory_layers_{i}"
@@ -251,7 +256,9 @@ def load_memory_states(path: Path) -> list:
                         data=mx.array(data[f"layer_{i}_weight_{j}_data"]),
                         scale=mx.array(data[f"layer_{i}_weight_{j}_scale"]),
                         zero_point=mx.array(data[f"layer_{i}_weight_{j}_zp"]),
-                        original_shape=tuple(int(x) for x in data[f"layer_{i}_weight_{j}_shape"]),
+                        original_shape=tuple(
+                            int(x) for x in data[f"layer_{i}_weight_{j}_shape"]
+                        ),
                         bits=int(data[f"layer_{i}_weight_{j}_bits"][0]),
                     )
                     weights.append(w)
@@ -266,7 +273,9 @@ def load_memory_states(path: Path) -> list:
                             data=mx.array(data[f"layer_{i}_momentum_{j}_data"]),
                             scale=mx.array(data[f"layer_{i}_momentum_{j}_scale"]),
                             zero_point=mx.array(data[f"layer_{i}_momentum_{j}_zp"]),
-                            original_shape=tuple(int(x) for x in data[f"layer_{i}_momentum_{j}_shape"]),
+                            original_shape=tuple(
+                                int(x) for x in data[f"layer_{i}_momentum_{j}_shape"]
+                            ),
                             bits=int(data[f"layer_{i}_momentum_{j}_bits"][0]),
                         )
                     else:
@@ -281,7 +290,9 @@ def load_memory_states(path: Path) -> list:
                 for j in range(num_memory_layers):
                     plain_weights.append(mx.array(data[f"layer_{i}_weight_{j}"]))
                     plain_momentum.append(mx.array(data[f"layer_{i}_momentum_{j}"]))
-                states.append(MemoryState(weights=plain_weights, momentum=plain_momentum))
+                states.append(
+                    MemoryState(weights=plain_weights, momentum=plain_momentum)
+                )
     else:
         for i in range(num_layers):
             key = f"num_memory_layers_{i}"
@@ -301,7 +312,11 @@ def load_memory_states(path: Path) -> list:
                 plain_weights_compat.append(mx.array(data[wk]))
                 plain_momentum_compat.append(mx.array(data[mk]))
 
-            states.append(MemoryState(weights=plain_weights_compat, momentum=plain_momentum_compat))
+            states.append(
+                MemoryState(
+                    weights=plain_weights_compat, momentum=plain_momentum_compat
+                )
+            )
 
     return states
 
@@ -387,12 +402,10 @@ def load_tnt_memory_states(path: Path) -> list[TNTMemoryState]:
         # Global state
         n_global = int(data[f"layer_{i}_global_num_weights"][0])
         global_weights = [
-            mx.array(data[f"layer_{i}_global_weight_{j}"])
-            for j in range(n_global)
+            mx.array(data[f"layer_{i}_global_weight_{j}"]) for j in range(n_global)
         ]
         global_momentum = [
-            mx.array(data[f"layer_{i}_global_momentum_{j}"])
-            for j in range(n_global)
+            mx.array(data[f"layer_{i}_global_momentum_{j}"]) for j in range(n_global)
         ]
         global_state = MemoryState(weights=global_weights, momentum=global_momentum)
 
@@ -405,8 +418,7 @@ def load_tnt_memory_states(path: Path) -> list[TNTMemoryState]:
         for li in range(n_locals):
             n_lw = int(data[f"layer_{i}_local_{li}_num_weights"][0])
             lw = [
-                mx.array(data[f"layer_{i}_local_{li}_weight_{j}"])
-                for j in range(n_lw)
+                mx.array(data[f"layer_{i}_local_{li}_weight_{j}"]) for j in range(n_lw)
             ]
             lm = [
                 mx.array(data[f"layer_{i}_local_{li}_momentum_{j}"])
@@ -416,8 +428,7 @@ def load_tnt_memory_states(path: Path) -> list[TNTMemoryState]:
 
             # Local inits
             li_inits = [
-                mx.array(data[f"layer_{i}_local_{li}_init_{j}"])
-                for j in range(n_lw)
+                mx.array(data[f"layer_{i}_local_{li}_init_{j}"]) for j in range(n_lw)
             ]
             local_inits.append(li_inits)
 
@@ -425,15 +436,17 @@ def load_tnt_memory_states(path: Path) -> list[TNTMemoryState]:
             qk_projections.append(mx.array(data[f"layer_{i}_qk_proj_{li}"]))
 
         # Step counters
-        step_counters = list(int(x) for x in data[f"layer_{i}_step_counters"])
+        step_counters = [int(x) for x in data[f"layer_{i}_step_counters"]]
 
-        states.append(TNTMemoryState(
-            global_state=global_state,
-            local_states=local_states,
-            local_inits=local_inits,
-            qk_projections=qk_projections,
-            local_step_counters=step_counters,
-        ))
+        states.append(
+            TNTMemoryState(
+                global_state=global_state,
+                local_states=local_states,
+                local_inits=local_inits,
+                qk_projections=qk_projections,
+                local_step_counters=step_counters,
+            )
+        )
 
     return states
 
@@ -700,7 +713,7 @@ class NeuralLongTermMemory(nn.Module):
         # Flatten batch and seq dims, then use matmul instead of outer product
         batch_seq = error.shape[0] * error.shape[1]
         error_flat = error.reshape(batch_seq, -1)  # (B*S, D_out)
-        keys_flat = keys.reshape(batch_seq, -1)    # (B*S, D_in)
+        keys_flat = keys.reshape(batch_seq, -1)  # (B*S, D_in)
         grad_w = scale * (error_flat.T @ keys_flat)  # (D_out, D_in)
 
         grad_clip = self.config.memory_grad_clip
@@ -749,8 +762,8 @@ class NeuralLongTermMemory(nn.Module):
 
             # Efficient gradient via matmul: (D_out, B*S) @ (B*S, D_in) -> (D_out, D_in)
             delta_flat = delta.reshape(batch_seq, -1)  # (B*S, D_out)
-            act_flat = act.reshape(batch_seq, -1)      # (B*S, D_in)
-            grad_w = delta_flat.T @ act_flat           # (D_out, D_in)
+            act_flat = act.reshape(batch_seq, -1)  # (B*S, D_in)
+            grad_w = delta_flat.T @ act_flat  # (D_out, D_in)
             grads[i] = mx.clip(grad_w, -grad_clip, grad_clip)
 
             # Propagate gradient to previous layer
@@ -761,7 +774,7 @@ class NeuralLongTermMemory(nn.Module):
 
         return grads
 
-    def init_state(self, batch_size: int) -> MemoryState:
+    def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
         """Initialize memory state.
 
         Args:
@@ -786,7 +799,10 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | mx.array = 1.0,
         memory_gate: mx.array | None = None,
         return_keys: bool = False,
-    ) -> tuple[mx.array, MemoryState | None] | tuple[mx.array, MemoryState | None, mx.array]:
+    ) -> (
+        tuple[mx.array, MemoryState | None]
+        | tuple[mx.array, MemoryState | None, mx.array]
+    ):
         """Forward pass with memory update.
 
         Args:
@@ -808,7 +824,10 @@ class NeuralLongTermMemory(nn.Module):
             state = self.init_state(batch_size)
 
         # Dequantize incoming state if quantized
-        from titans_mlx.quantize_state import QuantizedMemoryState  # lazy to avoid circular import
+        from titans_mlx.quantize_state import (
+            QuantizedMemoryState,  # lazy to avoid circular import
+        )
+
         if isinstance(state, QuantizedMemoryState):
             state = state.dequantize()
 
@@ -828,12 +847,12 @@ class NeuralLongTermMemory(nn.Module):
         # Normalize using L2-norm (compute in float32 to avoid bfloat16 underflow)
         q_f32 = q.astype(mx.float32)
         k_f32 = k.astype(mx.float32)
-        q = (q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)).astype(
-            q.dtype
-        )
-        k = (k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)).astype(
-            k.dtype
-        )
+        q = (
+            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)
+        ).astype(q.dtype)
+        k = (
+            k_f32 / mx.sqrt(mx.sum(k_f32 * k_f32, axis=-1, keepdims=True) + 1e-8)
+        ).astype(k.dtype)
 
         # Retrieve from memory using explicit state weights (no module mutation)
         retrieved = self.memory.forward_with_weights(q, state.weights)
@@ -885,7 +904,10 @@ class NeuralLongTermMemory(nn.Module):
         if return_state:
             detached = new_state.detach()
             if self.quantize_state:
-                from titans_mlx.quantize_state import quantize_memory_state  # lazy to avoid circular import
+                from titans_mlx.quantize_state import (
+                    quantize_memory_state,  # lazy to avoid circular import
+                )
+
                 is_linear = len(detached.weights) == 1
                 detached = quantize_memory_state(
                     detached,
@@ -962,7 +984,11 @@ class NeuralLongTermMemory(nn.Module):
         diff = decay - eta
         abs_diff = mx.abs(diff)
         is_degenerate = abs_diff < 1e-6
-        safe_diff = mx.where(is_degenerate, mx.array(1.0), mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff + 1e-12))
+        safe_diff = mx.where(
+            is_degenerate,
+            mx.array(1.0),
+            mx.maximum(abs_diff, mx.array(1e-8)) * mx.sign(diff + 1e-12),
+        )
 
         # --- New momentum: S_S = η^S · S_prev - θ · Σ η^{S-1-i} · u_i ---
         eta_powers = mx.power(eta, S_f - 1.0 - positions)  # (S,)
@@ -1059,12 +1085,20 @@ class NeuralLongTermMemory(nn.Module):
         q = nn.silu(q)
         # L2-norm in float32 to avoid bfloat16 underflow
         q_f32 = q.astype(mx.float32)
-        q = (q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)).astype(
-            q.dtype
-        )
+        q = (
+            q_f32 / mx.sqrt(mx.sum(q_f32 * q_f32, axis=-1, keepdims=True) + 1e-8)
+        ).astype(q.dtype)
 
         # Retrieve using explicit state weights (no module mutation)
-        from titans_mlx.quantize_state import QuantizedMemoryState, get_weights  # lazy to avoid circular import
-        weights = get_weights(state) if isinstance(state, QuantizedMemoryState) else state.weights
+        from titans_mlx.quantize_state import (  # lazy to avoid circular import
+            QuantizedMemoryState,
+            get_weights,
+        )
+
+        weights = (
+            get_weights(state)
+            if isinstance(state, QuantizedMemoryState)
+            else state.weights
+        )
         retrieved = self.memory.forward_with_weights(q, weights)
         return self.proj_out(retrieved)

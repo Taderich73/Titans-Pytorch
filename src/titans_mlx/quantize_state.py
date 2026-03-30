@@ -30,16 +30,18 @@ class QuantizedTensor:
     For 8-bit: stored as uint8 directly.
     """
 
-    data: mx.array           # uint8 storage (packed for 4-bit)
-    scale: mx.array          # float32 scalar
-    zero_point: mx.array     # float32 scalar
+    data: mx.array  # uint8 storage (packed for 4-bit)
+    scale: mx.array  # float32 scalar
+    zero_point: mx.array  # float32 scalar
     original_shape: tuple[int, ...]
-    bits: int                # 4 or 8
+    bits: int  # 4 or 8
 
     def dequantize(self) -> mx.array:
         """Restore to float32 tensor."""
         if self.bits == 4:
-            return _unpack_4bit(self.data, self.original_shape, self.scale, self.zero_point)
+            return _unpack_4bit(
+                self.data, self.original_shape, self.scale, self.zero_point
+            )
         # 8-bit: direct conversion
         return self.data.astype(mx.float32) * self.scale + self.zero_point
 

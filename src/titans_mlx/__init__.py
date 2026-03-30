@@ -25,7 +25,10 @@ Usage:
     logits, states = model(x)
 """
 
+from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
+from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans_mlx.config import TitansConfig
+from titans_mlx.mca import MemoryCrossAttention
 from titans_mlx.memory import (
     MemoryState,
     NeuralLongTermMemory,
@@ -35,13 +38,22 @@ from titans_mlx.memory import (
     save_memory_states,
     save_tnt_memory_states,
 )
-from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
-from titans_mlx.persistent import PersistentMemory
-from titans_mlx.qk_projection import QKProjection, update_projection_state
-from titans_mlx.tnt_memory import GlobalMemory, LocalMemory, HierarchicalMemory
-from titans_mlx.models import TitansMAC, TitansMAG, TitansMAL, TitansLMM, process_chunk
-from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+from titans_mlx.memory_dump import MemoryDumpManager
+from titans_mlx.metal_kernels import (
+    MetalFeedForward,
+    MetalRMSNorm,
+    MetalRotaryEmbedding,
+    benchmark_metal_kernel,
+    get_metal_kernel_info,
+    metal_causal_attention,
+    metal_memory_update,
+    metal_rope,
+    metal_silu_gate,
+)
+from titans_mlx.models import TitansLMM, TitansMAC, TitansMAG, TitansMAL, process_chunk
 from titans_mlx.optimizations import (
+    OptimizedFeedForward,
+    OptimizedMemoryMLP,
     benchmark_function,
     chunked_attention,
     compile_function,
@@ -52,22 +64,11 @@ from titans_mlx.optimizations import (
     get_causal_mask,
     get_device_info,
     get_sliding_window_mask,
-    OptimizedFeedForward,
-    OptimizedMemoryMLP,
     rotary_embedding_optimized,
     scaled_dot_product_attention,
 )
-from titans_mlx.metal_kernels import (
-    benchmark_metal_kernel,
-    get_metal_kernel_info,
-    metal_causal_attention,
-    metal_memory_update,
-    metal_rope,
-    metal_silu_gate,
-    MetalFeedForward,
-    MetalRMSNorm,
-    MetalRotaryEmbedding,
-)
+from titans_mlx.persistent import PersistentMemory
+from titans_mlx.qk_projection import QKProjection, update_projection_state
 from titans_mlx.quantize_state import (
     QuantizedMemoryState,
     QuantizedTensor,
@@ -76,8 +77,7 @@ from titans_mlx.quantize_state import (
     quantize_memory_state,
     quantize_tensor,
 )
-from titans_mlx.mca import MemoryCrossAttention
-from titans_mlx.memory_dump import MemoryDumpManager
+from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 
 __version__ = "0.1.0"
 __all__ = [

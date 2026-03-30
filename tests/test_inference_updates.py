@@ -5,22 +5,17 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 from pathlib import Path
 
 import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 
 from scripts.inference import (
     IM_END,
     IM_START,
-    LoRALinear,
     _find_lora_modules,
-    create_model,
     format_prompt_for_chat,
-    load_adapters,
     load_lora_model,
     save_adapters,
     should_use_chat,
@@ -29,7 +24,6 @@ from scripts.inference import (
 )
 from titans_mlx.config import TitansConfig
 from titans_mlx.models import TitansMAC
-
 
 # ---------------------------------------------------------------------------
 # TestFormatChatMLInference

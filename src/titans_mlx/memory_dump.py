@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import mlx.core as mx
@@ -24,10 +24,10 @@ from titans_mlx.config import TitansConfig
 from titans_mlx.memory import (
     MemoryState,
     TNTMemoryState,
-    save_memory_states,
     load_memory_states,
-    save_tnt_memory_states,
     load_tnt_memory_states,
+    save_memory_states,
+    save_tnt_memory_states,
 )
 
 
@@ -50,7 +50,7 @@ class MemoryDumpManager:
         """Serialize all layer memory states to disk."""
         self.dump_path.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         dump_dir = self.dump_path / f"dump_{timestamp}"
         dump_dir.mkdir()
 
@@ -67,8 +67,8 @@ class MemoryDumpManager:
         for i, state in enumerate(states):
             weights = state.global_state.weights if is_tnt else state.weights
             momentum = state.global_state.momentum if is_tnt else state.momentum
-            w_norms = [float(mx.sqrt(mx.sum(w ** 2)).item()) for w in weights]
-            m_norms = [float(mx.sqrt(mx.sum(m ** 2)).item()) for m in momentum]
+            w_norms = [float(mx.sqrt(mx.sum(w**2)).item()) for w in weights]
+            m_norms = [float(mx.sqrt(mx.sum(m**2)).item()) for m in momentum]
             per_layer_stats[str(i)] = {
                 "weight_norm": sum(w_norms) / len(w_norms),
                 "momentum_norm": sum(m_norms) / len(m_norms),
@@ -82,7 +82,7 @@ class MemoryDumpManager:
             "num_memory_layers": self.config.num_memory_layers,
             "memory_hidden_dim": self.config.memory_hidden_dim,
             "use_tnt": is_tnt,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "step_count": step_count,
             "description": description,
             "per_layer_stats": per_layer_stats,
@@ -125,13 +125,21 @@ class MemoryDumpManager:
 
         per_layer = {}
         for i, (sa, sb) in enumerate(zip(states_a, states_b)):
-            weights_a = sa.global_state.weights if isinstance(sa, TNTMemoryState) else sa.weights
-            weights_b = sb.global_state.weights if isinstance(sb, TNTMemoryState) else sb.weights
+            weights_a = (
+                sa.global_state.weights
+                if isinstance(sa, TNTMemoryState)
+                else sa.weights
+            )
+            weights_b = (
+                sb.global_state.weights
+                if isinstance(sb, TNTMemoryState)
+                else sb.weights
+            )
 
             total_dist = 0.0
             for wa, wb in zip(weights_a, weights_b):
                 diff_val = np.array(wa) - np.array(wb)
-                total_dist += float(np.sqrt(np.sum(diff_val ** 2)))
+                total_dist += float(np.sqrt(np.sum(diff_val**2)))
 
             per_layer[str(i)] = {
                 "frobenius_distance": total_dist / len(weights_a),
@@ -167,29 +175,43 @@ class MemoryDumpManager:
                 if is_tnt:
                     # Merge global state
                     global_merged = self._merge_memory_state(
-                        [all_states[d][layer_idx].global_state for d in range(len(paths))],
+                        [
+                            all_states[d][layer_idx].global_state
+                            for d in range(len(paths))
+                        ],
                         weights_per_dump,
                     )
                     # Merge each local state
                     num_locals = len(all_states[0][layer_idx].local_states)
                     local_merged = []
                     for li in range(num_locals):
-                        local_merged.append(self._merge_memory_state(
-                            [all_states[d][layer_idx].local_states[li] for d in range(len(paths))],
-                            weights_per_dump,
-                        ))
-                    merged.append(TNTMemoryState(
-                        global_state=global_merged,
-                        local_states=local_merged,
-                        local_inits=all_states[0][layer_idx].local_inits,
-                        qk_projections=all_states[0][layer_idx].qk_projections,
-                        local_step_counters=all_states[0][layer_idx].local_step_counters,
-                    ))
+                        local_merged.append(
+                            self._merge_memory_state(
+                                [
+                                    all_states[d][layer_idx].local_states[li]
+                                    for d in range(len(paths))
+                                ],
+                                weights_per_dump,
+                            )
+                        )
+                    merged.append(
+                        TNTMemoryState(
+                            global_state=global_merged,
+                            local_states=local_merged,
+                            local_inits=all_states[0][layer_idx].local_inits,
+                            qk_projections=all_states[0][layer_idx].qk_projections,
+                            local_step_counters=all_states[0][
+                                layer_idx
+                            ].local_step_counters,
+                        )
+                    )
                 else:
-                    merged.append(self._merge_memory_state(
-                        [all_states[d][layer_idx] for d in range(len(paths))],
-                        weights_per_dump,
-                    ))
+                    merged.append(
+                        self._merge_memory_state(
+                            [all_states[d][layer_idx] for d in range(len(paths))],
+                            weights_per_dump,
+                        )
+                    )
             return merged
 
         raise ValueError(f"Unknown merge strategy: {strategy}")
@@ -231,13 +253,19 @@ class MemoryDumpManager:
                 result.append(state)
                 continue
             if isinstance(state, TNTMemoryState):
-                result.append(TNTMemoryState(
-                    global_state=self._reset_memory_state(state.global_state),
-                    local_states=[self._reset_memory_state(ls) for ls in state.local_states],
-                    local_inits=state.local_inits,
-                    qk_projections=[mx.zeros_like(qk) for qk in state.qk_projections],
-                    local_step_counters=[0] * len(state.local_step_counters),
-                ))
+                result.append(
+                    TNTMemoryState(
+                        global_state=self._reset_memory_state(state.global_state),
+                        local_states=[
+                            self._reset_memory_state(ls) for ls in state.local_states
+                        ],
+                        local_inits=state.local_inits,
+                        qk_projections=[
+                            mx.zeros_like(qk) for qk in state.qk_projections
+                        ],
+                        local_step_counters=[0] * len(state.local_step_counters),
+                    )
+                )
             else:
                 result.append(self._reset_memory_state(state))
         return result

@@ -5,7 +5,6 @@
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from titans_mlx.config import TitansConfig
 
@@ -13,9 +12,14 @@ from titans_mlx.config import TitansConfig
 def _mca_config(**kwargs) -> TitansConfig:
     """Helper to create MCA-enabled config for tests."""
     defaults = dict(
-        dim=64, num_heads=4, num_layers=6, vocab_size=256,
-        use_mca=True, mca_num_heads=4,
-        num_memory_layers=2, memory_hidden_mult=2.0,
+        dim=64,
+        num_heads=4,
+        num_layers=6,
+        vocab_size=256,
+        use_mca=True,
+        mca_num_heads=4,
+        num_memory_layers=2,
+        memory_hidden_mult=2.0,
     )
     defaults.update(kwargs)
     return TitansConfig(**defaults)
@@ -65,7 +69,9 @@ class TestMemoryCrossAttention:
         mx.eval(out)
 
         max_val = mx.max(mx.abs(out)).item()
-        assert max_val < 1.0, f"Gate should suppress output initially, got max={max_val}"
+        assert max_val < 1.0, (
+            f"Gate should suppress output initially, got max={max_val}"
+        )
 
     def test_zero_weights_near_zero_output(self) -> None:
         """Zero weight matrix produces near-zero output."""

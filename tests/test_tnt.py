@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
+from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans_mlx.config import TitansConfig
 from titans_mlx.memory import (
     MemoryState,
@@ -21,9 +22,6 @@ from titans_mlx.memory import (
     load_tnt_memory_states,
     save_tnt_memory_states,
 )
-from titans_mlx.qk_projection import QKProjection, update_projection_state
-from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
-from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans_mlx.models import (
     MACBlock,
     MAGBlock,
@@ -32,7 +30,8 @@ from titans_mlx.models import (
     TitansMAG,
     TitansMAL,
 )
-
+from titans_mlx.qk_projection import QKProjection, update_projection_state
+from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 
 # ============================================================================
 # Phase 2.1: TNT Config
@@ -157,12 +156,8 @@ class TestTNTMemoryState:
             )
             for _ in range(num_locals)
         ]
-        local_inits = [
-            [mx.random.normal((dim, dim)) * 0.02] for _ in range(num_locals)
-        ]
-        qk_projections = [
-            mx.random.normal((dim, dim)) for _ in range(num_locals)
-        ]
+        local_inits = [[mx.random.normal((dim, dim)) * 0.02] for _ in range(num_locals)]
+        qk_projections = [mx.random.normal((dim, dim)) for _ in range(num_locals)]
         return TNTMemoryState(
             global_state=global_state,
             local_states=local_states,
@@ -210,9 +205,7 @@ class TestTNTMemoryState:
         # Other Q-K untouched
         assert float(mx.sum(mx.abs(reset.qk_projections[1]))) > 0.0
 
-    def test_reset_local_restores_init_weights(
-        self, tnt_state: TNTMemoryState
-    ) -> None:
+    def test_reset_local_restores_init_weights(self, tnt_state: TNTMemoryState) -> None:
         """reset_local() restores weights from local_inits."""
         reset = tnt_state.reset_local(0)
         mx.eval(reset.local_states[0].weights[0], tnt_state.local_inits[0][0])
@@ -304,9 +297,7 @@ class TestQKProjection:
         eigenvalues = np.linalg.eigvalsh(mat)
         assert np.all(eigenvalues >= -1e-5)
 
-    def test_projection_matrix_cumulative(
-        self, proj: QKProjection, dim: int
-    ) -> None:
+    def test_projection_matrix_cumulative(self, proj: QKProjection, dim: int) -> None:
         """Later positions accumulate more outer products than earlier ones."""
         B, C = 1, 8
         keys = self._normalize(mx.random.normal((B, C, dim)))
@@ -320,9 +311,7 @@ class TestQKProjection:
         for i in range(1, C):
             assert norms[i] >= norms[i - 1] - 1e-5
 
-    def test_carry_over_adds_to_projection(
-        self, proj: QKProjection, dim: int
-    ) -> None:
+    def test_carry_over_adds_to_projection(self, proj: QKProjection, dim: int) -> None:
         """Non-zero carry-over shifts all projection matrices."""
         B, C = 2, 4
         keys = self._normalize(mx.random.normal((B, C, dim)))
@@ -384,8 +373,8 @@ class TestQKProjection:
         _, carry2 = proj(queries, keys, carry1)
         mx.eval(carry1, carry2)
 
-        norm1 = float(mx.sum(carry1 ** 2))
-        norm2 = float(mx.sum(carry2 ** 2))
+        norm1 = float(mx.sum(carry1**2))
+        norm2 = float(mx.sum(carry2**2))
         assert norm2 > norm1
 
     def test_no_nan(self, proj: QKProjection, dim: int) -> None:
@@ -462,13 +451,11 @@ class TestUpdateProjectionState:
         mx.eval(new_carry)
 
         # Result should include carry contribution (larger Frobenius norm)
-        zero_carry, _ = update_projection_state(
-            mx.zeros((dim, dim)), keys, reset=False
-        )
+        zero_carry, _ = update_projection_state(mx.zeros((dim, dim)), keys, reset=False)
         mx.eval(zero_carry)
 
-        norm_with = float(mx.sum(new_carry ** 2))
-        norm_without = float(mx.sum(zero_carry ** 2))
+        norm_with = float(mx.sum(new_carry**2))
+        norm_without = float(mx.sum(zero_carry**2))
         assert norm_with > norm_without
 
     def test_sequential_chunks(self, dim: int) -> None:
@@ -483,9 +470,9 @@ class TestUpdateProjectionState:
         mx.eval(carry, carry1, carry2)
 
         # Each step should increase the norm (accumulating outer products)
-        n0 = float(mx.sum(carry ** 2))
-        n1 = float(mx.sum(carry1 ** 2))
-        n2 = float(mx.sum(carry2 ** 2))
+        n0 = float(mx.sum(carry**2))
+        n1 = float(mx.sum(carry1**2))
+        n2 = float(mx.sum(carry2**2))
         assert n1 > n0
         assert n2 > n1
 
@@ -620,9 +607,7 @@ class TestLocalMemory:
         # State should be the same object (not reset)
         assert preserved_state is modified_state
 
-    def test_maybe_reset_at_zero_does_not_reset(
-        self, local_mem: LocalMemory
-    ) -> None:
+    def test_maybe_reset_at_zero_does_not_reset(self, local_mem: LocalMemory) -> None:
         """maybe_reset() at step 0 does not reset (only at multiples > 0)."""
         state = local_mem.init_state(1)
         x = mx.random.normal((1, 8, 32))
@@ -734,9 +719,7 @@ class TestHierarchicalMemory:
 
         diff = float(
             mx.sum(
-                mx.abs(
-                    state1.global_state.weights[0] - state0.global_state.weights[0]
-                )
+                mx.abs(state1.global_state.weights[0] - state0.global_state.weights[0])
             )
         )
         assert diff > 0.0
@@ -975,7 +958,7 @@ class TestTNTMemorySerialization:
             loaded = load_tnt_memory_states(path)
 
         assert len(loaded) == 2
-        for i, (orig, load) in enumerate(zip([s1, s2], loaded)):
+        for orig, load in zip([s1, s2], loaded, strict=True):
             mx.eval(load.global_state.weights[0])
             np.testing.assert_allclose(
                 np.array(load.global_state.weights[0]),
@@ -1180,10 +1163,20 @@ class TestTNTModels:
         """TitansMAC with use_tnt=True produces different output than use_tnt=False."""
         # Standard config (use_tnt=False)
         mac_config = TitansConfig(
-            dim=32, num_heads=2, num_layers=1, ffn_mult=2.0,
-            num_memory_layers=1, memory_hidden_mult=2.0, num_persistent_tokens=2,
-            chunk_size=16, window_size=8, dropout=0.0, use_conv=False,
-            use_rope=False, max_seq_len=64, vocab_size=50,
+            dim=32,
+            num_heads=2,
+            num_layers=1,
+            ffn_mult=2.0,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=2,
+            chunk_size=16,
+            window_size=8,
+            dropout=0.0,
+            use_conv=False,
+            use_rope=False,
+            max_seq_len=64,
+            vocab_size=50,
         )
 
         mx.random.seed(42)
@@ -1244,9 +1237,7 @@ class TestTwoStageConfig:
 
     def test_stage1_override(self) -> None:
         """tnt_stage1() accepts overrides."""
-        config = TitansConfig.tnt_stage1(
-            dim=128, local_chunk_sizes=[4, 8, 16]
-        )
+        config = TitansConfig.tnt_stage1(dim=128, local_chunk_sizes=[4, 8, 16])
         assert config.dim == 128
         assert config.local_chunk_sizes == [4, 8, 16]
         assert config.use_tnt is True
@@ -1280,8 +1271,14 @@ class TestTwoStageConfig:
     def test_stage2_model_instantiation(self) -> None:
         """TitansMAC can be instantiated with stage 2 config."""
         s1 = TitansConfig.tnt_stage1(
-            dim=32, num_heads=2, num_layers=1, vocab_size=50,
-            chunk_size=16, window_size=8, use_conv=False, use_rope=False,
+            dim=32,
+            num_heads=2,
+            num_layers=1,
+            vocab_size=50,
+            chunk_size=16,
+            window_size=8,
+            use_conv=False,
+            use_rope=False,
             num_memory_layers=1,
         )
         s2 = TitansConfig.tnt_stage2(s1)
@@ -1326,9 +1323,7 @@ class TestLrScale(unittest.TestCase):
         # Both states differ from original (alpha decay), but they
         # differ from each other because lr_scale=0 removes gradient
         self.assertFalse(
-            mx.allclose(
-                state_zero.weights[0], state_full.weights[0], atol=1e-8
-            ).item()
+            mx.allclose(state_zero.weights[0], state_full.weights[0], atol=1e-8).item()
         )
 
     def test_lr_scale_affects_state_differently(self):
@@ -1352,8 +1347,12 @@ class TestMemoryGatePropagation(unittest.TestCase):
 
     def setUp(self):
         self.config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=100,
-            use_tnt=True, local_chunk_sizes=[8],
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            use_tnt=True,
+            local_chunk_sizes=[8],
             attnres_modulate_global_memory=True,
             attnres_modulate_local_memory=False,
         )
@@ -1399,8 +1398,12 @@ class TestMemoryGatePropagation(unittest.TestCase):
     def test_memory_gate_affects_local_when_enabled(self):
         """memory_gate affects local memory when modulate_local=True."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=100,
-            use_tnt=True, local_chunk_sizes=[8],
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            use_tnt=True,
+            local_chunk_sizes=[8],
             attnres_modulate_global_memory=True,
             attnres_modulate_local_memory=True,
         )
@@ -1511,9 +1514,7 @@ class TestAttnResMemoryGate(unittest.TestCase):
     def test_high_weight_on_last(self):
         """When last source dominates, gate ~ 1."""
         gate = AttnResMemoryGate()
-        weights = mx.concatenate(
-            [mx.zeros((2, 8, 2)), mx.ones((2, 8, 1))], axis=-1
-        )
+        weights = mx.concatenate([mx.zeros((2, 8, 2)), mx.ones((2, 8, 1))], axis=-1)
         result = gate(weights)
         mx.eval(result)
         self.assertAlmostEqual(result.item(), 1.0, places=5)
@@ -1529,10 +1530,16 @@ class TestAttnResIntegration(unittest.TestCase):
 
     def _make_config(self, use_attn_res=True, **kwargs):
         defaults = dict(
-            dim=64, num_heads=4, num_layers=4, vocab_size=100,
-            use_tnt=True, local_chunk_sizes=[8],
-            chunk_size=16, use_conv=False,
-            use_attn_res=use_attn_res, num_attnres_blocks=2,
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=100,
+            use_tnt=True,
+            local_chunk_sizes=[8],
+            chunk_size=16,
+            use_conv=False,
+            use_attn_res=use_attn_res,
+            num_attnres_blocks=2,
         )
         defaults.update(kwargs)
         return TitansConfig(**defaults)
@@ -1582,7 +1589,7 @@ class TestAttnResIntegration(unittest.TestCase):
         """use_attn_res=False means no AttnRes attributes on blocks."""
         config = self._make_config(use_attn_res=False)
         block = MACBlock(config)
-        self.assertFalse(hasattr(block, 'attn_res'))
+        self.assertFalse(hasattr(block, "attn_res"))
 
     def test_tnt_model_gradient_flow(self):
         """Gradients flow through AttnRes path."""
@@ -1673,4 +1680,6 @@ class TestAttnResConfig(unittest.TestCase):
         self.assertEqual(restored.attnres_warmup_steps, 1000)
         self.assertFalse(restored.attnres_modulate_global_memory)
         self.assertTrue(restored.attnres_modulate_local_memory)
-        self.assertEqual(restored.attnres_sub_layer_block_size, config.attnres_sub_layer_block_size)
+        self.assertEqual(
+            restored.attnres_sub_layer_block_size, config.attnres_sub_layer_block_size
+        )

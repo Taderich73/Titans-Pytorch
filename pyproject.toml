@@ -69,7 +69,17 @@ select = [
     "SIM", # flake8-simplify
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
+    "E501",   # line too long (handled by formatter)
+    "B905",   # zip() without strict= — internal iterables with guaranteed equal lengths
+    "C408",   # dict() call — used intentionally for kwargs merge pattern
+    "SIM102", # nested if — clearer than single compound condition in validation
+    "SIM108", # ternary — clearer as if/else for None-check accumulation
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ARG002",  # unused method arguments — fixtures create side effects (e.g. dump_dir via tmp_path)
+    "E402",    # module-level imports — deferred imports for test isolation
 ]
 
 [tool.ruff.lint.isort]
@@ -77,14 +87,37 @@ known-first-party = ["titans", "titans_mlx"]
 
 [tool.mypy]
 python_version = "3.12"
-strict = true
-warn_return_any = true
+warn_return_any = false
 warn_unused_ignores = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+# MLX lacks complete type stubs; suppress errors from untyped nn.Module subclassing
+disable_error_code = ["name-defined", "misc"]
 
 [[tool.mypy.overrides]]
 module = ["mlx.*", "transformers.*", "datasets.*", "wandb.*", "huggingface_hub.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["titans_mlx.metal_kernels", "titans_mlx.optimizations"]
+disallow_untyped_defs = false
+disable_error_code = ["attr-defined", "name-defined", "misc", "no-any-return"]
+
+[[tool.mypy.overrides]]
+# Heavy MLX nn.Module subclassing — untyped API produces arg-type/return-value/assignment noise
+module = [
+    "titans_mlx.models",
+    "titans_mlx.memory",
+    "titans_mlx.tnt_memory",
+    "titans_mlx.memory_dump",
+    "titans_mlx.persistent",
+    "titans_mlx.config",
+]
+disable_error_code = ["arg-type", "return-value", "assignment", "list-item", "no-untyped-def", "call-overload", "call-arg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,4 +130,37 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
     "ruff>=0.14.9",
+    "tox>=4.0",
+    "tox-uv>=1.0",
 ]
+
+[tool.tox]
+env_list = ["lint", "typecheck", "test"]
+
+[tool.tox.env_run_base]
+runner = "uv-venv-lock-runner"
+extras = ["dev"]
+
+[tool.tox.env.lint]
+description = "Run ruff linting and formatting checks"
+commands = [
+    ["ruff", "check", "src/", "tests/"],
+    ["ruff", "format", "--check", "src/", "tests/"],
+]
+
+[tool.tox.env.typecheck]
+description = "Run mypy type checking"
+commands = [["mypy", "src/titans_mlx"]]
+
+[tool.tox.env.test]
+description = "Run pytest suite"
+commands = [["pytest", "tests/", "-v", "--tb=short"]]
+
+[tool.tox.env.test-cov]
+description = "Run tests with coverage"
+commands = [["pytest", "tests/", "--cov=titans_mlx", "--cov-report=term-missing"]]
+
+[tool.tox.env.test-train]
+description = "Run training-related tests"
+extras = ["dev", "train"]
+commands = [["pytest", "tests/", "-v", "--tb=short", "-k", "dpo or rlvr or sft or lora"]]

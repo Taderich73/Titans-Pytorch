@@ -69,9 +69,7 @@ class TestBufferedEvalDataset:
 
         batch = buf.get_batch([5])
         expected = np.arange(5, 5 + 8, dtype=np.int32)
-        np.testing.assert_array_equal(
-            np.array(batch["input_ids"][0]), expected
-        )
+        np.testing.assert_array_equal(np.array(batch["input_ids"][0]), expected)
 
     def test_len_matches_buffer(self) -> None:
         """__len__ must match actual buffered count for evaluate() indexing."""

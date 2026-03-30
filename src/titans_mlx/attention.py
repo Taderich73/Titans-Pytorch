@@ -361,7 +361,6 @@ class SegmentedAttention(nn.Module):
         components.append(x)
 
         full_x = mx.concatenate(components, axis=1)
-        full_len = full_x.shape[1]
         prefix_len = sum(prefix_lens)
 
         # Project Q, K, V
@@ -391,4 +390,3 @@ class SegmentedAttention(nn.Module):
 
         # Return only the input positions (not persistent/memory)
         return output[:, prefix_len:]
-

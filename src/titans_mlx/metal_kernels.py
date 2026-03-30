@@ -27,7 +27,7 @@ References:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -664,8 +664,8 @@ def get_metal_kernel_info() -> dict:
 
 def benchmark_metal_kernel(
     kernel_name: Literal["silu_gate", "rope", "attention", "memory_update"],
-    **kwargs,
-) -> dict:
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Benchmark a specific Metal kernel.
 
     Args:

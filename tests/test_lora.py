@@ -46,9 +46,7 @@ class TestLoRALinear:
         lora_out = lora(x)
         mx.eval(base_out, lora_out)
 
-        np.testing.assert_allclose(
-            np.array(lora_out), np.array(base_out), atol=1e-6
-        )
+        np.testing.assert_allclose(np.array(lora_out), np.array(base_out), atol=1e-6)
 
     def test_output_shape(self) -> None:
         """Output shape matches base layer."""
@@ -128,9 +126,9 @@ class TestWrapModel:
 
         # All attn projections should be wrapped
         for name in ["proj_q", "proj_k", "proj_v", "proj_out"]:
-            assert any(
-                name in p and "attention" in p for p in wrapped
-            ), f"{name} not wrapped"
+            assert any(name in p and "attention" in p for p in wrapped), (
+                f"{name} not wrapped"
+            )
 
         # FFN layers should NOT be wrapped
         assert not any("gate_proj" in p for p in wrapped)
@@ -212,9 +210,7 @@ class TestAdapterIO:
         out2, _ = model2(input_ids)
         mx.eval(out1, out2)
 
-        np.testing.assert_allclose(
-            np.array(out1), np.array(out2), atol=1e-5
-        )
+        np.testing.assert_allclose(np.array(out1), np.array(out2), atol=1e-5)
 
     def test_merge_lora_weights(self) -> None:
         """After merging, output matches pre-merge LoRA output."""
@@ -237,9 +233,7 @@ class TestAdapterIO:
         out_after, _ = model(input_ids)
         mx.eval(out_after)
 
-        np.testing.assert_allclose(
-            np.array(out_before), np.array(out_after), atol=1e-5
-        )
+        np.testing.assert_allclose(np.array(out_before), np.array(out_after), atol=1e-5)
 
     def test_adapter_meta_json(self) -> None:
         """Saved metadata JSON contains expected fields."""

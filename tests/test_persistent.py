@@ -13,9 +13,7 @@ from titans_mlx.persistent import PersistentMemory
 class TestPersistentMemory:
     """Tests for PersistentMemory module."""
 
-    def test_forward(
-        self, default_config: TitansConfig, batch_size: int
-    ) -> None:
+    def test_forward(self, default_config: TitansConfig, batch_size: int) -> None:
         """Test forward returns batch-expanded tokens."""
         persistent = PersistentMemory(default_config)
         tokens = persistent(batch_size)

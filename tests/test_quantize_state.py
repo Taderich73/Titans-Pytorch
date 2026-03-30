@@ -129,7 +129,11 @@ class TestQuantizedMemoryState:
         )
         mx.eval(state.weights[0], state.momentum[0])
 
-        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState, QuantizedTensor
+        from titans_mlx.quantize_state import (
+            QuantizedMemoryState,
+            QuantizedTensor,
+            quantize_memory_state,
+        )
 
         qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=None)
 
@@ -151,7 +155,11 @@ class TestQuantizedMemoryState:
         )
         mx.eval(*state.weights, *state.momentum)
 
-        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState, QuantizedTensor
+        from titans_mlx.quantize_state import (
+            QuantizedMemoryState,
+            QuantizedTensor,
+            quantize_memory_state,
+        )
 
         qstate = quantize_memory_state(state, weight_bits=4, momentum_bits=8)
 
@@ -196,7 +204,10 @@ class TestQuantizedMemoryState:
         )
         mx.eval(state.weights[0], state.momentum[0])
 
-        from titans_mlx.quantize_state import quantize_memory_state, QuantizedMemoryState
+        from titans_mlx.quantize_state import (
+            QuantizedMemoryState,
+            quantize_memory_state,
+        )
 
         qstate = quantize_memory_state(state, weight_bits=8, momentum_bits=None)
         detached = qstate.detach()
@@ -302,11 +313,14 @@ class TestNeuralLongTermMemoryQuantization:
         """With quantize_memory_state=True, __call__ returns QuantizedMemoryState."""
         mx.random.seed(42)
         from titans_mlx.config import TitansConfig
-        from titans_mlx.memory import NeuralLongTermMemory, MemoryState
+        from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=32, num_memory_layers=1, use_conv=False,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         mem = NeuralLongTermMemory(config)
         x = mx.random.normal((1, 8, 32))
@@ -323,10 +337,12 @@ class TestNeuralLongTermMemoryQuantization:
         """With quantize_memory_state=False, __call__ returns MemoryState."""
         mx.random.seed(42)
         from titans_mlx.config import TitansConfig
-        from titans_mlx.memory import NeuralLongTermMemory, MemoryState
+        from titans_mlx.memory import MemoryState, NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=32, num_memory_layers=1, use_conv=False,
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
             quantize_memory_state=False,
         )
         mem = NeuralLongTermMemory(config)
@@ -345,8 +361,11 @@ class TestNeuralLongTermMemoryQuantization:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=32, num_memory_layers=1, use_conv=False,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         mem = NeuralLongTermMemory(config)
         x = mx.random.normal((1, 8, 32))
@@ -368,8 +387,11 @@ class TestNeuralLongTermMemoryQuantization:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=32, num_memory_layers=1, use_conv=False,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=32,
+            num_memory_layers=1,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         mem = NeuralLongTermMemory(config)
 
@@ -391,9 +413,13 @@ class TestNeuralLongTermMemoryQuantization:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=32, num_memory_layers=2, memory_hidden_mult=2.0,
-            use_conv=False, quantize_memory_state=True,
-            memory_state_weight_bits=4, memory_state_momentum_bits=8,
+            dim=32,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
+            memory_state_momentum_bits=8,
         )
         mem = NeuralLongTermMemory(config)
         x = mx.random.normal((1, 8, 32))
@@ -405,8 +431,12 @@ class TestNeuralLongTermMemoryQuantization:
         from titans_mlx.quantize_state import QuantizedMemoryState, QuantizedTensor
 
         assert isinstance(state, QuantizedMemoryState)
-        assert all(isinstance(w, QuantizedTensor) and w.bits == 4 for w in state.weights)
-        assert all(isinstance(m, QuantizedTensor) and m.bits == 8 for m in state.momentum)
+        assert all(
+            isinstance(w, QuantizedTensor) and w.bits == 4 for w in state.weights
+        )
+        assert all(
+            isinstance(m, QuantizedTensor) and m.bits == 8 for m in state.momentum
+        )
 
 
 class TestHierarchicalMemoryQuantization:
@@ -419,11 +449,19 @@ class TestHierarchicalMemoryQuantization:
         from titans_mlx.tnt_memory import HierarchicalMemory
 
         config = TitansConfig(
-            dim=32, num_heads=2, num_layers=1, num_memory_layers=1,
-            use_conv=False, use_rope=False, use_tnt=True,
-            global_chunk_size=16, local_chunk_sizes=[4],
-            local_shard_length=64, use_qk_projection=True,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=32,
+            num_heads=2,
+            num_layers=1,
+            num_memory_layers=1,
+            use_conv=False,
+            use_rope=False,
+            use_tnt=True,
+            global_chunk_size=16,
+            local_chunk_sizes=[4],
+            local_shard_length=64,
+            use_qk_projection=True,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         hmem = HierarchicalMemory(config)
         x = mx.random.normal((1, 8, 32))
@@ -438,6 +476,7 @@ class TestHierarchicalMemoryQuantization:
         assert len(state.qk_projections) == 1
         assert isinstance(state.qk_projections[0], QuantizedTensor)
 
+
 class TestQuantizedSerialization:
     """Tests for saving/loading quantized memory states."""
 
@@ -447,7 +486,11 @@ class TestQuantizedSerialization:
         from pathlib import Path
 
         mx.random.seed(42)
-        from titans_mlx.memory import MemoryState, save_memory_states, load_memory_states
+        from titans_mlx.memory import (
+            MemoryState,
+            load_memory_states,
+            save_memory_states,
+        )
 
         state = MemoryState(
             weights=[mx.random.normal((32, 32))],
@@ -480,7 +523,11 @@ class TestQuantizedSerialization:
         from pathlib import Path
 
         mx.random.seed(42)
-        from titans_mlx.memory import MemoryState, save_memory_states, load_memory_states
+        from titans_mlx.memory import (
+            MemoryState,
+            load_memory_states,
+            save_memory_states,
+        )
 
         state = MemoryState(
             weights=[mx.random.normal((32, 32))],
@@ -497,7 +544,6 @@ class TestQuantizedSerialization:
         assert isinstance(loaded[0], MemoryState)
         assert loaded[0].weights[0].shape == (32, 32)
 
-
     def test_retrieve_works_with_quantized_qk(self) -> None:
         """Retrieval works when Q-K projections are quantized."""
         mx.random.seed(42)
@@ -505,11 +551,19 @@ class TestQuantizedSerialization:
         from titans_mlx.tnt_memory import HierarchicalMemory
 
         config = TitansConfig(
-            dim=32, num_heads=2, num_layers=1, num_memory_layers=1,
-            use_conv=False, use_rope=False, use_tnt=True,
-            global_chunk_size=16, local_chunk_sizes=[4],
-            local_shard_length=64, use_qk_projection=True,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=32,
+            num_heads=2,
+            num_layers=1,
+            num_memory_layers=1,
+            use_conv=False,
+            use_rope=False,
+            use_tnt=True,
+            global_chunk_size=16,
+            local_chunk_sizes=[4],
+            local_shard_length=64,
+            use_qk_projection=True,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         hmem = HierarchicalMemory(config)
         x = mx.random.normal((1, 8, 32))
@@ -535,7 +589,9 @@ class TestRetrievalDistortion:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=64, num_memory_layers=1, use_conv=False,
+            dim=64,
+            num_memory_layers=1,
+            use_conv=False,
             quantize_memory_state=False,
         )
         mem = NeuralLongTermMemory(config)
@@ -561,8 +617,8 @@ class TestRetrievalDistortion:
 
         # Cosine similarity per query
         dot = mx.sum(out_full * out_quant, axis=-1)
-        norm_full = mx.sqrt(mx.sum(out_full ** 2, axis=-1) + 1e-8)
-        norm_quant = mx.sqrt(mx.sum(out_quant ** 2, axis=-1) + 1e-8)
+        norm_full = mx.sqrt(mx.sum(out_full**2, axis=-1) + 1e-8)
+        norm_quant = mx.sqrt(mx.sum(out_quant**2, axis=-1) + 1e-8)
         cosine = dot / (norm_full * norm_quant)
         mx.eval(cosine)
 
@@ -577,8 +633,11 @@ class TestRetrievalDistortion:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config = TitansConfig(
-            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
-            use_conv=False, quantize_memory_state=False,
+            dim=64,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            use_conv=False,
+            quantize_memory_state=False,
         )
         mem = NeuralLongTermMemory(config)
 
@@ -599,8 +658,8 @@ class TestRetrievalDistortion:
         mx.eval(out_full, out_quant)
 
         dot = mx.sum(out_full * out_quant, axis=-1)
-        norm_full = mx.sqrt(mx.sum(out_full ** 2, axis=-1) + 1e-8)
-        norm_quant = mx.sqrt(mx.sum(out_quant ** 2, axis=-1) + 1e-8)
+        norm_full = mx.sqrt(mx.sum(out_full**2, axis=-1) + 1e-8)
+        norm_quant = mx.sqrt(mx.sum(out_quant**2, axis=-1) + 1e-8)
         cosine = dot / (norm_full * norm_quant)
         mx.eval(cosine)
 
@@ -620,15 +679,20 @@ class TestMomentumStability:
 
         # Full-precision baseline
         config_fp = TitansConfig(
-            dim=64, num_memory_layers=1, use_conv=False,
+            dim=64,
+            num_memory_layers=1,
+            use_conv=False,
             quantize_memory_state=False,
         )
         mem_fp = NeuralLongTermMemory(config_fp)
 
         # Quantized
         config_q = TitansConfig(
-            dim=64, num_memory_layers=1, use_conv=False,
-            quantize_memory_state=True, memory_state_weight_bits=4,
+            dim=64,
+            num_memory_layers=1,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
         )
         mem_q = NeuralLongTermMemory(config_q)
 
@@ -648,7 +712,7 @@ class TestMomentumStability:
         state_fp = None
         state_q = None
 
-        for chunk in range(50):
+        for _chunk in range(50):
             x = mx.random.normal((1, 8, 64))
             mx.eval(x)
             _, state_fp = mem_fp(x, state=state_fp)
@@ -681,15 +745,22 @@ class TestMomentumStability:
         from titans_mlx.memory import NeuralLongTermMemory
 
         config_fp = TitansConfig(
-            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
-            use_conv=False, quantize_memory_state=False,
+            dim=64,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            use_conv=False,
+            quantize_memory_state=False,
         )
         mem_fp = NeuralLongTermMemory(config_fp)
 
         config_q = TitansConfig(
-            dim=64, num_memory_layers=2, memory_hidden_mult=2.0,
-            use_conv=False, quantize_memory_state=True,
-            memory_state_weight_bits=4, memory_state_momentum_bits=8,
+            dim=64,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            use_conv=False,
+            quantize_memory_state=True,
+            memory_state_weight_bits=4,
+            memory_state_momentum_bits=8,
         )
         mem_q = NeuralLongTermMemory(config_q)
 
@@ -705,7 +776,7 @@ class TestMomentumStability:
         state_fp = None
         state_q = None
 
-        for chunk in range(50):
+        for _chunk in range(50):
             x = mx.random.normal((1, 8, 64))
             mx.eval(x)
             _, state_fp = mem_fp(x, state=state_fp)

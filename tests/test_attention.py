@@ -126,9 +126,7 @@ class TestSlidingWindowAttention:
         """Test extended mask for prefix attention."""
         attn = SlidingWindowAttention(default_config)
 
-        mask = attn._create_extended_mask(
-            query_len=8, key_len=16, prefix_len=8
-        )
+        mask = attn._create_extended_mask(query_len=8, key_len=16, prefix_len=8)
         mx.eval(mask)
 
         assert mask.shape == (1, 1, 8, 16)
@@ -195,9 +193,7 @@ class TestSegmentedAttention:
 
         assert output.shape == x.shape
 
-    def test_forward_with_all_components(
-        self, default_config: TitansConfig
-    ) -> None:
+    def test_forward_with_all_components(self, default_config: TitansConfig) -> None:
         """Test with persistent and memory tokens."""
         attn = SegmentedAttention(default_config)
         x = mx.random.normal((2, 32, default_config.dim))

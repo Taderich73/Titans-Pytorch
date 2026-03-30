@@ -33,9 +33,11 @@ def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
     block.has_mca = layer_idx in config.mca_active_insertion_layers
     if block.has_mca:
         from titans_mlx.mca import MemoryCrossAttention
+
         block.mca = MemoryCrossAttention(config)
         if config.use_attn_res:
             from titans_mlx.attn_res import BlockAttnRes
+
             block.attn_res_mca = BlockAttnRes(config.dim)
 
 
@@ -84,7 +86,7 @@ class RMSNorm(nn.Module):
         """Apply RMS normalization."""
         orig_dtype = x.dtype
         x_f32 = x.astype(mx.float32)
-        rms = mx.sqrt(mx.mean(x_f32 ** 2, axis=-1, keepdims=True) + self.eps)
+        rms = mx.sqrt(mx.mean(x_f32**2, axis=-1, keepdims=True) + self.eps)
         return (x_f32 / rms * self.weight).astype(orig_dtype)
 
 
@@ -135,8 +137,7 @@ def process_chunk(
     partial_block: mx.array | None = None
     sub_idx = 0
     warmup = (
-        config.attnres_warmup_steps > 0
-        and step_count < config.attnres_warmup_steps
+        config.attnres_warmup_steps > 0 and step_count < config.attnres_warmup_steps
     )
 
     for i, block in enumerate(blocks):
@@ -148,7 +149,9 @@ def process_chunk(
         if not warmup:
             memory_gate = block.attn_res_gate(attn_weights)
 
-        core_out, new_state = block.core_forward(h, state=states[i], memory_gate=memory_gate)
+        core_out, new_state = block.core_forward(
+            h, state=states[i], memory_gate=memory_gate
+        )
         new_states.append(new_state)
 
         if partial_block is None:
@@ -229,6 +232,7 @@ class MACBlock(nn.Module):
         # Config-driven memory selection
         if config.use_tnt:
             from titans_mlx.tnt_memory import HierarchicalMemory
+
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
@@ -261,7 +265,8 @@ class MACBlock(nn.Module):
 
         # AttnRes (optional)
         if config.use_attn_res:
-            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
+
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
@@ -461,6 +466,7 @@ class MAGBlock(nn.Module):
         # Config-driven memory selection
         if config.use_tnt:
             from titans_mlx.tnt_memory import HierarchicalMemory
+
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
@@ -482,7 +488,8 @@ class MAGBlock(nn.Module):
 
         # AttnRes (optional)
         if config.use_attn_res:
-            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
+
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
@@ -532,15 +539,19 @@ class MAGBlock(nn.Module):
             mem_input = mx.concatenate([persistent, normed], axis=1)
         else:
             mem_input = normed
-        mem_out_full, new_state = self.memory(mem_input, state=state, memory_gate=memory_gate)
+        mem_out_full, new_state = self.memory(
+            mem_input, state=state, memory_gate=memory_gate
+        )
         # Slice off persistent prefix from output
         if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1]:, :]
+            mem_out = mem_out_full[:, persistent.shape[1] :, :]
         else:
             mem_out = mem_out_full
 
         # Eq. 28: Gated output with learnable normalization
-        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(self.gate_norm_mem(mem_out))
+        gated = mx.sigmoid(self.gate_norm_attn(y_t)) * mx.sigmoid(
+            self.gate_norm_mem(mem_out)
+        )
 
         core_out = attn_out + gated
         return core_out, new_state
@@ -682,6 +693,7 @@ class MALBlock(nn.Module):
         # Config-driven memory selection
         if config.use_tnt:
             from titans_mlx.tnt_memory import HierarchicalMemory
+
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
@@ -702,7 +714,8 @@ class MALBlock(nn.Module):
 
         # AttnRes (optional)
         if config.use_attn_res:
-            from titans_mlx.attn_res import BlockAttnRes, AttnResMemoryGate
+            from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
+
             self.attn_res_core = BlockAttnRes(config.dim)
             self.attn_res_ffn = BlockAttnRes(config.dim)
             self.attn_res_gate = AttnResMemoryGate()
@@ -747,7 +760,7 @@ class MALBlock(nn.Module):
         )
         # Slice off persistent prefix from output
         if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1]:, :]
+            mem_out = mem_out_full[:, persistent.shape[1] :, :]
         else:
             mem_out = mem_out_full
         if self.dropout_p > 0:
