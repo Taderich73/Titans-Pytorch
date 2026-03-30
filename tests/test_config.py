@@ -3,6 +3,8 @@
 
 """Tests for TitansConfig."""
 
+import pytest
+
 from titans_mlx.config import TitansConfig
 
 
@@ -139,3 +141,69 @@ class TestMemoryStateQuantizationConfig:
         restored = TitansConfig.from_dict(config.to_dict())
         assert restored.quantize_memory_state is True
         assert restored.memory_state_weight_bits == 8
+
+
+class TestMCAConfig:
+    """Tests for MCA configuration fields."""
+
+    def test_mca_defaults(self) -> None:
+        """MCA is disabled by default with sensible defaults."""
+        config = TitansConfig()
+        assert config.use_mca is False
+        assert config.mca_insertion_layers is None
+        assert config.mca_num_heads == 8
+        assert config.mca_gate_type == "scalar"
+        assert config.mca_gate_bias_init == -3.0
+
+    def test_mca_active_insertion_layers_disabled(self) -> None:
+        """When MCA is disabled, no insertion layers."""
+        config = TitansConfig(use_mca=False)
+        assert config.mca_active_insertion_layers == []
+
+    def test_mca_active_insertion_layers_auto(self) -> None:
+        """Auto insertion defaults to midpoint."""
+        config = TitansConfig(use_mca=True, num_layers=12)
+        assert config.mca_active_insertion_layers == [6]
+
+    def test_mca_active_insertion_layers_explicit(self) -> None:
+        """Explicit insertion layers override auto."""
+        config = TitansConfig(
+            use_mca=True, num_layers=12, mca_insertion_layers=[2, 6, 10]
+        )
+        assert config.mca_active_insertion_layers == [2, 6, 10]
+
+    def test_mca_insertion_layer_validation(self) -> None:
+        """Insertion layer >= num_layers raises ValueError."""
+        with pytest.raises(ValueError, match="MCA insertion layer"):
+            TitansConfig(use_mca=True, num_layers=6, mca_insertion_layers=[6])
+
+    def test_mca_dump_defaults(self) -> None:
+        """Dump config has sensible defaults."""
+        config = TitansConfig()
+        assert config.mca_auto_dump is False
+        assert config.mca_dump_trigger == "session_end"
+        assert config.mca_dump_path == "./memory_dumps/"
+        assert config.mca_dump_keep_last_n == 10
+
+    def test_attnres_sublayer_count_with_mca(self) -> None:
+        """AttnRes sub-layer block size accounts for MCA layers."""
+        base = TitansConfig(num_layers=6, num_attnres_blocks=4)
+        mca = TitansConfig(
+            num_layers=6, num_attnres_blocks=4,
+            use_mca=True, mca_insertion_layers=[3],
+        )
+        assert base.attnres_sub_layer_block_size == 3
+        assert mca.attnres_sub_layer_block_size == 3
+
+    def test_mca_in_to_dict(self) -> None:
+        """MCA fields round-trip through to_dict/from_dict."""
+        config = TitansConfig(
+            use_mca=True, mca_insertion_layers=[4], mca_num_heads=4,
+        )
+        d = config.to_dict()
+        assert d["use_mca"] is True
+        assert d["mca_insertion_layers"] == [4]
+        restored = TitansConfig.from_dict(d)
+        assert restored.use_mca is True
+        assert restored.mca_insertion_layers == [4]
+        assert restored.mca_num_heads == 4

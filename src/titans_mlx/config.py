@@ -93,6 +93,21 @@ class TitansConfig:
     memory_state_weight_bits: int = 4
     memory_state_momentum_bits: int = 8
 
+    # Memory Cross-Attention (MCA)
+    use_mca: bool = False
+    mca_insertion_layers: list[int] | None = None
+    mca_num_heads: int = 8
+    mca_gate_type: str = "scalar"
+    mca_gate_bias_init: float = -3.0
+
+    # Memory dump
+    mca_auto_dump: bool = False
+    mca_dump_trigger: str = "session_end"
+    mca_dump_every_n: int = 1000
+    mca_dump_surprise_threshold: float = 0.85
+    mca_dump_path: str = "./memory_dumps/"
+    mca_dump_keep_last_n: int = 10
+
     # Training
     dropout: float = 0.0
     activation: str = "silu"
@@ -129,6 +144,24 @@ class TitansConfig:
             return self.finetune_local_chunk_sizes
         return self.local_chunk_sizes
 
+    def __post_init__(self) -> None:
+        """Validate config after initialization."""
+        if self.use_mca:
+            for idx in self.mca_active_insertion_layers:
+                if idx >= self.num_layers:
+                    raise ValueError(
+                        f"MCA insertion layer {idx} >= num_layers {self.num_layers}"
+                    )
+
+    @property
+    def mca_active_insertion_layers(self) -> list[int]:
+        """Resolved MCA insertion layers."""
+        if not self.use_mca:
+            return []
+        if self.mca_insertion_layers is not None:
+            return self.mca_insertion_layers
+        return [self.num_layers // 2]
+
     @property
     def attnres_sub_layer_block_size(self) -> int:
         """S — number of sub-layers per AttnRes block.
@@ -140,7 +173,9 @@ class TitansConfig:
         Returns at least 1 to prevent division-by-zero when num_layers
         is small relative to num_attnres_blocks.
         """
-        return max(1, (self.num_layers * 2) // self.num_attnres_blocks)
+        num_mca_layers = len(self.mca_active_insertion_layers) if self.use_mca else 0
+        total_sub_layers = (self.num_layers * 2) + num_mca_layers
+        return max(1, total_sub_layers // self.num_attnres_blocks)
 
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -178,6 +213,17 @@ class TitansConfig:
             "quantize_memory_state": self.quantize_memory_state,
             "memory_state_weight_bits": self.memory_state_weight_bits,
             "memory_state_momentum_bits": self.memory_state_momentum_bits,
+            "use_mca": self.use_mca,
+            "mca_insertion_layers": self.mca_insertion_layers,
+            "mca_num_heads": self.mca_num_heads,
+            "mca_gate_type": self.mca_gate_type,
+            "mca_gate_bias_init": self.mca_gate_bias_init,
+            "mca_auto_dump": self.mca_auto_dump,
+            "mca_dump_trigger": self.mca_dump_trigger,
+            "mca_dump_every_n": self.mca_dump_every_n,
+            "mca_dump_surprise_threshold": self.mca_dump_surprise_threshold,
+            "mca_dump_path": self.mca_dump_path,
+            "mca_dump_keep_last_n": self.mca_dump_keep_last_n,
             "dropout": self.dropout,
             "activation": self.activation,
             "init_std": self.init_std,
