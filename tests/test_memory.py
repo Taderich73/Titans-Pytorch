@@ -393,6 +393,54 @@ class TestHuberLinearMemory:
             atol=1e-7,
         ), "Memory weights should change after update"
 
+    def test_linear_huber_outlier_robustness(
+        self, huber_linear_config: TitansConfig
+    ) -> None:
+        """Huber should produce smaller weight changes than L2 for outlier inputs."""
+        l2_config = TitansConfig(
+            **{**huber_linear_config.to_dict(), "memory_objective": "l2"}
+        )
+        mem_l2 = NeuralLongTermMemory(l2_config)
+        mem_huber = NeuralLongTermMemory(huber_linear_config)
+
+        # Copy all weights so both memories are identical
+        mem_huber.proj_k.weight = mem_l2.proj_k.weight
+        mem_huber.proj_v.weight = mem_l2.proj_v.weight
+        mem_huber.proj_q.weight = mem_l2.proj_q.weight
+        mem_huber.proj_out.weight = mem_l2.proj_out.weight
+        mem_huber.memory.layers[0].weight = mem_l2.memory.layers[0].weight
+        mem_huber.gate_decay_proj.weight = mem_l2.gate_decay_proj.weight
+        mem_huber.gate_decay_proj.bias = mem_l2.gate_decay_proj.bias
+        mem_huber.gate_lr_proj.weight = mem_l2.gate_lr_proj.weight
+        mem_huber.gate_lr_proj.bias = mem_l2.gate_lr_proj.bias
+        mem_huber.gate_momentum_proj.weight = mem_l2.gate_momentum_proj.weight
+        mem_huber.gate_momentum_proj.bias = mem_l2.gate_momentum_proj.bias
+        # Init delta gate so sigmoid gives small delta (most errors in L1)
+        mem_huber.gate_delta_proj.bias = mx.array([-5.0])
+
+        # Large outlier input
+        x = mx.random.normal((1, 32, 64)) * 50.0
+
+        state_l2 = mem_l2.init_state(1)
+        state_huber = MemoryState(
+            weights=[mx.array(state_l2.weights[0])],
+            momentum=[mx.array(state_l2.momentum[0])],
+        )
+
+        _, new_l2 = mem_l2(x, state_l2)
+        _, new_huber = mem_huber(x, state_huber)
+        mx.eval(new_l2.weights[0], new_huber.weights[0], state_l2.weights[0])
+
+        change_l2 = float(mx.mean(mx.abs(new_l2.weights[0] - state_l2.weights[0])))
+        change_huber = float(
+            mx.mean(mx.abs(new_huber.weights[0] - state_l2.weights[0]))
+        )
+
+        assert change_huber <= change_l2 * 1.1, (
+            f"Huber change ({change_huber:.6f}) should be <= "
+            f"L2 change ({change_l2:.6f}) for outlier inputs"
+        )
+
 
 def test_memory_gate_parameter():
     """memory_gate should modulate lr_scale."""

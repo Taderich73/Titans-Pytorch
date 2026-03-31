@@ -920,7 +920,11 @@ class NeuralLongTermMemory(nn.Module):
         # Compute Huber delta gate if applicable
         if self.memory_objective == "huber":
             delta_val = mx.sigmoid(self.gate_delta_proj(x_mean))
+            # Scale to [0, error_clip] — errors are clipped to this range,
+            # so delta should lie within it
             delta_val = mx.mean(delta_val) * self.config.memory_error_clip
+            # Stashed for _parallel_memory_update_linear (consumed within
+            # this same __call__ invocation)
             self._current_delta = delta_val
 
         # memory_gate overrides lr_scale when provided (interface alignment
