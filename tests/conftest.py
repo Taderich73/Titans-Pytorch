@@ -73,6 +73,31 @@ def seed_rng() -> None:
 
 
 @pytest.fixture
+def huber_config() -> TitansConfig:
+    """Huber/Yaad memory objective configuration for tests."""
+    return TitansConfig(
+        dim=64,
+        num_heads=4,
+        num_layers=2,
+        ffn_mult=2.0,
+        num_memory_layers=2,
+        memory_hidden_mult=2.0,
+        num_persistent_tokens=4,
+        chunk_size=32,
+        window_size=16,
+        dropout=0.0,
+        use_conv=True,
+        conv_kernel_size=4,
+        use_rope=True,
+        max_seq_len=256,
+        vocab_size=100,
+        memory_lr=0.1,
+        memory_momentum=0.9,
+        memory_objective="huber",
+    )
+
+
+@pytest.fixture
 def mca_config() -> TitansConfig:
     """MCA-enabled configuration for tests."""
     return TitansConfig(
