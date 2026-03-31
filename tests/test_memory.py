@@ -343,6 +343,57 @@ class TestHuberGradients:
         assert not mx.any(mx.isnan(output))
 
 
+class TestHuberLinearMemory:
+    """Tests for Huber loss with linear (1-layer) memory."""
+
+    @pytest.fixture
+    def huber_linear_config(self) -> TitansConfig:
+        """Huber config with linear (1-layer) memory."""
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            ffn_mult=2.0,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            dropout=0.0,
+            use_conv=True,
+            conv_kernel_size=4,
+            use_rope=True,
+            max_seq_len=256,
+            vocab_size=100,
+            memory_lr=0.1,
+            memory_momentum=0.9,
+            memory_objective="huber",
+        )
+
+    def test_linear_huber_forward(self, huber_linear_config: TitansConfig) -> None:
+        """Linear memory with Huber should produce valid output."""
+        mem = NeuralLongTermMemory(huber_linear_config)
+        x = mx.random.normal((2, 32, 64))
+        state = mem.init_state(2)
+        output, new_state = mem(x, state)
+        mx.eval(output)
+        assert output.shape == (2, 32, 64)
+        assert not mx.any(mx.isnan(output))
+
+    def test_linear_huber_state_changes(self, huber_linear_config: TitansConfig) -> None:
+        """Memory state should change after Huber update."""
+        mem = NeuralLongTermMemory(huber_linear_config)
+        x = mx.random.normal((2, 32, 64))
+        state = mem.init_state(2)
+        _, new_state = mem(x, state)
+        mx.eval(state.weights[0], new_state.weights[0])
+        assert not np.allclose(
+            np.array(state.weights[0]),
+            np.array(new_state.weights[0]),
+            atol=1e-7,
+        ), "Memory weights should change after update"
+
+
 def test_memory_gate_parameter():
     """memory_gate should modulate lr_scale."""
     config = TitansConfig(dim=32, num_heads=4, num_layers=2, vocab_size=100)

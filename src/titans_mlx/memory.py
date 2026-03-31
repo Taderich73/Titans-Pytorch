@@ -1023,6 +1023,13 @@ class NeuralLongTermMemory(nn.Module):
         preds = keys @ W_0.T  # (B, S, D)
         errors = mx.clip(preds - values, -err_clip, err_clip)
 
+        # Huber: cap errors exceeding delta
+        if self.memory_objective == "huber":
+            hub_delta = getattr(self, "_current_delta", None)
+            if hub_delta is not None:
+                abs_errors = mx.abs(errors)
+                errors = mx.where(abs_errors <= hub_delta, errors, hub_delta * mx.sign(errors))
+
         # Scale matches current aggregate normalization for hyperparameter compat
         scale = 2.0 / float(B * S * D)
         errors_scaled = errors * scale  # (B, S, D)
