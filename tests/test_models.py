@@ -919,3 +919,87 @@ def test_multi_chunk_attn_res():
     input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]])
     logits, states = model(input_ids)
     assert logits.shape == (1, 16, 100)
+
+
+class TestYaadIntegration:
+    """Integration tests for Yaad (Huber) memory objective."""
+
+    @pytest.fixture
+    def yaad_mac_config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            ffn_mult=2.0,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            dropout=0.0,
+            use_conv=True,
+            conv_kernel_size=4,
+            use_rope=True,
+            max_seq_len=256,
+            vocab_size=100,
+            memory_objective="huber",
+        )
+
+    def test_mac_forward(self, yaad_mac_config: TitansConfig) -> None:
+        """MAC model with Huber memory should produce valid logits."""
+        from titans_mlx.models import TitansMAC
+
+        model = TitansMAC(yaad_mac_config)
+        tokens = mx.random.randint(0, 100, (2, 64))
+        logits, _ = model(tokens)
+        mx.eval(logits)
+        assert logits.shape == (2, 64, 100)
+        assert not mx.any(mx.isnan(logits))
+
+    def test_mac_backward(self, yaad_mac_config: TitansConfig) -> None:
+        """MAC model with Huber memory should produce valid gradients."""
+        from titans_mlx.models import TitansMAC
+
+        model = TitansMAC(yaad_mac_config)
+        tokens = mx.random.randint(0, 100, (2, 64))
+
+        def loss_fn(model, tokens):
+            logits, _ = model(tokens)
+            return mx.mean(logits[:, :-1, :])
+
+        loss, grads = mx.value_and_grad(loss_fn)(model, tokens)
+        mx.eval(loss)
+        assert not mx.isnan(loss)
+
+    def test_yaad_with_tnt(self) -> None:
+        """Yaad + TNT hierarchical memory should work together."""
+        from titans_mlx.models import TitansMAC
+
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            ffn_mult=2.0,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=16,
+            dropout=0.0,
+            use_conv=True,
+            conv_kernel_size=4,
+            use_rope=True,
+            max_seq_len=256,
+            vocab_size=100,
+            memory_objective="huber",
+            use_tnt=True,
+            global_chunk_size=32,
+            local_chunk_sizes=[4, 8],
+            local_shard_length=32,
+        )
+        model = TitansMAC(config)
+        tokens = mx.random.randint(0, 100, (2, 64))
+        logits, _ = model(tokens)
+        mx.eval(logits)
+        assert logits.shape == (2, 64, 100)
+        assert not mx.any(mx.isnan(logits))
