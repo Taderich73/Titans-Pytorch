@@ -447,6 +447,10 @@ def load_model(
         attnres_modulate_local = (
             str(meta.get("attnres_modulate_local_memory", ["False"])[0]) == "True"
         )
+
+        # Memory objective (Yaad)
+        memory_objective = str(meta.get("memory_objective", ["l2"])[0])
+        huber_delta_init = float(meta.get("huber_delta_init", [0.0])[0])
     else:
         # Try to infer from checkpoint name
         logger.warning("No metadata file found, using default configuration")
@@ -472,6 +476,8 @@ def load_model(
         attnres_warmup_steps = 0
         attnres_modulate_global = True
         attnres_modulate_local = False
+        memory_objective = "l2"
+        huber_delta_init = 0.0
 
     config = TitansConfig(
         dim=dim,
@@ -495,6 +501,8 @@ def load_model(
         attnres_warmup_steps=attnres_warmup_steps,
         attnres_modulate_global_memory=attnres_modulate_global,
         attnres_modulate_local_memory=attnres_modulate_local,
+        memory_objective=memory_objective,
+        huber_delta_init=huber_delta_init,
     )
 
     model = create_model(model_type, config)
@@ -620,6 +628,8 @@ def load_lora_model(
         attnres_warmup_steps=meta.get("attnres_warmup_steps", 0),
         attnres_modulate_global_memory=meta.get("attnres_modulate_global_memory", True),
         attnres_modulate_local_memory=meta.get("attnres_modulate_local_memory", False),
+        memory_objective=meta.get("memory_objective", "l2"),
+        huber_delta_init=meta.get("huber_delta_init", 0.0),
     )
 
     model = create_model(model_type, config)
