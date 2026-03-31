@@ -219,3 +219,31 @@ class TestMCAConfig:
         assert restored.use_mca is True
         assert restored.mca_insertion_layers == [4]
         assert restored.mca_num_heads == 4
+
+
+class TestMemoryObjectiveConfig:
+    """Tests for memory_objective configuration."""
+
+    def test_default_is_l2(self) -> None:
+        """Default memory objective should be l2 for backward compat."""
+        config = TitansConfig()
+        assert config.memory_objective == "l2"
+
+    def test_huber_objective(self) -> None:
+        """Huber objective should be accepted."""
+        config = TitansConfig(memory_objective="huber")
+        assert config.memory_objective == "huber"
+        assert config.huber_delta_init == 0.0
+
+    def test_invalid_objective_raises(self) -> None:
+        """Invalid memory objective should raise ValueError."""
+        with pytest.raises(ValueError, match="memory_objective"):
+            TitansConfig(memory_objective="invalid")
+
+    def test_huber_roundtrip(self) -> None:
+        """Huber config should survive to_dict/from_dict roundtrip."""
+        config = TitansConfig(memory_objective="huber", huber_delta_init=-1.0)
+        d = config.to_dict()
+        restored = TitansConfig.from_dict(d)
+        assert restored.memory_objective == "huber"
+        assert restored.huber_delta_init == -1.0

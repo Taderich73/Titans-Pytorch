@@ -67,6 +67,10 @@ class TitansConfig:
     memory_error_clip: float = 10.0
     memory_grad_clip: float = 1.0
 
+    # Memory objective (attentional bias)
+    memory_objective: str = "l2"  # "l2" (Titans default) or "huber" (Yaad)
+    huber_delta_init: float = 0.0  # Bias init for delta gate (sigmoid(0)=0.5)
+
     # Architecture options
     use_conv: bool = True
     conv_kernel_size: int = 4
@@ -150,6 +154,12 @@ class TitansConfig:
 
     def __post_init__(self) -> None:
         """Validate config after initialization."""
+        valid_objectives = ("l2", "huber")
+        if self.memory_objective not in valid_objectives:
+            raise ValueError(
+                f"memory_objective must be one of {valid_objectives}, "
+                f"got '{self.memory_objective}'"
+            )
         if self.use_mca:
             for idx in self.mca_active_insertion_layers:
                 if idx >= self.num_layers:
@@ -199,6 +209,8 @@ class TitansConfig:
             "memory_momentum": self.memory_momentum,
             "memory_error_clip": self.memory_error_clip,
             "memory_grad_clip": self.memory_grad_clip,
+            "memory_objective": self.memory_objective,
+            "huber_delta_init": self.huber_delta_init,
             "use_conv": self.use_conv,
             "conv_kernel_size": self.conv_kernel_size,
             "use_rope": self.use_rope,
