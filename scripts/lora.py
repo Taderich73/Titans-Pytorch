@@ -565,6 +565,8 @@ class LoRAConfig:
     attnres_warmup_steps: int = 0
     attnres_modulate_global: bool = True
     attnres_modulate_local: bool = False
+    memory_objective: str = "l2"
+    huber_delta_init: float = 0.0
     tnt_stage: int = 1
 
     # LoRA specific
@@ -1011,6 +1013,8 @@ def save_checkpoint(
         "attnres_warmup_steps": model_config.attnres_warmup_steps,
         "attnres_modulate_global_memory": model_config.attnres_modulate_global_memory,
         "attnres_modulate_local_memory": model_config.attnres_modulate_local_memory,
+        "memory_objective": model_config.memory_objective,
+        "huber_delta_init": model_config.huber_delta_init,
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
@@ -1484,6 +1488,19 @@ def main() -> None:
         default=False,
         help="Gate local memory LR with AttnRes",
     )
+    parser.add_argument(
+        "--memory-objective",
+        type=str,
+        default="l2",
+        choices=["l2", "huber"],
+        help="Memory attentional bias: l2 (Titans default) or huber (Yaad)",
+    )
+    parser.add_argument(
+        "--huber-delta-init",
+        type=float,
+        default=0.0,
+        help="Bias init for Huber delta gate (only with --memory-objective huber)",
+    )
 
     # LoRA specific
     parser.add_argument(
@@ -1667,6 +1684,8 @@ def main() -> None:
         attnres_warmup_steps=args.attnres_warmup_steps,
         attnres_modulate_global=args.attnres_modulate_global,
         attnres_modulate_local=args.attnres_modulate_local,
+        memory_objective=args.memory_objective,
+        huber_delta_init=args.huber_delta_init,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
@@ -1721,6 +1740,8 @@ def main() -> None:
         attnres_warmup_steps=config.attnres_warmup_steps,
         attnres_modulate_global_memory=config.attnres_modulate_global,
         attnres_modulate_local_memory=config.attnres_modulate_local,
+        memory_objective=config.memory_objective,
+        huber_delta_init=config.huber_delta_init,
     )
 
     # Configure dtype for mixed precision
