@@ -615,6 +615,11 @@ class NeuralLongTermMemory(nn.Module):
         self.gate_lr_proj = nn.Linear(config.dim, 1)
         self.gate_momentum_proj = nn.Linear(config.dim, 1)
 
+        # Huber delta gate (only used when memory_objective == "huber")
+        self.memory_objective = config.memory_objective
+        if self.memory_objective == "huber":
+            self.gate_delta_proj = nn.Linear(config.dim, 1)
+
         # Output projection
         self.proj_out = nn.Linear(config.dim, config.dim, bias=False)
 
@@ -643,6 +648,9 @@ class NeuralLongTermMemory(nn.Module):
         # LR gate (θ): sigmoid(0)*memory_lr = 0.5*0.1 = 0.05  — reasonable, no change
         # Momentum gate (η): sigmoid(0)*momentum = 0.5*0.9 = 0.45 — reasonable, no change
 
+        if self.memory_objective == "huber":
+            self.gate_delta_proj.bias = mx.array([self.config.huber_delta_init])
+
     def _apply_conv(
         self, k: mx.array, v: mx.array, q: mx.array
     ) -> tuple[mx.array, mx.array, mx.array]:
@@ -667,6 +675,7 @@ class NeuralLongTermMemory(nn.Module):
         keys: mx.array,
         values: mx.array,
         weights: list[mx.array],
+        delta: mx.array | None = None,
     ) -> list[mx.array]:
         """Compute gradients for memory update analytically.
 
@@ -679,6 +688,8 @@ class NeuralLongTermMemory(nn.Module):
             keys: Key vectors (batch, seq, dim)
             values: Value vectors (batch, seq, dim)
             weights: Current memory weights
+            delta: Optional Huber delta threshold. If provided and
+                memory_objective == "huber", clips the error signal per token.
 
         Returns:
             List of gradient tensors for each memory layer
@@ -687,16 +698,17 @@ class NeuralLongTermMemory(nn.Module):
 
         # Fast path for linear memory (1 layer) - most common case
         if num_layers == 1:
-            return self._compute_gradients_linear(keys, values, weights[0])
+            return self._compute_gradients_linear(keys, values, weights[0], delta=delta)
 
         # Multi-layer case: use optimized computation
-        return self._compute_gradients_deep(keys, values, weights)
+        return self._compute_gradients_deep(keys, values, weights, delta=delta)
 
     def _compute_gradients_linear(
         self,
         keys: mx.array,
         values: mx.array,
         weight: mx.array,
+        delta: mx.array | None = None,
     ) -> list[mx.array]:
         """Optimized gradient computation for linear (1-layer) memory.
 
@@ -710,7 +722,14 @@ class NeuralLongTermMemory(nn.Module):
 
         # Error and gradient scale
         err_clip = self.config.memory_error_clip
-        error = mx.clip(predictions - values, -err_clip, err_clip)
+        raw_error = mx.clip(predictions - values, -err_clip, err_clip)
+
+        # Apply Huber error capping if requested
+        if self.memory_objective == "huber" and delta is not None:
+            abs_error = mx.abs(raw_error)
+            error = mx.where(abs_error <= delta, raw_error, delta * mx.sign(raw_error))
+        else:
+            error = raw_error
         scale = 2.0 / float(error.size)
 
         # Efficient gradient via matmul: (D_out, B*S) @ (B*S, D_in) -> (D_out, D_in)
@@ -728,10 +747,18 @@ class NeuralLongTermMemory(nn.Module):
         keys: mx.array,
         values: mx.array,
         weights: list[mx.array],
+        delta: mx.array | None = None,
     ) -> list[mx.array]:
         """Optimized gradient computation for deep (multi-layer) memory.
 
         Uses matmul instead of expand_dims for efficient gradient computation.
+
+        Args:
+            keys: Key vectors (batch, seq, dim)
+            values: Value vectors (batch, seq, dim)
+            weights: Current memory layer weights
+            delta: Optional Huber delta threshold. When provided and
+                memory_objective == "huber", clips the error signal per token.
         """
         num_layers = len(weights)
         assert keys.ndim == 3, f"Expected 3D keys [B, S, D], got {keys.ndim}D"
@@ -754,9 +781,17 @@ class NeuralLongTermMemory(nn.Module):
 
         # Error computation
         err_clip = self.config.memory_error_clip
-        error = mx.clip(h - values, -err_clip, err_clip)
+        raw_error = mx.clip(h - values, -err_clip, err_clip)
+
+        # Apply Huber error capping if requested
+        if self.memory_objective == "huber" and delta is not None:
+            abs_error = mx.abs(raw_error)
+            error = mx.where(abs_error <= delta, raw_error, delta * mx.sign(raw_error))
+        else:
+            error = raw_error
+
         scale = 2.0 / float(error.size)
-        delta = scale * error
+        delta_bp = scale * error
 
         # Backward pass - compute gradients using efficient matmul
         grad_clip = self.config.memory_grad_clip
@@ -766,16 +801,16 @@ class NeuralLongTermMemory(nn.Module):
             act = activations[i]
 
             # Efficient gradient via matmul: (D_out, B*S) @ (B*S, D_in) -> (D_out, D_in)
-            delta_flat = delta.reshape(batch_seq, -1)  # (B*S, D_out)
+            delta_bp_flat = delta_bp.reshape(batch_seq, -1)  # (B*S, D_out)
             act_flat = act.reshape(batch_seq, -1)  # (B*S, D_in)
-            grad_w = delta_flat.T @ act_flat  # (D_out, D_in)
+            grad_w = delta_bp_flat.T @ act_flat  # (D_out, D_in)
             grads[i] = mx.clip(grad_w, -grad_clip, grad_clip)
 
             # Propagate gradient to previous layer
             if i > 0:
-                delta = delta @ weights[i]
+                delta_bp = delta_bp @ weights[i]
                 x = pre_activations[i - 1]
-                delta = delta * self._activation_derivative(x)
+                delta_bp = delta_bp * self._activation_derivative(x)
 
         return grads
 
@@ -882,6 +917,12 @@ class NeuralLongTermMemory(nn.Module):
         theta = mx.mean(theta)
         eta = mx.mean(eta)
 
+        # Compute Huber delta gate if applicable
+        if self.memory_objective == "huber":
+            delta_val = mx.sigmoid(self.gate_delta_proj(x_mean))
+            delta_val = mx.mean(delta_val) * self.config.memory_error_clip
+            self._current_delta = delta_val
+
         # memory_gate overrides lr_scale when provided (interface alignment
         # with HierarchicalMemory which also accepts memory_gate)
         if memory_gate is not None:
@@ -898,7 +939,8 @@ class NeuralLongTermMemory(nn.Module):
             )
         else:
             # Deep memory: batch-level gradient update (no closed-form parallel)
-            grads = self._compute_gradients(k, v, state.weights)
+            delta_val = getattr(self, "_current_delta", None)
+            grads = self._compute_gradients(k, v, state.weights, delta=delta_val)
             new_momentum = [eta * m - theta * g for m, g in zip(state.momentum, grads)]
             new_weights = [
                 (1 - alpha) * w + s for w, s in zip(state.weights, new_momentum)

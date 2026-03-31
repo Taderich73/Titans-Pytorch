@@ -281,6 +281,68 @@ class TestNeuralLongTermMemory:
             assert not np.any(np.isnan(np.array(g)))
 
 
+class TestHuberGradients:
+    """Tests for Huber loss attentional bias (Yaad)."""
+
+    def test_huber_memory_creates_delta_gate(self, huber_config: TitansConfig) -> None:
+        """Huber memory should have a delta gate projection."""
+        mem = NeuralLongTermMemory(huber_config)
+        assert hasattr(mem, "gate_delta_proj")
+
+    def test_huber_small_error_matches_l2(self, huber_config: TitansConfig) -> None:
+        """When error is small relative to delta, Huber gradient should approximate L2."""
+        mem_huber = NeuralLongTermMemory(huber_config)
+        l2_config = TitansConfig(**{**huber_config.to_dict(), "memory_objective": "l2"})
+        mem_l2 = NeuralLongTermMemory(l2_config)
+
+        # Copy weights
+        for i in range(len(mem_l2.memory.layers)):
+            mem_huber.memory.layers[i].weight = mem_l2.memory.layers[i].weight
+
+        # Small input = small errors = L2 regime
+        keys = mx.random.normal((1, 4, 64)) * 0.001
+        values = mx.random.normal((1, 4, 64)) * 0.001
+        weights = mem_l2.memory.get_weights()
+
+        grads_l2 = mem_l2._compute_gradients(keys, values, weights)
+        grads_huber = mem_huber._compute_gradients(keys, values, weights, delta=mx.array(100.0))
+
+        mx.eval(*grads_l2, *grads_huber)
+        for g_l2, g_h in zip(grads_l2, grads_huber):
+            np.testing.assert_allclose(np.array(g_l2), np.array(g_h), atol=1e-5)
+
+    def test_huber_large_error_clips_gradient(self, huber_config: TitansConfig) -> None:
+        """When error > delta, Huber gradient magnitude should be bounded."""
+        mem = NeuralLongTermMemory(huber_config)
+
+        keys = mx.random.normal((1, 4, 64)) * 10.0
+        values = mx.random.normal((1, 4, 64)) * 10.0
+        weights = mem.memory.get_weights()
+
+        grads_small_delta = mem._compute_gradients(keys, values, weights, delta=mx.array(0.001))
+        grads_large_delta = mem._compute_gradients(keys, values, weights, delta=mx.array(1000.0))
+
+        mx.eval(*grads_small_delta, *grads_large_delta)
+
+        for g_l1, g_l2 in zip(grads_small_delta, grads_large_delta):
+            norm_l1 = float(mx.sqrt(mx.sum(g_l1 * g_l1)))
+            norm_l2 = float(mx.sqrt(mx.sum(g_l2 * g_l2)))
+            assert norm_l1 < norm_l2, (
+                f"Huber L1 regime grad norm ({norm_l1:.4f}) should be < "
+                f"L2 regime ({norm_l2:.4f}) for large errors"
+            )
+
+    def test_huber_forward_pass_runs(self, huber_config: TitansConfig) -> None:
+        """Full forward pass with Huber memory should produce valid output."""
+        mem = NeuralLongTermMemory(huber_config)
+        x = mx.random.normal((2, 32, 64))
+        state = mem.init_state(2)
+        output, new_state = mem(x, state)
+        mx.eval(output)
+        assert output.shape == (2, 32, 64)
+        assert not mx.any(mx.isnan(output))
+
+
 def test_memory_gate_parameter():
     """memory_gate should modulate lr_scale."""
     config = TitansConfig(dim=32, num_heads=4, num_layers=2, vocab_size=100)
