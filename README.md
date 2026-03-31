@@ -3,21 +3,22 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-403%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-428%20passed-brightgreen.svg)](tests/)
 
-A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, and **Memory State Persistence** as composable, independent features.
+A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, and **Memory State Persistence** as composable, independent features.
 
-Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Memory State Persistence** enables dumping, loading, forking, and merging memory states across sessions for inference-time continual learning.
+Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Yaad** (from the Miras framework) replaces the standard L2 attentional bias with a Huber loss that is robust to outlier tokens. **Memory State Persistence** enables dumping, loading, forking, and merging memory states across sessions for inference-time continual learning.
 
-TNT, AttnRes, and MCA are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
+TNT, AttnRes, MCA, and Yaad are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
 
-| Flags | Memory | Residuals | Memory Read |
-|-------|--------|-----------|-------------|
-| (default) | Single NeuralLongTermMemory | Standard | MLP only |
-| `--use-tnt` | Hierarchical (global + local) | Standard | MLP only |
-| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes | MLP only |
-| `--use-mca` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention |
-| `--use-tnt --use-attn-res --use-mca` | Hierarchical (global + local) | AttnRes | MLP + Cross-Attention |
+| Flags | Memory | Residuals | Memory Read | Attentional Bias |
+|-------|--------|-----------|-------------|------------------|
+| (default) | Single NeuralLongTermMemory | Standard | MLP only | L2 |
+| `--use-tnt` | Hierarchical (global + local) | Standard | MLP only | L2 |
+| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes | MLP only | L2 |
+| `--use-mca` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention | L2 |
+| `--memory-objective huber` | Single NeuralLongTermMemory | Standard | MLP only | Huber (Yaad) |
+| `--use-tnt --use-attn-res --memory-objective huber` | Hierarchical (global + local) | AttnRes | MLP only | Huber (Yaad) |
 
 ---
 
@@ -28,6 +29,7 @@ TNT, AttnRes, and MCA are **independent flags** that work with any block type (M
 - [TNT: Hierarchical Memory](#tnt-hierarchical-memory)
 - [Attention Residuals (AttnRes)](#attention-residuals-attnres)
 - [Memory Cross-Attention (MCA)](#memory-cross-attention-mca)
+- [Yaad: Huber Attentional Bias](#yaad-huber-attentional-bias)
 - [Memory State Persistence](#memory-state-persistence)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -54,6 +56,8 @@ TNT, AttnRes, and MCA are **independent flags** that work with any block type (M
 > **TNT**: Li, S., Bick, A., Lucchi, A., & Behrouz, A. (2025). *TNT: Improving Chunkwise Training for Test-Time Memorization*. [arXiv:2511.07343](https://arxiv.org/pdf/2511.07343)
 
 > **AttnRes**: Kimi Team (2025). *Attention Residuals*. [arXiv:2603.15031](https://arxiv.org/abs/2603.15031)
+
+> **Miras (Yaad)**: Behrouz, A., Razaviyayn, M., Zhong, P., & Mirrokni, V. (2025). *It's All Connected: A Journey Through Test-Time Memorization, Attentional Bias, Retention, and Online Optimization*. [arXiv:2504.13173](https://arxiv.org/abs/2504.13173)
 
 ---
 
@@ -82,9 +86,11 @@ All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `-
 
 ### Neural Long-term Memory
 
-**Associative Memory Loss** (Eq. 12):
+**Associative Memory Loss** — configurable attentional bias (Eq. 12):
 ```
-l(M; x_t) = ||M(k_t) - v_t||^2
+L2 (default):  l(M; x_t) = ||M(k_t) - v_t||^2
+Huber (Yaad):  l(M; x_t) = { L2  if |error| <= delta_t
+                            { L1  if |error| > delta_t
 ```
 
 **Memory Update with Forgetting** (Eq. 13-14):
@@ -251,6 +257,61 @@ model = TitansMAC(config)
 
 ---
 
+## Yaad: Huber Attentional Bias
+
+Yaad is a variant from the **Miras** framework (Behrouz et al., 2025) that replaces the standard L2 attentional bias with a **Huber loss**. This makes memory updates robust to outlier tokens — small errors use L2 gradients (precise), while large errors switch to L1 gradients (bounded magnitude).
+
+```
+Standard (L2):  loss = ||M(k_t) - v_t||^2         — all errors treated equally
+Yaad (Huber):   loss = { L2  if |error| <= delta   — precise for normal tokens
+                       { L1  if |error| > delta     — bounded for outliers
+```
+
+The threshold `delta` is **data-dependent** — a learned gate that adapts per chunk based on the input. The retention gate is identical to standard Titans (no change to forgetting behavior).
+
+Enable with `--memory-objective huber`. Composes with all other flags:
+
+```python
+from titans_mlx import TitansConfig, TitansMAC
+
+config = TitansConfig(
+    dim=512, num_heads=8, num_layers=12, vocab_size=32000,
+    chunk_size=512,
+    memory_objective="huber",  # Yaad attentional bias
+)
+model = TitansMAC(config)
+```
+
+### Training with Yaad
+
+```bash
+uv run python scripts/pretrain.py --model mac \
+  --dataset HuggingFaceFW/fineweb-edu \
+  --tokenizer NousResearch/Llama-2-7b-hf \
+  --dim 512 --num-layers 12 --num-heads 8 \
+  --memory-objective huber \
+  --use-attn-res \
+  --num-attnres-blocks 4 \
+  --attnres-warmup-steps 200
+```
+
+### Combined Yaad + TNT + AttnRes
+
+```bash
+uv run python scripts/pretrain.py --model mac \
+  --dataset HuggingFaceFW/fineweb-edu \
+  --tokenizer NousResearch/Llama-2-7b-hf \
+  --dim 512 --num-layers 12 --num-heads 8 \
+  --memory-objective huber \
+  --use-tnt \
+  --local-chunk-sizes 8 16 \
+  --use-attn-res \
+  --num-attnres-blocks 4 \
+  --attnres-warmup-steps 200
+```
+
+---
+
 ## Memory State Persistence
 
 The `MemoryDumpManager` provides serialization, inspection, and management of NeuralLTM memory states. This enables inference-time continual learning across sessions without modifying model weights.
@@ -370,6 +431,9 @@ uv run python scripts/pretrain.py --model mac \
 | `--local-chunk-sizes` | `8 16` | Chunk sizes per local memory |
 | `--local-shard-length` | `2048` | Local memory reset period |
 | `--global-chunk-size` | `2048` | Global memory chunk size |
+| **Memory Objective** |
+| `--memory-objective` | `l2` | Attentional bias: `l2` (Titans) or `huber` (Yaad) |
+| `--huber-delta-init` | `0.0` | Bias init for Huber delta gate |
 | **AttnRes** |
 | `--use-attn-res` | `False` | Enable Attention Residuals |
 | `--num-attnres-blocks` | `8` | AttnRes block count (N) |
@@ -690,6 +754,9 @@ uv run python scripts/inference.py \
 | `local_chunk_sizes` | [8, 16] | Chunk sizes per local memory |
 | `local_shard_length` | 2048 | Local memory reset period |
 | `use_qk_projection` | True | Q-K projection for local retrieval |
+| **Memory Objective (Attentional Bias)** |
+| `memory_objective` | "l2" | `"l2"` (Titans default) or `"huber"` (Yaad) |
+| `huber_delta_init` | 0.0 | Bias init for Huber delta gate (sigmoid(0)=0.5) |
 | **Attention Residuals** |
 | `use_attn_res` | False | Enable AttnRes |
 | `num_attnres_blocks` | 8 | Number of AttnRes blocks (N) |
@@ -799,7 +866,7 @@ titans-tnt-mlx/
 |   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 403 tests
++-- tests/                  # 428 tests
 ```
 
 ### Running Tests
@@ -834,6 +901,13 @@ uv run pytest tests/ --cov=titans_mlx --cov-report=term-missing
   institution={Moonshot AI},
   year={2025},
   note={arXiv:2603.15031}
+}
+
+@article{behrouz2025miras,
+  title={It's All Connected: A Journey Through Test-Time Memorization, Attentional Bias, Retention, and Online Optimization},
+  author={Behrouz, Ali and Razaviyayn, Meisam and Zhong, Peilin and Mirrokni, Vahab},
+  journal={arXiv preprint arXiv:2504.13173},
+  year={2025}
 }
 ```
 
