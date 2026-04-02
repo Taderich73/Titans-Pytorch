@@ -97,6 +97,13 @@ class TitansConfig:
     memory_state_weight_bits: int = 4
     memory_state_momentum_bits: int = 8
 
+    # Adaptive window sizing (per-layer learned soft masking)
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None  # defaults to window_size
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+
     # Memory Cross-Attention (MCA)
     use_mca: bool = False
     mca_insertion_layers: list[int] | None = None
@@ -135,6 +142,13 @@ class TitansConfig:
     def memory_hidden_dim(self) -> int:
         """Hidden dimension for memory MLP."""
         return int(self.dim * self.memory_hidden_mult)
+
+    @property
+    def effective_adaptive_window_max(self) -> int:
+        """Resolved max window size for adaptive windowing."""
+        if self.adaptive_window_max is not None:
+            return self.adaptive_window_max
+        return self.window_size
 
     @property
     def num_local_memories(self) -> int:
@@ -229,6 +243,11 @@ class TitansConfig:
             "quantize_memory_state": self.quantize_memory_state,
             "memory_state_weight_bits": self.memory_state_weight_bits,
             "memory_state_momentum_bits": self.memory_state_momentum_bits,
+            "adaptive_window": self.adaptive_window,
+            "adaptive_window_min": self.adaptive_window_min,
+            "adaptive_window_max": self.adaptive_window_max,
+            "adaptive_window_temperature": self.adaptive_window_temperature,
+            "adaptive_window_lambda": self.adaptive_window_lambda,
             "use_mca": self.use_mca,
             "mca_insertion_layers": self.mca_insertion_layers,
             "mca_num_heads": self.mca_num_heads,

@@ -247,3 +247,52 @@ class TestMemoryObjectiveConfig:
         restored = TitansConfig.from_dict(d)
         assert restored.memory_objective == "huber"
         assert restored.huber_delta_init == -1.0
+
+
+class TestAdaptiveWindowConfig:
+    """Tests for adaptive window config fields."""
+
+    def test_defaults_disabled(self) -> None:
+        """Adaptive window defaults to disabled."""
+        config = TitansConfig()
+        assert config.adaptive_window is False
+        assert config.adaptive_window_min == 64
+        assert config.adaptive_window_max is None
+        assert config.adaptive_window_temperature == 10.0
+        assert config.adaptive_window_lambda == 0.01
+
+    def test_max_defaults_to_window_size(self) -> None:
+        """adaptive_window_max defaults to window_size when None."""
+        config = TitansConfig(window_size=256, adaptive_window=True)
+        assert config.effective_adaptive_window_max == 256
+
+    def test_max_explicit(self) -> None:
+        """Explicit adaptive_window_max overrides window_size."""
+        config = TitansConfig(
+            window_size=512, adaptive_window=True, adaptive_window_max=256
+        )
+        assert config.effective_adaptive_window_max == 256
+
+    def test_to_dict_includes_adaptive_fields(self) -> None:
+        """to_dict includes adaptive window fields."""
+        config = TitansConfig(adaptive_window=True, adaptive_window_min=32)
+        d = config.to_dict()
+        assert d["adaptive_window"] is True
+        assert d["adaptive_window_min"] == 32
+        assert d["adaptive_window_max"] is None
+        assert d["adaptive_window_temperature"] == 10.0
+        assert d["adaptive_window_lambda"] == 0.01
+
+    def test_from_dict_round_trip(self) -> None:
+        """Config survives to_dict -> from_dict round trip."""
+        config = TitansConfig(
+            adaptive_window=True,
+            adaptive_window_min=32,
+            adaptive_window_max=256,
+            adaptive_window_temperature=5.0,
+            adaptive_window_lambda=0.05,
+        )
+        restored = TitansConfig.from_dict(config.to_dict())
+        assert restored.adaptive_window is True
+        assert restored.adaptive_window_min == 32
+        assert restored.effective_adaptive_window_max == 256
