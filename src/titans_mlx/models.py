@@ -554,6 +554,10 @@ class MAGBlock(nn.Module):
         normed = self.norm1(h)
 
         # Adaptive window: predict soft mask from hidden state
+        # NOTE: In multi-chunk sequences, _last_falloff_centers retains only the
+        # final chunk's values. Regularization therefore acts on the last chunk
+        # rather than all chunks. Acceptable for initial experimentation; a future
+        # improvement could accumulate centers across chunks.
         adaptive_mask = None
         if hasattr(self, "window_predictor"):
             adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)

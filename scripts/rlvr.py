@@ -889,7 +889,7 @@ def load_checkpoint(
 # =============================================================================
 
 
-def _apply_adaptive_window_reg_rlvr(m, loss, adaptive_window_lambda):
+def _apply_adaptive_window_reg(m, loss, adaptive_window_lambda):
     """Add adaptive window regularization to loss if enabled."""
     if adaptive_window_lambda > 0.0:
         from titans_mlx.adaptive_window import compute_window_regularization
@@ -962,7 +962,7 @@ def compute_rlvr_grads(
                 epsilon=config.epsilon,
                 kl_beta=config.kl_beta,
             )
-            return _apply_adaptive_window_reg_rlvr(m, loss, aw_lambda)
+            return _apply_adaptive_window_reg(m, loss, aw_lambda)
 
         loss_and_grad_fn = nn.value_and_grad(model, grpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -988,7 +988,7 @@ def compute_rlvr_grads(
                 masked_lp = lp * _r_mask
                 seq_lp = masked_lp.sum(axis=-1)
                 loss = -mx.mean(_adv * seq_lp)
-                return _apply_adaptive_window_reg_rlvr(m, loss, aw_lambda)
+                return _apply_adaptive_window_reg(m, loss, aw_lambda)
 
             loss_and_grad_fn = nn.value_and_grad(model, reinforce_loss_fn)
             loss, grads = loss_and_grad_fn(model)
