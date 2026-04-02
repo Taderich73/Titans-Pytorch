@@ -110,6 +110,13 @@ class TrainingConfig:
     memory_objective: str = "l2"  # "l2" (Titans) or "huber" (Yaad)
     huber_delta_init: float = 0.0
 
+    # Adaptive window sizing
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+
     # Data
     dataset: str | None = None  # HuggingFace dataset name
     dataset_subset: str | None = None  # Dataset subset/config
@@ -449,9 +456,12 @@ def get_lr_schedule(
 
 
 def loss_fn(
-    model: nn.Module, input_ids: mx.array, labels: mx.array
+    model: nn.Module,
+    input_ids: mx.array,
+    labels: mx.array,
+    adaptive_window_lambda: float = 0.0,
 ) -> tuple[mx.array, mx.array]:
-    """Compute cross-entropy loss."""
+    """Compute cross-entropy loss with optional window regularization."""
     logits, _ = model(input_ids)
     # Reshape for cross entropy
     batch_size, seq_len, vocab_size = logits.shape
@@ -460,6 +470,22 @@ def loss_fn(
 
     # Cross entropy loss
     loss = nn.losses.cross_entropy(logits_flat, labels_flat, reduction="mean")
+
+    # Adaptive window regularization
+    if adaptive_window_lambda > 0.0:
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        falloff_centers = []
+        for block in model.blocks:
+            fc = getattr(block, "_last_falloff_centers", None)
+            if fc is not None:
+                falloff_centers.append(fc)
+
+        if falloff_centers:
+            max_w = model.config.effective_adaptive_window_max
+            reg = compute_window_regularization(falloff_centers, max_w)
+            loss = loss + adaptive_window_lambda * reg
+
     return loss, logits
 
 
@@ -515,15 +541,11 @@ def compute_grads(
     model: nn.Module,
     input_ids: mx.array,
     labels: mx.array,
+    adaptive_window_lambda: float = 0.0,
 ) -> tuple[mx.array, dict]:
-    """Compute loss and gradients without updating parameters.
-
-    Returns:
-        Tuple of (loss, grads) where grads is a nested dict matching
-        the model parameter tree.
-    """
+    """Compute loss and gradients without updating parameters."""
     loss_and_grad_fn = nn.value_and_grad(
-        model, lambda m: loss_fn(m, input_ids, labels)[0]
+        model, lambda m: loss_fn(m, input_ids, labels, adaptive_window_lambda)[0]
     )
     loss, grads = loss_and_grad_fn(model)
     return loss, grads
@@ -649,7 +671,7 @@ def evaluate(
         input_ids = batch["input_ids"]
         labels = batch["labels"]
 
-        loss, _ = loss_fn(model, input_ids, labels)
+        loss, _ = loss_fn(model, input_ids, labels)  # eval: no regularization
         mx.eval(loss)
 
         batch_tokens = labels.size
@@ -917,7 +939,8 @@ def train(
 
                 # --- Micro-step: compute gradients only ---
                 micro_start = time.time()
-                loss, grads = compute_grads(model, input_ids, labels)
+                aw_lambda = config.adaptive_window_lambda if config.adaptive_window else 0.0
+                loss, grads = compute_grads(model, input_ids, labels, aw_lambda)
 
                 # Materialize this micro-step's arrays to bound memory.
                 # Without this, MLX's lazy graph grows across accumulation
@@ -1075,7 +1098,8 @@ def train(
 
                 # --- Micro-step: compute gradients only ---
                 micro_start = time.time()
-                loss, grads = compute_grads(model, input_ids, labels)
+                aw_lambda = config.adaptive_window_lambda if config.adaptive_window else 0.0
+                loss, grads = compute_grads(model, input_ids, labels, aw_lambda)
                 _eval_grads(grads, loss)
                 micro_elapsed = time.time() - micro_start
 
@@ -1256,6 +1280,23 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size (MAC)")
     parser.add_argument(
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
+    )
+    parser.add_argument(
+        "--adaptive-window", action="store_true", help="Enable adaptive window sizing"
+    )
+    parser.add_argument(
+        "--adaptive-window-min", type=int, default=64, help="Min adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-max", type=int, default=None, help="Max adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-temperature", type=float, default=10.0,
+        help="Soft mask temperature"
+    )
+    parser.add_argument(
+        "--adaptive-window-lambda", type=float, default=0.01,
+        help="Window size regularization weight"
     )
 
     # TNT Hierarchical Memory
@@ -1479,6 +1520,11 @@ def main() -> None:
         attnres_modulate_local=args.attnres_modulate_local,
         memory_objective=args.memory_objective,
         huber_delta_init=args.huber_delta_init,
+        adaptive_window=args.adaptive_window,
+        adaptive_window_min=args.adaptive_window_min,
+        adaptive_window_max=args.adaptive_window_max,
+        adaptive_window_temperature=args.adaptive_window_temperature,
+        adaptive_window_lambda=args.adaptive_window_lambda,
     )
 
     # Check dependencies
@@ -1525,6 +1571,11 @@ def main() -> None:
         attnres_modulate_local_memory=config.attnres_modulate_local,
         memory_objective=config.memory_objective,
         huber_delta_init=config.huber_delta_init,
+        adaptive_window=config.adaptive_window,
+        adaptive_window_min=config.adaptive_window_min,
+        adaptive_window_max=config.adaptive_window_max,
+        adaptive_window_temperature=config.adaptive_window_temperature,
+        adaptive_window_lambda=config.adaptive_window_lambda,
     )
 
     # Configure dtype for mixed precision
