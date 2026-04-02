@@ -3,7 +3,7 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-459%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-467%20passed-brightgreen.svg)](tests/)
 
 A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Memory State Persistence** as composable, independent features.
 
@@ -84,7 +84,7 @@ Titans are designed around a memory perspective inspired by human cognition:
 | **Long-context** | Best | Good | Baseline | Good |
 | **Training Speed** | Medium | Fast | Fastest | Fast |
 
-All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `--use-mca` independently. `--adaptive-window` applies to MAG (MAL interface-compatible for future integration). LMM supports `--use-tnt` but not `--use-attn-res`, `--use-mca`, or `--adaptive-window` (it has no attention mechanism).
+All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `--use-mca` independently. `--adaptive-window` applies to MAG and MAL (sliding window variants). LMM supports `--use-tnt` but not `--use-attn-res`, `--use-mca`, or `--adaptive-window` (it has no attention mechanism).
 
 ### Neural Long-term Memory
 
@@ -326,7 +326,7 @@ Each layer gets a lightweight predictor (single linear projection) that outputs 
 | Soft masking | Differentiable alternative to hard window cutoff |
 | Efficiency regularization | `lambda * mean(falloff_centers / max_window)` added to loss |
 
-Currently supported for **MAG** blocks (MAL interface-compatible for future integration).
+Supported for **MAG** and **MAL** blocks (both use sliding window attention).
 
 ### Training with Adaptive Window
 
@@ -922,7 +922,7 @@ titans-tnt-mlx/
 |   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 459 tests
++-- tests/                  # 467 tests
 ```
 
 ### Running Tests
