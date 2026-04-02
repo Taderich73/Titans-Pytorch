@@ -158,3 +158,76 @@ class TestAdaptiveWindowPredictor:
         flat_grads = [v for _, v in mlx.utils.tree_flatten(grads)]
         has_nonzero = any(mx.any(g != 0).item() for g in flat_grads if isinstance(g, mx.array))
         assert has_nonzero, "Predictor should have non-zero gradients"
+
+
+class TestSlidingWindowAdaptiveMask:
+    """Tests for adaptive mask integration in SlidingWindowAttention."""
+
+    @pytest.fixture
+    def adaptive_config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            window_size=32,
+            max_seq_len=256,
+            adaptive_window=True,
+            adaptive_window_min=4,
+            adaptive_window_max=32,
+        )
+
+    def test_attention_accepts_adaptive_mask(self, adaptive_config: TitansConfig) -> None:
+        """SlidingWindowAttention accepts adaptive_mask parameter."""
+        from titans_mlx.adaptive_window import AdaptiveWindowPredictor
+        from titans_mlx.attention import SlidingWindowAttention
+
+        attn = SlidingWindowAttention(adaptive_config)
+        predictor = AdaptiveWindowPredictor(adaptive_config)
+
+        x = mx.random.normal((2, 16, 64))
+        adaptive_mask, _ = predictor(x)
+
+        out = attn(x, adaptive_mask=adaptive_mask)
+        mx.eval(out)
+
+        assert out.shape == (2, 16, 64)
+
+    def test_attention_without_adaptive_mask_unchanged(self) -> None:
+        """Without adaptive_mask, behavior is identical to before."""
+        from titans_mlx.attention import SlidingWindowAttention
+
+        config = TitansConfig(
+            dim=64, num_heads=4, window_size=16, max_seq_len=256,
+            use_rope=False,
+        )
+        attn = SlidingWindowAttention(config)
+        x = mx.random.normal((2, 16, 64))
+
+        # Call without adaptive_mask (default)
+        out1 = attn(x)
+        mx.eval(out1)
+
+        # Call with explicit None
+        out2 = attn(x, adaptive_mask=None)
+        mx.eval(out2)
+
+        diff = mx.max(mx.abs(out1 - out2)).item()
+        assert diff == 0.0
+
+    def test_attention_with_prefix_and_adaptive_mask(
+        self, adaptive_config: TitansConfig
+    ) -> None:
+        """Adaptive mask works alongside persistent memory prefix."""
+        from titans_mlx.adaptive_window import AdaptiveWindowPredictor
+        from titans_mlx.attention import SlidingWindowAttention
+
+        attn = SlidingWindowAttention(adaptive_config)
+        predictor = AdaptiveWindowPredictor(adaptive_config)
+
+        x = mx.random.normal((2, 16, 64))
+        prefix = mx.random.normal((2, 4, 64))
+        adaptive_mask, _ = predictor(x)
+
+        out = attn(x, prefix=prefix, adaptive_mask=adaptive_mask)
+        mx.eval(out)
+
+        assert out.shape == (2, 16, 64)

@@ -194,6 +194,7 @@ class SlidingWindowAttention(nn.Module):
         x: mx.array,
         prefix: mx.array | None = None,
         seq_offset: int = 0,
+        adaptive_mask: mx.array | None = None,
     ) -> mx.array:
         """Forward pass with sliding window attention.
 
@@ -201,6 +202,10 @@ class SlidingWindowAttention(nn.Module):
             x: Input tensor (batch, seq, dim)
             prefix: Optional prefix tokens that can be attended to (batch, prefix_len, dim)
             seq_offset: Offset for rotary embeddings
+            adaptive_mask: Optional soft mask from AdaptiveWindowPredictor
+                (batch, 1, seq_len, seq_len) with values in [0, 1].
+                When provided, replaces the boolean sliding window mask with
+                an additive bias while keeping prefix positions fully attended.
 
         Returns:
             Output tensor (batch, seq, dim)
@@ -234,7 +239,16 @@ class SlidingWindowAttention(nn.Module):
             k, _ = self.rope(k, k, seq_offset=seq_offset)
 
         # Create attention mask
-        mask = self._create_extended_mask(seq_len, full_len, prefix_len)
+        if adaptive_mask is not None:
+            # Adaptive soft masking: convert to additive bias
+            # Prefix positions are always fully attended
+            prefix_ones = mx.ones((adaptive_mask.shape[0], 1, seq_len, prefix_len))
+            # Concatenate: [full prefix attention | adaptive soft mask]
+            full_soft_mask = mx.concatenate([prefix_ones, adaptive_mask], axis=3)
+            # Convert to additive bias: 1.0 -> 0, 0.0 -> -1e9
+            mask = (full_soft_mask - 1.0) * 1e9
+        else:
+            mask = self._create_extended_mask(seq_len, full_len, prefix_len)
 
         # Use fused scaled dot-product attention (Metal-optimized)
         output = mx.fast.scaled_dot_product_attention(
