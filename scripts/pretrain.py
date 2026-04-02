@@ -737,6 +737,10 @@ def save_checkpoint(
         "attnres_modulate_local_memory": model_config.attnres_modulate_local_memory,
         "memory_objective": model_config.memory_objective,
         "huber_delta_init": model_config.huber_delta_init,
+        "adaptive_window": model_config.adaptive_window,
+        "adaptive_window_min": model_config.adaptive_window_min,
+        "adaptive_window_max": str(model_config.adaptive_window_max),  # None-safe
+        "adaptive_window_temperature": model_config.adaptive_window_temperature,
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
