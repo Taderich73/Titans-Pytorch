@@ -3,22 +3,23 @@
 
 [![MLX](https://img.shields.io/badge/mlx-apple%20silicon-black.svg)](https://ml-explore.github.io/mlx/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-428%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-459%20passed-brightgreen.svg)](tests/)
 
-A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, and **Memory State Persistence** as composable, independent features.
+A complete **MLX** (Apple Silicon) implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Memory State Persistence** as composable, independent features.
 
-Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Yaad** (from the Miras framework) replaces the standard L2 attentional bias with a Huber loss that is robust to outlier tokens. **Memory State Persistence** enables dumping, loading, forking, and merging memory states across sessions for inference-time continual learning.
+Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Yaad** (from the Miras framework) replaces the standard L2 attentional bias with a Huber loss that is robust to outlier tokens. **Adaptive Window Sizing** lets each layer learn its own effective sliding window size via soft masking, balancing local context richness against compute cost. **Memory State Persistence** enables dumping, loading, forking, and merging memory states across sessions for inference-time continual learning.
 
-TNT, AttnRes, MCA, and Yaad are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
+TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
 
-| Flags | Memory | Residuals | Memory Read | Attentional Bias |
-|-------|--------|-----------|-------------|------------------|
-| (default) | Single NeuralLongTermMemory | Standard | MLP only | L2 |
-| `--use-tnt` | Hierarchical (global + local) | Standard | MLP only | L2 |
-| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes | MLP only | L2 |
-| `--use-mca` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention | L2 |
-| `--memory-objective huber` | Single NeuralLongTermMemory | Standard | MLP only | Huber (Yaad) |
-| `--use-tnt --use-attn-res --memory-objective huber` | Hierarchical (global + local) | AttnRes | MLP only | Huber (Yaad) |
+| Flags | Memory | Residuals | Memory Read | Attentional Bias | Window |
+|-------|--------|-----------|-------------|------------------|--------|
+| (default) | Single NeuralLongTermMemory | Standard | MLP only | L2 | Fixed |
+| `--use-tnt` | Hierarchical (global + local) | Standard | MLP only | L2 | Fixed |
+| `--use-attn-res` | Single NeuralLongTermMemory | AttnRes | MLP only | L2 | Fixed |
+| `--use-mca` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention | L2 | Fixed |
+| `--memory-objective huber` | Single NeuralLongTermMemory | Standard | MLP only | Huber (Yaad) | Fixed |
+| `--adaptive-window` | Single NeuralLongTermMemory | Standard | MLP only | L2 | Learned |
+| `--use-tnt --use-attn-res --adaptive-window` | Hierarchical (global + local) | AttnRes | MLP only | L2 | Learned |
 
 ---
 
@@ -30,6 +31,7 @@ TNT, AttnRes, MCA, and Yaad are **independent flags** that work with any block t
 - [Attention Residuals (AttnRes)](#attention-residuals-attnres)
 - [Memory Cross-Attention (MCA)](#memory-cross-attention-mca)
 - [Yaad: Huber Attentional Bias](#yaad-huber-attentional-bias)
+- [Adaptive Window Sizing](#adaptive-window-sizing)
 - [Memory State Persistence](#memory-state-persistence)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -82,7 +84,7 @@ Titans are designed around a memory perspective inspired by human cognition:
 | **Long-context** | Best | Good | Baseline | Good |
 | **Training Speed** | Medium | Fast | Fastest | Fast |
 
-All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `--use-mca` independently. LMM supports `--use-tnt` but not `--use-attn-res` or `--use-mca` (it has no attention mechanism).
+All three variants (MAC, MAG, MAL) support `--use-tnt`, `--use-attn-res`, and `--use-mca` independently. `--adaptive-window` applies to MAG (MAL interface-compatible for future integration). LMM supports `--use-tnt` but not `--use-attn-res`, `--use-mca`, or `--adaptive-window` (it has no attention mechanism).
 
 ### Neural Long-term Memory
 
@@ -312,6 +314,43 @@ uv run python scripts/pretrain.py --model mac \
 
 ---
 
+## Adaptive Window Sizing
+
+Standard sliding window attention uses a fixed window for all layers and all content. Adaptive window sizing lets each layer **learn its own effective window size** from the input, using differentiable soft masking.
+
+Each layer gets a lightweight predictor (single linear projection) that outputs a "falloff center" per query position. A temperature-controlled sigmoid converts query-key distances into soft mask weights — positions within the falloff center attend normally, positions beyond decay smoothly. An efficiency regularization term penalizes large windows during training, encouraging the model to use smaller windows where local context suffices.
+
+| Component | Role |
+|-----------|------|
+| `AdaptiveWindowPredictor` | Per-layer linear → sigmoid → soft mask |
+| Soft masking | Differentiable alternative to hard window cutoff |
+| Efficiency regularization | `lambda * mean(falloff_centers / max_window)` added to loss |
+
+Currently supported for **MAG** blocks (MAL interface-compatible for future integration).
+
+### Training with Adaptive Window
+
+```bash
+uv run python scripts/pretrain.py --model mag \
+  --adaptive-window \
+  --adaptive-window-min 64 \
+  --adaptive-window-max 512 \
+  --adaptive-window-temperature 10.0 \
+  --adaptive-window-lambda 0.01
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--adaptive-window` | `False` | Enable per-layer learned window sizing |
+| `--adaptive-window-min` | `64` | Minimum window size floor |
+| `--adaptive-window-max` | `None` | Maximum window size ceiling (defaults to `--window-size`) |
+| `--adaptive-window-temperature` | `10.0` | Sigmoid sharpness (higher = more binary) |
+| `--adaptive-window-lambda` | `0.01` | Regularization weight (higher = smaller windows) |
+
+When disabled (default), behavior is identical to standard fixed-window attention with zero overhead.
+
+---
+
 ## Memory State Persistence
 
 The `MemoryDumpManager` provides serialization, inspection, and management of NeuralLTM memory states. This enables inference-time continual learning across sessions without modifying model weights.
@@ -444,6 +483,12 @@ uv run python scripts/pretrain.py --model mac \
 | `--use-mca` | `False` | Enable Memory Cross-Attention |
 | `--mca-num-heads` | `8` | MCA attention heads |
 | `--mca-insertion-layers` | auto | Insertion layers (default: midpoint) |
+| **Adaptive Window** |
+| `--adaptive-window` | `False` | Enable per-layer learned window sizing (MAG) |
+| `--adaptive-window-min` | `64` | Minimum window size |
+| `--adaptive-window-max` | `None` | Maximum window size (defaults to `--window-size`) |
+| `--adaptive-window-temperature` | `10.0` | Sigmoid sharpness at boundary |
+| `--adaptive-window-lambda` | `0.01` | Efficiency regularization weight |
 | **Data** |
 | `--dataset` | - | HuggingFace dataset name (streaming) |
 | `--dataset-subset` | - | Dataset subset |
@@ -763,6 +808,12 @@ uv run python scripts/inference.py \
 | `attnres_warmup_steps` | 0 | Steps before memory gating activates |
 | `attnres_modulate_global_memory` | True | Gate global memory LR |
 | `attnres_modulate_local_memory` | False | Gate local memory LR |
+| **Adaptive Window Sizing** |
+| `adaptive_window` | False | Enable per-layer learned window sizing |
+| `adaptive_window_min` | 64 | Minimum window size floor |
+| `adaptive_window_max` | None | Maximum window size (None = `window_size`) |
+| `adaptive_window_temperature` | 10.0 | Sigmoid sharpness at boundary |
+| `adaptive_window_lambda` | 0.01 | Efficiency regularization weight |
 | **Memory State Quantization** |
 | `quantize_memory_state` | False | Enable state quantization (inference) |
 | `memory_state_weight_bits` | 4 | Bit-width for weights/Q-K projections |
@@ -832,6 +883,10 @@ from titans_mlx import (
     quantize_memory_state,
     get_weights,
     get_momentum,
+
+    # Adaptive Window Sizing
+    AdaptiveWindowPredictor,
+    compute_window_regularization,
 )
 ```
 
@@ -855,6 +910,7 @@ titans-tnt-mlx/
 |   +-- mca.py              # MemoryCrossAttention
 |   +-- memory_dump.py      # MemoryDumpManager (dump/load/inspect/diff/merge/fork)
 |   +-- quantize_state.py   # QuantizedTensor, QuantizedMemoryState
+|   +-- adaptive_window.py  # AdaptiveWindowPredictor, compute_window_regularization
 |   +-- optimizations.py
 |   +-- metal_kernels.py
 |
@@ -866,7 +922,7 @@ titans-tnt-mlx/
 |   +-- rlvr.py             # GRPO / REINFORCE with verifiable rewards
 |   +-- inference.py        # Text generation
 |
-+-- tests/                  # 428 tests
++-- tests/                  # 459 tests
 ```
 
 ### Running Tests
