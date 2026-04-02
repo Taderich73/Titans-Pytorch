@@ -313,3 +313,67 @@ class TestMAGBlockAdaptiveWindow:
 
         diff = mx.max(mx.abs(out1 - out2)).item()
         assert diff == 0.0
+
+
+class TestTitansMAGAdaptiveWindow:
+    """End-to-end tests for TitansMAG with adaptive window."""
+
+    @pytest.fixture
+    def adaptive_mag_config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            vocab_size=100,
+            adaptive_window=True,
+            adaptive_window_min=4,
+            adaptive_window_max=32,
+            adaptive_window_temperature=10.0,
+        )
+
+    def test_full_model_forward(self, adaptive_mag_config: TitansConfig) -> None:
+        """TitansMAG forward pass with adaptive window produces valid logits."""
+        from titans_mlx.models import TitansMAG
+
+        model = TitansMAG(adaptive_mag_config)
+        input_ids = mx.random.randint(0, 100, (2, 32))
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (2, 32, 100)
+        assert len(states) == 2
+
+    def test_multi_chunk_forward(self, adaptive_mag_config: TitansConfig) -> None:
+        """Multi-chunk sequences work with adaptive window."""
+        from titans_mlx.models import TitansMAG
+
+        model = TitansMAG(adaptive_mag_config)
+        # seq_len=64 > chunk_size=32, forces 2 chunks
+        input_ids = mx.random.randint(0, 100, (2, 64))
+        logits, states = model(input_ids)
+        mx.eval(logits)
+
+        assert logits.shape == (2, 64, 100)
+
+    def test_collect_falloff_centers(self, adaptive_mag_config: TitansConfig) -> None:
+        """Can collect falloff centers from all blocks after forward pass."""
+        from titans_mlx.models import TitansMAG
+
+        model = TitansMAG(adaptive_mag_config)
+        input_ids = mx.random.randint(0, 100, (2, 32))
+        _ = model(input_ids)
+
+        centers = []
+        for block in model.blocks:
+            fc = block._last_falloff_centers
+            assert fc is not None
+            centers.append(fc)
+            mx.eval(fc)
+
+        assert len(centers) == 2  # num_layers=2
