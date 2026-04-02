@@ -451,6 +451,13 @@ def load_model(
         # Memory objective (Yaad)
         memory_objective = str(meta.get("memory_objective", ["l2"])[0])
         huber_delta_init = float(meta.get("huber_delta_init", [0.0])[0])
+
+        # Adaptive window flags
+        adaptive_window = str(meta.get("adaptive_window", ["False"])[0]) == "True"
+        adaptive_window_min = int(meta.get("adaptive_window_min", [64])[0])
+        adaptive_window_max_raw = str(meta.get("adaptive_window_max", ["None"])[0])
+        adaptive_window_max = None if adaptive_window_max_raw == "None" else int(adaptive_window_max_raw)
+        adaptive_window_temperature = float(meta.get("adaptive_window_temperature", [10.0])[0])
     else:
         # Try to infer from checkpoint name
         logger.warning("No metadata file found, using default configuration")
@@ -478,6 +485,10 @@ def load_model(
         attnres_modulate_local = False
         memory_objective = "l2"
         huber_delta_init = 0.0
+        adaptive_window = False
+        adaptive_window_min = 64
+        adaptive_window_max = None
+        adaptive_window_temperature = 10.0
 
     config = TitansConfig(
         dim=dim,
@@ -503,6 +514,10 @@ def load_model(
         attnres_modulate_local_memory=attnres_modulate_local,
         memory_objective=memory_objective,
         huber_delta_init=huber_delta_init,
+        adaptive_window=adaptive_window,
+        adaptive_window_min=adaptive_window_min,
+        adaptive_window_max=adaptive_window_max,
+        adaptive_window_temperature=adaptive_window_temperature,
     )
 
     model = create_model(model_type, config)
@@ -630,6 +645,10 @@ def load_lora_model(
         attnres_modulate_local_memory=meta.get("attnres_modulate_local_memory", False),
         memory_objective=meta.get("memory_objective", "l2"),
         huber_delta_init=meta.get("huber_delta_init", 0.0),
+        adaptive_window=meta.get("adaptive_window", False),
+        adaptive_window_min=meta.get("adaptive_window_min", 64),
+        adaptive_window_max=meta.get("adaptive_window_max", None),
+        adaptive_window_temperature=meta.get("adaptive_window_temperature", 10.0),
     )
 
     model = create_model(model_type, config)
@@ -1004,6 +1023,20 @@ def main() -> None:
         default=4,
         help="Bit-width for memory state weight quantization (default: 4)",
     )
+    parser.add_argument(
+        "--adaptive-window", action="store_true",
+        help="Enable adaptive window sizing (must match training config)"
+    )
+    parser.add_argument(
+        "--adaptive-window-min", type=int, default=64, help="Min adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-max", type=int, default=None, help="Max adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-temperature", type=float, default=10.0,
+        help="Soft mask temperature"
+    )
 
     # Memory persistence arguments
     parser.add_argument(
@@ -1039,6 +1072,12 @@ def main() -> None:
         config.quantize_memory_state = True
         config.memory_state_weight_bits = args.memory_state_bits
         config.memory_state_momentum_bits = min(args.memory_state_bits * 2, 8)
+
+    if args.adaptive_window:
+        config.adaptive_window = True
+        config.adaptive_window_min = args.adaptive_window_min
+        config.adaptive_window_max = args.adaptive_window_max
+        config.adaptive_window_temperature = args.adaptive_window_temperature
 
     # Load tokenizer (prefer command line, fallback to saved, then simple)
     tokenizer_name = args.tokenizer or saved_tokenizer
