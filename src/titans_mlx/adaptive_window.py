@@ -81,3 +81,29 @@ class AdaptiveWindowPredictor(nn.Module):
         soft_mask = mx.expand_dims(soft_mask, axis=1)
 
         return soft_mask, falloff_centers
+
+
+def compute_window_regularization(
+    falloff_centers: list[mx.array],
+    max_window: int,
+) -> mx.array:
+    """Compute efficiency regularization from per-layer falloff centers.
+
+    Penalizes large windows: reg = mean(falloff_centers / max_window).
+    Multiply by lambda_window externally.
+
+    Args:
+        falloff_centers: List of (batch, seq_len, 1) arrays, one per layer.
+        max_window: Maximum window size for normalization.
+
+    Returns:
+        Scalar regularization loss (before lambda scaling).
+    """
+    if not falloff_centers:
+        return mx.array(0.0)
+
+    layer_means = []
+    for fc in falloff_centers:
+        layer_means.append(mx.mean(fc / max_window))
+
+    return mx.mean(mx.stack(layer_means))

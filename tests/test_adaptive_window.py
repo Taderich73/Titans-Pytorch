@@ -377,3 +377,53 @@ class TestTitansMAGAdaptiveWindow:
             mx.eval(fc)
 
         assert len(centers) == 2  # num_layers=2
+
+
+class TestAdaptiveWindowRegularization:
+    """Tests for efficiency regularization loss."""
+
+    def test_regularization_computes(self) -> None:
+        """Regularization loss computes from falloff centers."""
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        # Simulate falloff centers from 2 layers
+        centers = [
+            mx.ones((2, 16, 1)) * 20.0,   # layer 0: large windows
+            mx.ones((2, 16, 1)) * 5.0,     # layer 1: small windows
+        ]
+        max_window = 32
+        reg = compute_window_regularization(centers, max_window)
+        mx.eval(reg)
+
+        # mean([20/32, 5/32]) = mean([0.625, 0.15625]) = 0.390625
+        assert reg.item() == pytest.approx(0.390625, abs=1e-4)
+
+    def test_regularization_scales_with_lambda(self) -> None:
+        """Lambda scales the regularization."""
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        centers = [mx.ones((1, 8, 1)) * 16.0]
+        reg1 = compute_window_regularization(centers, max_window=32)
+        mx.eval(reg1)
+
+        # reg = mean(16/32) = 0.5
+        assert reg1.item() == pytest.approx(0.5, abs=1e-4)
+
+    def test_regularization_zero_when_min_window(self) -> None:
+        """Regularization is minimal when all windows are at minimum."""
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        centers = [mx.ones((1, 8, 1)) * 4.0]
+        reg = compute_window_regularization(centers, max_window=32)
+        mx.eval(reg)
+
+        assert reg.item() == pytest.approx(4.0 / 32.0, abs=1e-4)
+
+    def test_regularization_empty_list(self) -> None:
+        """Returns zero for empty falloff centers list."""
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        reg = compute_window_regularization([], max_window=32)
+        mx.eval(reg)
+
+        assert reg.item() == 0.0
