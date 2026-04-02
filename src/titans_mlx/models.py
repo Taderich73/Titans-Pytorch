@@ -748,6 +748,11 @@ class MALBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # Adaptive window sizing (optional)
+        self._last_falloff_centers: mx.array | None = None
+        if config.adaptive_window:
+            self.window_predictor = AdaptiveWindowPredictor(config)
+
         # AttnRes (optional)
         if config.use_attn_res:
             from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
@@ -811,7 +816,15 @@ class MALBlock(nn.Module):
 
         # Attention layer with persistent prefix (uses norm2)
         normed_mid = self.norm2(h_mid)
-        attn_out = self.attention(normed_mid, prefix=persistent)
+
+        # Adaptive window: predict from memory-enriched hidden state
+        # NOTE: In multi-chunk sequences, _last_falloff_centers retains only the
+        # final chunk's values (same limitation as MAG).
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed_mid)
+
+        attn_out = self.attention(normed_mid, prefix=persistent, adaptive_mask=adaptive_mask)
         if self.dropout_p > 0:
             attn_out = nn.Dropout(self.dropout_p)(attn_out)
 

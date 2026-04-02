@@ -646,3 +646,85 @@ class TestAdaptiveWindowCheckpoint:
         assert len(predictor_keys) > 0, "No window_predictor keys in model parameters"
         # Should have weight + bias per layer (2 layers * 2 params = 4)
         assert len(predictor_keys) == 4, f"Expected 4 predictor params, got {len(predictor_keys)}"
+
+
+class TestMALBlockAdaptiveWindow:
+    """Tests for adaptive window integration in MALBlock."""
+
+    @pytest.fixture
+    def adaptive_mal_config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            vocab_size=100,
+            adaptive_window=True,
+            adaptive_window_min=4,
+            adaptive_window_max=32,
+            adaptive_window_temperature=10.0,
+        )
+
+    def test_mal_block_forward_with_adaptive(self, adaptive_mal_config: TitansConfig) -> None:
+        """MALBlock forward pass works with adaptive window enabled."""
+        from titans_mlx.models import MALBlock
+
+        block = MALBlock(adaptive_mal_config)
+        x = mx.random.normal((2, 16, 64))
+        out, state = block(x)
+        mx.eval(out)
+
+        assert out.shape == (2, 16, 64)
+
+    def test_mal_block_has_predictor(self, adaptive_mal_config: TitansConfig) -> None:
+        """MALBlock instantiates window predictor when adaptive is enabled."""
+        from titans_mlx.models import MALBlock
+
+        block = MALBlock(adaptive_mal_config)
+        assert hasattr(block, "window_predictor")
+
+    def test_mal_block_no_predictor_when_disabled(self) -> None:
+        """MALBlock does not instantiate predictor when adaptive is disabled."""
+        from titans_mlx.models import MALBlock
+
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=2, num_memory_layers=1,
+            memory_hidden_mult=2.0, num_persistent_tokens=4,
+            chunk_size=32, window_size=32, max_seq_len=256, vocab_size=100,
+            adaptive_window=False,
+        )
+        block = MALBlock(config)
+        assert not hasattr(block, "window_predictor")
+
+    def test_mal_block_exposes_falloff_centers(
+        self, adaptive_mal_config: TitansConfig
+    ) -> None:
+        """MALBlock stores last falloff_centers for regularization access."""
+        from titans_mlx.models import MALBlock
+
+        block = MALBlock(adaptive_mal_config)
+        x = mx.random.normal((2, 16, 64))
+        _ = block(x)
+        mx.eval(block._last_falloff_centers)
+
+        assert block._last_falloff_centers is not None
+        assert block._last_falloff_centers.shape == (2, 16, 1)
+
+    def test_mal_regression_without_adaptive(self, default_config: TitansConfig) -> None:
+        """MALBlock without adaptive window produces identical output to baseline."""
+        from titans_mlx.models import MALBlock
+
+        block = MALBlock(default_config)
+        x = mx.random.normal((2, 16, 64))
+
+        out1, _ = block(x)
+        out2, _ = block(x)
+        mx.eval(out1, out2)
+
+        diff = mx.max(mx.abs(out1 - out2)).item()
+        assert diff == 0.0
