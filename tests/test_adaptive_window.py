@@ -601,7 +601,7 @@ class TestAdaptiveWindowCheckpoint:
         mx.eval(logits_before)
 
         # Save weights
-        weights = dict(mx.utils.tree_flatten(model.parameters()))
+        weights = dict(mlx.utils.tree_flatten(model.parameters()))
         save_path = str(tmp_path / "model.safetensors")
         mx.save_safetensors(save_path, weights)
 
@@ -639,7 +639,7 @@ class TestAdaptiveWindowCheckpoint:
         )
 
         model = TitansMAG(config)
-        weights = dict(mx.utils.tree_flatten(model.parameters()))
+        weights = dict(mlx.utils.tree_flatten(model.parameters()))
 
         # Check that predictor keys exist
         predictor_keys = [k for k in weights if "window_predictor" in k]
