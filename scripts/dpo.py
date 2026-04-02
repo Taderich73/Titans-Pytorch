@@ -374,6 +374,13 @@ class DPOConfig:
     memory_objective: str = "l2"
     huber_delta_init: float = 0.0
 
+    # Adaptive window sizing
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+
     # DPO-specific
     method: str = "dpo"
     beta: float = 0.1
@@ -662,6 +669,10 @@ def save_checkpoint(
         "attnres_modulate_local_memory": model_config.attnres_modulate_local_memory,
         "memory_objective": model_config.memory_objective,
         "huber_delta_init": model_config.huber_delta_init,
+        "adaptive_window": model_config.adaptive_window,
+        "adaptive_window_min": model_config.adaptive_window_min,
+        "adaptive_window_max": str(model_config.adaptive_window_max),
+        "adaptive_window_temperature": model_config.adaptive_window_temperature,
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
@@ -756,6 +767,23 @@ def load_checkpoint(
 # =============================================================================
 
 
+def _apply_adaptive_window_reg(m, loss, adaptive_window_lambda):
+    """Add adaptive window regularization to loss if enabled."""
+    if adaptive_window_lambda > 0.0:
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        falloff_centers = []
+        for block in m.blocks:
+            fc = getattr(block, "_last_falloff_centers", None)
+            if fc is not None:
+                falloff_centers.append(fc)
+        if falloff_centers:
+            max_w = m.config.effective_adaptive_window_max
+            reg = compute_window_regularization(falloff_centers, max_w)
+            loss = loss + adaptive_window_lambda * reg
+    return loss
+
+
 def compute_dpo_grads(
     model: nn.Module,
     ref_model: nn.Module | None,
@@ -767,6 +795,8 @@ def compute_dpo_grads(
     use_lora_ref: bool = False,
 ) -> tuple[mx.array, dict]:
     """Compute DPO/SimPO loss and gradients."""
+    aw_lambda = config.adaptive_window_lambda if config.adaptive_window else 0.0
+
     if config.method == "simpo":
 
         def simpo_loss_fn(m):
@@ -780,9 +810,10 @@ def compute_dpo_grads(
             )
             chosen_avg = chosen_lps.sum(axis=1) / chosen_lengths
             rejected_avg = rejected_lps.sum(axis=1) / rejected_lengths
-            return simpo_loss(
+            loss = simpo_loss(
                 chosen_avg, rejected_avg, beta=config.beta, gamma=config.gamma
             )
+            return _apply_adaptive_window_reg(m, loss, aw_lambda)
 
         loss_and_grad_fn = nn.value_and_grad(model, simpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -812,13 +843,14 @@ def compute_dpo_grads(
         def dpo_loss_fn(m):
             c_lps = compute_logprobs(m, chosen_ids, mask=chosen_mask)
             r_lps = compute_logprobs(m, rejected_ids, mask=rejected_mask)
-            return dpo_loss(
+            loss = dpo_loss(
                 c_lps.sum(axis=1),
                 r_lps.sum(axis=1),
                 ref_chosen_sum,
                 ref_rejected_sum,
                 beta=config.beta,
             )
+            return _apply_adaptive_window_reg(m, loss, aw_lambda)
 
         loss_and_grad_fn = nn.value_and_grad(model, dpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -1068,6 +1100,23 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size (MAC)")
     parser.add_argument(
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
+    )
+    parser.add_argument(
+        "--adaptive-window", action="store_true", help="Enable adaptive window sizing"
+    )
+    parser.add_argument(
+        "--adaptive-window-min", type=int, default=64, help="Min adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-max", type=int, default=None, help="Max adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-temperature", type=float, default=10.0,
+        help="Soft mask temperature"
+    )
+    parser.add_argument(
+        "--adaptive-window-lambda", type=float, default=0.01,
+        help="Window size regularization weight"
     )
 
     # TNT Hierarchical Memory
@@ -1337,6 +1386,11 @@ def main() -> None:
         attnres_modulate_local=args.attnres_modulate_local,
         memory_objective=args.memory_objective,
         huber_delta_init=args.huber_delta_init,
+        adaptive_window=args.adaptive_window,
+        adaptive_window_min=args.adaptive_window_min,
+        adaptive_window_max=args.adaptive_window_max,
+        adaptive_window_temperature=args.adaptive_window_temperature,
+        adaptive_window_lambda=args.adaptive_window_lambda,
     )
 
     # Check dependencies
@@ -1388,6 +1442,11 @@ def main() -> None:
         attnres_modulate_local_memory=config.attnres_modulate_local,
         memory_objective=config.memory_objective,
         huber_delta_init=config.huber_delta_init,
+        adaptive_window=config.adaptive_window,
+        adaptive_window_min=config.adaptive_window_min,
+        adaptive_window_max=config.adaptive_window_max,
+        adaptive_window_temperature=config.adaptive_window_temperature,
+        adaptive_window_lambda=config.adaptive_window_lambda,
     )
 
     # Configure dtype for mixed precision

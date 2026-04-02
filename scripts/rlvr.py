@@ -490,6 +490,13 @@ class RLVRConfig:
     memory_objective: str = "l2"
     huber_delta_init: float = 0.0
 
+    # Adaptive window sizing
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+
     # RLVR-specific
     method: str = "grpo"
     mode: str = "offline"
@@ -784,6 +791,10 @@ def save_checkpoint(
         "attnres_modulate_local_memory": model_config.attnres_modulate_local_memory,
         "memory_objective": model_config.memory_objective,
         "huber_delta_init": model_config.huber_delta_init,
+        "adaptive_window": model_config.adaptive_window,
+        "adaptive_window_min": model_config.adaptive_window_min,
+        "adaptive_window_max": str(model_config.adaptive_window_max),
+        "adaptive_window_temperature": model_config.adaptive_window_temperature,
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
@@ -878,6 +889,23 @@ def load_checkpoint(
 # =============================================================================
 
 
+def _apply_adaptive_window_reg_rlvr(m, loss, adaptive_window_lambda):
+    """Add adaptive window regularization to loss if enabled."""
+    if adaptive_window_lambda > 0.0:
+        from titans_mlx.adaptive_window import compute_window_regularization
+
+        falloff_centers = []
+        for block in m.blocks:
+            fc = getattr(block, "_last_falloff_centers", None)
+            if fc is not None:
+                falloff_centers.append(fc)
+        if falloff_centers:
+            max_w = m.config.effective_adaptive_window_max
+            reg = compute_window_regularization(falloff_centers, max_w)
+            loss = loss + adaptive_window_lambda * reg
+    return loss
+
+
 def compute_rlvr_grads(
     model: nn.Module,
     rollout_ids: mx.array,
@@ -901,6 +929,7 @@ def compute_rlvr_grads(
         grads is empty dict if batch was skipped (all-same-reward).
     """
     batch_size, num_rollouts, seq_len = rollout_ids.shape
+    aw_lambda = config.adaptive_window_lambda if config.adaptive_window else 0.0
 
     # Slice masks to match compute_logprobs output (seq_len - 1)
     shifted_masks = rollout_masks[:, :, 1:]
@@ -925,7 +954,7 @@ def compute_rlvr_grads(
                 lp = compute_logprobs(m, rollout_ids[:, i, :])
                 lp_list.append(lp)
             log_probs = mx.stack(lp_list, axis=1)
-            return grpo_loss(
+            loss = grpo_loss(
                 log_probs,
                 log_probs_old,
                 rewards,
@@ -933,6 +962,7 @@ def compute_rlvr_grads(
                 epsilon=config.epsilon,
                 kl_beta=config.kl_beta,
             )
+            return _apply_adaptive_window_reg_rlvr(m, loss, aw_lambda)
 
         loss_and_grad_fn = nn.value_and_grad(model, grpo_loss_fn)
         loss, grads = loss_and_grad_fn(model)
@@ -957,7 +987,8 @@ def compute_rlvr_grads(
                 lp = compute_logprobs(m, _r_ids)  # (batch, seq_len-1)
                 masked_lp = lp * _r_mask
                 seq_lp = masked_lp.sum(axis=-1)
-                return -mx.mean(_adv * seq_lp)
+                loss = -mx.mean(_adv * seq_lp)
+                return _apply_adaptive_window_reg_rlvr(m, loss, aw_lambda)
 
             loss_and_grad_fn = nn.value_and_grad(model, reinforce_loss_fn)
             loss, grads = loss_and_grad_fn(model)
@@ -1230,6 +1261,23 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size (MAC)")
     parser.add_argument(
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
+    )
+    parser.add_argument(
+        "--adaptive-window", action="store_true", help="Enable adaptive window sizing"
+    )
+    parser.add_argument(
+        "--adaptive-window-min", type=int, default=64, help="Min adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-max", type=int, default=None, help="Max adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-temperature", type=float, default=10.0,
+        help="Soft mask temperature"
+    )
+    parser.add_argument(
+        "--adaptive-window-lambda", type=float, default=0.01,
+        help="Window size regularization weight"
     )
 
     # TNT Hierarchical Memory
@@ -1543,6 +1591,11 @@ def main() -> None:
         attnres_modulate_local=args.attnres_modulate_local,
         memory_objective=args.memory_objective,
         huber_delta_init=args.huber_delta_init,
+        adaptive_window=args.adaptive_window,
+        adaptive_window_min=args.adaptive_window_min,
+        adaptive_window_max=args.adaptive_window_max,
+        adaptive_window_temperature=args.adaptive_window_temperature,
+        adaptive_window_lambda=args.adaptive_window_lambda,
     )
 
     # Check dependencies
@@ -1605,6 +1658,11 @@ def main() -> None:
         attnres_modulate_local_memory=config.attnres_modulate_local,
         memory_objective=config.memory_objective,
         huber_delta_init=config.huber_delta_init,
+        adaptive_window=config.adaptive_window,
+        adaptive_window_min=config.adaptive_window_min,
+        adaptive_window_max=config.adaptive_window_max,
+        adaptive_window_temperature=config.adaptive_window_temperature,
+        adaptive_window_lambda=config.adaptive_window_lambda,
     )
 
     # Configure dtype for mixed precision

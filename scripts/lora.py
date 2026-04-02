@@ -567,6 +567,13 @@ class LoRAConfig:
     attnres_modulate_local: bool = False
     memory_objective: str = "l2"
     huber_delta_init: float = 0.0
+
+    # Adaptive window sizing
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
     tnt_stage: int = 1
 
     # LoRA specific
@@ -850,11 +857,27 @@ def compute_grads(
     input_ids: mx.array,
     labels: mx.array,
     loss_mask: mx.array,
+    adaptive_window_lambda: float = 0.0,
 ) -> tuple[mx.array, dict]:
     """Compute masked loss and gradients without updating parameters."""
-    loss_and_grad_fn = nn.value_and_grad(
-        model, lambda m: masked_loss_fn(m, input_ids, labels, loss_mask)[0]
-    )
+
+    def loss_fn(m):
+        loss, _ = masked_loss_fn(m, input_ids, labels, loss_mask)
+        if adaptive_window_lambda > 0.0:
+            from titans_mlx.adaptive_window import compute_window_regularization
+
+            falloff_centers = []
+            for block in m.blocks:
+                fc = getattr(block, "_last_falloff_centers", None)
+                if fc is not None:
+                    falloff_centers.append(fc)
+            if falloff_centers:
+                max_w = m.config.effective_adaptive_window_max
+                reg = compute_window_regularization(falloff_centers, max_w)
+                loss = loss + adaptive_window_lambda * reg
+        return loss
+
+    loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
     loss, grads = loss_and_grad_fn(model)
     return loss, grads
 
@@ -1015,6 +1038,10 @@ def save_checkpoint(
         "attnres_modulate_local_memory": model_config.attnres_modulate_local_memory,
         "memory_objective": model_config.memory_objective,
         "huber_delta_init": model_config.huber_delta_init,
+        "adaptive_window": model_config.adaptive_window,
+        "adaptive_window_min": model_config.adaptive_window_min,
+        "adaptive_window_max": str(model_config.adaptive_window_max),
+        "adaptive_window_temperature": model_config.adaptive_window_temperature,
         "lr": config.lr,
         "weight_decay": config.weight_decay,
         "tokenizer_name": config.tokenizer,
@@ -1206,7 +1233,8 @@ def train(
 
             # --- Micro-step: compute gradients only ---
             micro_start = time.time()
-            loss, grads = compute_grads(model, input_ids, labels, loss_mask)
+            aw_lambda = config.adaptive_window_lambda if config.adaptive_window else 0.0
+            loss, grads = compute_grads(model, input_ids, labels, loss_mask, aw_lambda)
             _eval_grads(grads, loss)
             micro_elapsed = time.time() - micro_start
 
@@ -1425,6 +1453,23 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size (MAC)")
     parser.add_argument(
         "--window-size", type=int, default=512, help="Window size (MAG/MAL)"
+    )
+    parser.add_argument(
+        "--adaptive-window", action="store_true", help="Enable adaptive window sizing"
+    )
+    parser.add_argument(
+        "--adaptive-window-min", type=int, default=64, help="Min adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-max", type=int, default=None, help="Max adaptive window"
+    )
+    parser.add_argument(
+        "--adaptive-window-temperature", type=float, default=10.0,
+        help="Soft mask temperature"
+    )
+    parser.add_argument(
+        "--adaptive-window-lambda", type=float, default=0.01,
+        help="Window size regularization weight"
     )
 
     # TNT Hierarchical Memory
@@ -1686,6 +1731,11 @@ def main() -> None:
         attnres_modulate_local=args.attnres_modulate_local,
         memory_objective=args.memory_objective,
         huber_delta_init=args.huber_delta_init,
+        adaptive_window=args.adaptive_window,
+        adaptive_window_min=args.adaptive_window_min,
+        adaptive_window_max=args.adaptive_window_max,
+        adaptive_window_temperature=args.adaptive_window_temperature,
+        adaptive_window_lambda=args.adaptive_window_lambda,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
@@ -1742,6 +1792,11 @@ def main() -> None:
         attnres_modulate_local_memory=config.attnres_modulate_local,
         memory_objective=config.memory_objective,
         huber_delta_init=config.huber_delta_init,
+        adaptive_window=config.adaptive_window,
+        adaptive_window_min=config.adaptive_window_min,
+        adaptive_window_max=config.adaptive_window_max,
+        adaptive_window_temperature=config.adaptive_window_temperature,
+        adaptive_window_lambda=config.adaptive_window_lambda,
     )
 
     # Configure dtype for mixed precision
