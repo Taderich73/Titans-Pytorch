@@ -22,6 +22,7 @@ from __future__ import annotations
 import mlx.core as mx
 import mlx.nn as nn
 
+from titans_mlx.adaptive_window import AdaptiveWindowPredictor
 from titans_mlx.attention import SegmentedAttention, SlidingWindowAttention
 from titans_mlx.config import TitansConfig
 from titans_mlx.memory import MemoryState, NeuralLongTermMemory
@@ -502,6 +503,11 @@ class MAGBlock(nn.Module):
         # Dropout
         self.dropout_p = config.dropout
 
+        # Adaptive window sizing (optional)
+        self._last_falloff_centers: mx.array | None = None
+        if config.adaptive_window:
+            self.window_predictor = AdaptiveWindowPredictor(config)
+
         # AttnRes (optional)
         if config.use_attn_res:
             from titans_mlx.attn_res import AttnResMemoryGate, BlockAttnRes
@@ -546,7 +552,13 @@ class MAGBlock(nn.Module):
 
         # Eq. 26: y_t = Attn(x) - Attention branch
         normed = self.norm1(h)
-        attn_out = self.attention(normed, prefix=persistent)
+
+        # Adaptive window: predict soft mask from hidden state
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
+
+        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
         if self.dropout_p > 0:
             attn_out = nn.Dropout(self.dropout_p)(attn_out)
 

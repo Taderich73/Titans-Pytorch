@@ -231,3 +231,85 @@ class TestSlidingWindowAdaptiveMask:
         mx.eval(out)
 
         assert out.shape == (2, 16, 64)
+
+
+class TestMAGBlockAdaptiveWindow:
+    """Tests for adaptive window integration in MAGBlock."""
+
+    @pytest.fixture
+    def adaptive_config(self) -> TitansConfig:
+        return TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=4,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            vocab_size=100,
+            adaptive_window=True,
+            adaptive_window_min=4,
+            adaptive_window_max=32,
+            adaptive_window_temperature=10.0,
+        )
+
+    def test_mag_block_forward_with_adaptive(self, adaptive_config: TitansConfig) -> None:
+        """MAGBlock forward pass works with adaptive window enabled."""
+        from titans_mlx.models import MAGBlock
+
+        block = MAGBlock(adaptive_config)
+        x = mx.random.normal((2, 16, 64))
+        out, state = block(x)
+        mx.eval(out)
+
+        assert out.shape == (2, 16, 64)
+
+    def test_mag_block_has_predictor(self, adaptive_config: TitansConfig) -> None:
+        """MAGBlock instantiates window predictor when adaptive is enabled."""
+        from titans_mlx.models import MAGBlock
+
+        block = MAGBlock(adaptive_config)
+        assert hasattr(block, "window_predictor")
+
+    def test_mag_block_no_predictor_when_disabled(self) -> None:
+        """MAGBlock does not instantiate predictor when adaptive is disabled."""
+        from titans_mlx.models import MAGBlock
+
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=2, num_memory_layers=1,
+            memory_hidden_mult=2.0, num_persistent_tokens=4,
+            chunk_size=32, window_size=32, max_seq_len=256, vocab_size=100,
+            adaptive_window=False,
+        )
+        block = MAGBlock(config)
+        assert not hasattr(block, "window_predictor")
+
+    def test_mag_block_exposes_falloff_centers(
+        self, adaptive_config: TitansConfig
+    ) -> None:
+        """MAGBlock stores last falloff_centers for regularization access."""
+        from titans_mlx.models import MAGBlock
+
+        block = MAGBlock(adaptive_config)
+        x = mx.random.normal((2, 16, 64))
+        _ = block(x)
+        mx.eval(block._last_falloff_centers)
+
+        assert block._last_falloff_centers is not None
+        assert block._last_falloff_centers.shape == (2, 16, 1)
+
+    def test_mag_regression_without_adaptive(self, default_config: TitansConfig) -> None:
+        """MAGBlock without adaptive window produces identical output to baseline."""
+        from titans_mlx.models import MAGBlock
+
+        block = MAGBlock(default_config)
+        x = mx.random.normal((2, 16, 64))
+
+        out1, _ = block(x)
+        out2, _ = block(x)
+        mx.eval(out1, out2)
+
+        diff = mx.max(mx.abs(out1 - out2)).item()
+        assert diff == 0.0
