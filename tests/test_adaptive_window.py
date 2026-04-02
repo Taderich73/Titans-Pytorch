@@ -427,3 +427,222 @@ class TestAdaptiveWindowRegularization:
         mx.eval(reg)
 
         assert reg.item() == 0.0
+
+
+class TestAdaptiveWindowTraining:
+    """Diagnostic test: verify adaptive windowing trains end-to-end."""
+
+    def test_loss_decreases_with_adaptive_window(self) -> None:
+        """A small adaptive-window model's loss decreases over a few steps."""
+        import mlx.optimizers as optim
+
+        from titans_mlx.adaptive_window import compute_window_regularization
+        from titans_mlx.models import TitansMAG
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=2,
+            chunk_size=16,
+            window_size=16,
+            max_seq_len=64,
+            vocab_size=50,
+            use_conv=False,
+            use_rope=False,
+            adaptive_window=True,
+            adaptive_window_min=2,
+            adaptive_window_max=16,
+            adaptive_window_temperature=10.0,
+            adaptive_window_lambda=0.01,
+        )
+
+        model = TitansMAG(config)
+        optimizer = optim.Adam(learning_rate=1e-3)
+
+        def train_loss(model, ids, labels):
+            logits, _ = model(ids)
+            b, s, v = logits.shape
+            ce = mx.mean(
+                nn.losses.cross_entropy(
+                    logits.reshape(-1, v), labels.reshape(-1), reduction="none"
+                )
+            )
+            # Add regularization
+            centers = [
+                blk._last_falloff_centers
+                for blk in model.blocks
+                if getattr(blk, "_last_falloff_centers", None) is not None
+            ]
+            reg = compute_window_regularization(centers, config.effective_adaptive_window_max)
+            return ce + config.adaptive_window_lambda * reg
+
+        loss_grad_fn = nn.value_and_grad(model, train_loss)
+
+        # Use a fixed batch so the model can overfit and loss reliably decreases
+        ids = mx.random.randint(0, 50, (2, 16))
+        labels = mx.random.randint(0, 50, (2, 16))
+        mx.eval(ids, labels)
+
+        losses = []
+        for _ in range(30):
+            loss, grads = loss_grad_fn(model, ids, labels)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state, loss)
+            losses.append(loss.item())
+
+        # Loss should decrease (overfitting on a fixed batch)
+        assert losses[-1] < losses[0], (
+            f"Loss did not decrease: {losses[0]:.4f} -> {losses[-1]:.4f}\n"
+            f"All losses: {[f'{l:.4f}' for l in losses]}"
+        )
+
+    def test_per_layer_windows_diverge(self) -> None:
+        """Different layers learn different effective window sizes."""
+        import mlx.optimizers as optim
+
+        from titans_mlx.adaptive_window import compute_window_regularization
+        from titans_mlx.models import TitansMAG
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=2,
+            num_layers=3,  # 3 layers to see divergence
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=2,
+            chunk_size=16,
+            window_size=16,
+            max_seq_len=64,
+            vocab_size=50,
+            use_conv=False,
+            use_rope=False,
+            adaptive_window=True,
+            adaptive_window_min=2,
+            adaptive_window_max=16,
+            adaptive_window_temperature=10.0,
+            adaptive_window_lambda=0.01,
+        )
+
+        model = TitansMAG(config)
+        optimizer = optim.Adam(learning_rate=1e-3)
+
+        def train_loss(model, ids, labels):
+            logits, _ = model(ids)
+            b, s, v = logits.shape
+            ce = mx.mean(
+                nn.losses.cross_entropy(
+                    logits.reshape(-1, v), labels.reshape(-1), reduction="none"
+                )
+            )
+            centers = [
+                blk._last_falloff_centers
+                for blk in model.blocks
+                if getattr(blk, "_last_falloff_centers", None) is not None
+            ]
+            reg = compute_window_regularization(centers, config.effective_adaptive_window_max)
+            return ce + config.adaptive_window_lambda * reg
+
+        loss_grad_fn = nn.value_and_grad(model, train_loss)
+
+        for _ in range(20):
+            ids = mx.random.randint(0, 50, (2, 16))
+            labels = mx.random.randint(0, 50, (2, 16))
+            loss, grads = loss_grad_fn(model, ids, labels)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state, loss)
+
+        # Check that predictor weights have diverged across layers
+        weights = []
+        for block in model.blocks:
+            w = block.window_predictor.proj.weight
+            mx.eval(w)
+            weights.append(w.tolist())
+
+        # At least one pair of layers should have different weights
+        all_same = all(
+            weights[i] == weights[0] for i in range(1, len(weights))
+        )
+        assert not all_same, "All layers have identical predictor weights after training"
+
+
+class TestAdaptiveWindowCheckpoint:
+    """Tests for checkpoint save/load with adaptive window weights."""
+
+    def test_save_load_round_trip(self, tmp_path) -> None:
+        """Model with adaptive window survives save/load."""
+        from titans_mlx.models import TitansMAG
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=2,
+            chunk_size=16,
+            window_size=16,
+            max_seq_len=64,
+            vocab_size=50,
+            use_conv=False,
+            use_rope=False,
+            adaptive_window=True,
+            adaptive_window_min=2,
+            adaptive_window_max=16,
+        )
+
+        model = TitansMAG(config)
+        input_ids = mx.random.randint(0, 50, (1, 16))
+
+        # Forward pass to populate weights
+        logits_before, _ = model(input_ids)
+        mx.eval(logits_before)
+
+        # Save weights
+        weights = dict(mx.utils.tree_flatten(model.parameters()))
+        save_path = str(tmp_path / "model.safetensors")
+        mx.save_safetensors(save_path, weights)
+
+        # Load into fresh model
+        model2 = TitansMAG(config)
+        loaded = mx.load(save_path)
+        model2.load_weights(list(loaded.items()))
+
+        logits_after, _ = model2(input_ids)
+        mx.eval(logits_after)
+
+        diff = mx.max(mx.abs(logits_before - logits_after)).item()
+        assert diff < 1e-5, f"Checkpoint round-trip diverged: max diff = {diff}"
+
+    def test_predictor_weights_in_checkpoint(self, tmp_path) -> None:
+        """Checkpoint contains predictor weights."""
+        from titans_mlx.models import TitansMAG
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            num_memory_layers=1,
+            memory_hidden_mult=2.0,
+            num_persistent_tokens=2,
+            chunk_size=16,
+            window_size=16,
+            max_seq_len=64,
+            vocab_size=50,
+            use_conv=False,
+            use_rope=False,
+            adaptive_window=True,
+            adaptive_window_min=2,
+            adaptive_window_max=16,
+        )
+
+        model = TitansMAG(config)
+        weights = dict(mx.utils.tree_flatten(model.parameters()))
+
+        # Check that predictor keys exist
+        predictor_keys = [k for k in weights if "window_predictor" in k]
+        assert len(predictor_keys) > 0, "No window_predictor keys in model parameters"
+        # Should have weight + bias per layer (2 layers * 2 params = 4)
+        assert len(predictor_keys) == 4, f"Expected 4 predictor params, got {len(predictor_keys)}"
