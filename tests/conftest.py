@@ -147,3 +147,29 @@ def mca_tnt_config() -> TitansConfig:
         local_chunk_sizes=[4, 8],
         local_shard_length=32,
     )
+
+
+@pytest.fixture
+def adaptive_config() -> TitansConfig:
+    """Adaptive window configuration for tests."""
+    return TitansConfig(
+        dim=64,
+        num_heads=4,
+        num_layers=2,
+        ffn_mult=2.0,
+        num_memory_layers=1,
+        memory_hidden_mult=2.0,
+        num_persistent_tokens=4,
+        chunk_size=32,
+        window_size=32,
+        dropout=0.0,
+        use_conv=False,
+        use_rope=True,
+        max_seq_len=256,
+        vocab_size=100,
+        adaptive_window=True,
+        adaptive_window_min=4,
+        adaptive_window_max=32,
+        adaptive_window_temperature=10.0,
+        adaptive_window_lambda=0.01,
+    )
