@@ -77,6 +77,7 @@ from titans_mlx.quantize_state import (
     quantize_memory_state,
     quantize_tensor,
 )
+from titans_mlx.adaptive_window import AdaptiveWindowPredictor
 from titans_mlx.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 
 __version__ = "0.1.0"
@@ -144,6 +145,8 @@ __all__ = [
     "quantize_memory_state",
     "get_weights",
     "get_momentum",
+    # Adaptive Window
+    "AdaptiveWindowPredictor",
     # Memory Cross-Attention
     "MemoryCrossAttention",
     # Memory Dump
