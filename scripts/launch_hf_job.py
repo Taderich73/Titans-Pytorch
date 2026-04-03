@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import tempfile
 from pathlib import Path
 
 from huggingface_hub import HfApi, get_token
@@ -82,12 +83,20 @@ def main():
     print(f"  Hardware: {flavor}")
     print(f"  Timeout: {timeout}")
 
+    # Write modified script to a temp file — run_uv_job expects a file path,
+    # not inline content (it tries to stat the string as a path)
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+    tmp.write(script)
+    tmp.close()
+
     job = api.run_uv_job(
-        script=script,
+        script=tmp.name,
         flavor=flavor,
         timeout=timeout,
         secrets={"HF_TOKEN": token},
     )
+
+    Path(tmp.name).unlink(missing_ok=True)
 
     print(f"\nJob submitted!")
     print(f"  Job ID: {job.id}")
