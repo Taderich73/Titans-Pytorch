@@ -25,6 +25,7 @@ from titans.memory import MemoryState, NeuralLongTermMemory
 from titans.memory_dump import load_memory_states, save_memory_states
 from titans.models import (
     FeedForward,
+    LMMBlock,
     RMSNorm,
     TitansLMM,
     TitansMAC,
@@ -53,6 +54,7 @@ __all__ = [
     # Models
     "RMSNorm",
     "FeedForward",
+    "LMMBlock",
     "TitansMAC",
     "TitansMAG",
     "TitansMAL",

@@ -245,10 +245,81 @@ class TitansMAL(nn.Module):
         )
 
 
-class TitansLMM(nn.Module):
-    """Titans Long-term Memory Module (standalone) — not yet ported."""
+class LMMBlock(nn.Module):
+    """Standalone Long-term Memory Block (no attention).
+
+    Architecture: norm -> memory -> residual -> norm -> FFN -> residual.
+    Tests memory's ability to work independently as a sequence model.
+    """
 
     def __init__(self, config: TitansConfig) -> None:
-        raise NotImplementedError(
-            "TitansLMM not yet ported. See archive/titans_mlx/models.py"
+        super().__init__()
+        self.config = config
+        self.memory = NeuralLongTermMemory(config)
+        self.ffn = FeedForward(config)
+        self.norm1 = RMSNorm(config.dim)
+        self.norm2 = RMSNorm(config.dim)
+        self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None = None,
+    ) -> tuple[torch.Tensor, MemoryState]:
+        normed = self.norm1(x)
+        mem_out, new_state = self.memory(normed, state=state)
+        if self.dropout is not None:
+            mem_out = self.dropout(mem_out)
+        x = x + mem_out
+
+        normed = self.norm2(x)
+        ffn_out = self.ffn(normed)
+        if self.dropout is not None:
+            ffn_out = self.dropout(ffn_out)
+        x = x + ffn_out
+
+        return x, new_state
+
+
+class TitansLMM(nn.Module):
+    """Titans Long-term Memory Module (standalone, no attention).
+
+    Uses only the neural memory module as a sequence model (Titans §4.3).
+    Direct block iteration — does not use process_chunk.
+    """
+
+    def __init__(self, config: TitansConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        self.embed = nn.Embedding(config.vocab_size, config.dim)
+        self.blocks = nn.ModuleList(
+            [LMMBlock(config) for _ in range(config.num_layers)]
         )
+        self.norm = RMSNorm(config.dim)
+        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
+
+        self._init_weights()
+        self.head.weight = self.embed.weight
+
+    def _init_weights(self) -> None:
+        nn.init.normal_(self.embed.weight, std=self.config.init_std)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        states: list[MemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState]]:
+        if states is None:
+            states = [None] * len(self.blocks)
+
+        x = self.embed(input_ids)
+
+        new_states = []
+        for i, block in enumerate(self.blocks):
+            x, new_state = block(x, state=states[i])
+            new_states.append(new_state)
+
+        x = self.norm(x)
+        logits = self.head(x)
+        return logits, new_states

@@ -6,6 +6,7 @@ import torch
 from titans.config import TitansConfig
 from titans.models import (
     FeedForward,
+    LMMBlock,
     RMSNorm,
     TitansLMM,
     TitansMAC,
@@ -89,10 +90,37 @@ class TestStubs:
         with pytest.raises(NotImplementedError, match="MAL"):
             TitansMAL(config)
 
-    def test_lmm_not_implemented(self):
-        config = TitansConfig(dim=64, num_heads=4, num_layers=2, vocab_size=256)
-        with pytest.raises(NotImplementedError, match="LMM"):
-            TitansLMM(config)
+
+class TestTitansLMM:
+    def test_forward_shape(self, default_config, device):
+        model = TitansLMM(default_config).to(device)
+        x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, default_config.vocab_size)
+        assert len(states) == default_config.num_layers
+
+    def test_state_carryover(self, default_config, device):
+        model = TitansLMM(default_config).to(device)
+        x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
+        _, states1 = model(x)
+        logits2, states2 = model(x, states=states1)
+        assert logits2.shape == (2, 16, default_config.vocab_size)
+        assert not torch.allclose(states1[0].weights[0], states2[0].weights[0])
+
+    def test_weight_tying(self, default_config, device):
+        model = TitansLMM(default_config).to(device)
+        assert model.head.weight is model.embed.weight
+
+    def test_backward_pass(self, default_config, device):
+        model = TitansLMM(default_config).to(device)
+        x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
+        labels = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
+        logits, _ = model(x)
+        loss = torch.nn.functional.cross_entropy(
+            logits.view(-1, default_config.vocab_size), labels.view(-1)
+        )
+        loss.backward()
+        assert model.embed.weight.grad is not None
 
 
 class TestDeferredFeatures:
