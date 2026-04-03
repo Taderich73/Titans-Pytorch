@@ -492,6 +492,7 @@ from titans import (
 
     # Shared orchestrator
     process_chunk,
+    compile_model,
 
     # Memory Components
     NeuralLongTermMemory,
@@ -511,6 +512,7 @@ from titans import (
     SegmentedAttention,
     RotaryPositionEmbedding,
     PersistentMemory,
+    log_sdpa_backend,
 
     # Memory Cross-Attention
     MemoryCrossAttention,
@@ -568,7 +570,10 @@ titans-pytorch/
 |   +-- sft.py               # Supervised fine-tuning (chat datasets)
 |   +-- lora.py              # LoRA fine-tuning
 |   +-- dpo.py               # DPO / SimPO preference optimization
+|   +-- rlvr.py              # RLVR (GRPO / REINFORCE with verifiable rewards)
 |   +-- inference.py         # Text generation with memory persistence
+|   +-- diagnose_gradients.py # Per-layer gradient and memory state diagnostics
+|   +-- pretokenize.py       # Pre-tokenize datasets to disk for faster training
 |   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
 |   +-- launch_hf_job.py     # HF Jobs launcher
 |

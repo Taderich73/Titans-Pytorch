@@ -14,6 +14,25 @@ import torch.nn.functional as F
 from titans.config import TitansConfig
 
 
+def log_sdpa_backend() -> str:
+    """Log which scaled_dot_product_attention backend is active.
+
+    Returns one of: 'flash', 'mem_efficient', 'math', 'cudnn', 'unavailable'.
+    """
+    if not torch.cuda.is_available():
+        return "cpu_only"
+    backends = []
+    if torch.backends.cuda.flash_sdp_enabled():
+        backends.append("flash")
+    if torch.backends.cuda.mem_efficient_sdp_enabled():
+        backends.append("mem_efficient")
+    if torch.backends.cuda.math_sdp_enabled():
+        backends.append("math")
+    if hasattr(torch.backends.cuda, "cudnn_sdp_enabled") and torch.backends.cuda.cudnn_sdp_enabled():
+        backends.append("cudnn")
+    return ",".join(backends) if backends else "none_enabled"
+
+
 @lru_cache(maxsize=32)
 def _cached_sliding_window_mask(
     seq_len: int, window_size: int, device: torch.device

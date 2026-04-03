@@ -15,6 +15,28 @@ from titans.memory import MemoryState, NeuralLongTermMemory
 from titans.persistent import PersistentMemory
 
 
+def compile_model(model: nn.Module, **kwargs) -> nn.Module:
+    """Apply torch.compile() to the model for optimized execution.
+
+    Suppresses dynamo errors from dynamic control flow in memory updates.
+    Only effective on PyTorch >= 2.0 with a supported backend.
+
+    Args:
+        model: Any Titans model (TitansMAC, TitansMAG, etc.)
+        **kwargs: Passed to torch.compile (e.g. mode="reduce-overhead")
+
+    Returns:
+        Compiled model, or original model if compile is unavailable.
+    """
+    try:
+        import torch._dynamo
+
+        torch._dynamo.config.suppress_errors = True
+        return torch.compile(model, **kwargs)
+    except Exception:
+        return model
+
+
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization."""
 

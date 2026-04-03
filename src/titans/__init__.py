@@ -20,6 +20,7 @@ from titans.attention import (
     RotaryPositionEmbedding,
     SegmentedAttention,
     SlidingWindowAttention,
+    log_sdpa_backend,
 )
 from titans.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans.config import TitansConfig
@@ -38,6 +39,7 @@ from titans.models import (
     TitansMAC,
     TitansMAG,
     TitansMAL,
+    compile_model,
     process_chunk,
 )
 from titans.persistent import PersistentMemory
@@ -81,6 +83,7 @@ __all__ = [
     "RotaryPositionEmbedding",
     "SlidingWindowAttention",
     "SegmentedAttention",
+    "log_sdpa_backend",
     # Persistent Memory
     "PersistentMemory",
     # MCA
@@ -98,6 +101,7 @@ __all__ = [
     "TitansMAG",
     "TitansMAL",
     "TitansLMM",
+    "compile_model",
     "process_chunk",
     # LoRA
     "LoRALinear",
