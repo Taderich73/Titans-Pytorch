@@ -36,7 +36,7 @@ if _hf_token:
 else:
     _repo_url = "git+https://huggingface.co/FlatFootInternational/titans"
 subprocess.check_call(
-    [sys.executable, "-m", "pip", "install", "--quiet", _repo_url],
+    ["uv", "pip", "install", "--quiet", _repo_url],
     stdout=subprocess.DEVNULL,
 )
 
