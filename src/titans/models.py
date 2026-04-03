@@ -390,13 +390,164 @@ class TitansMAG(nn.Module):
         return logits, new_states
 
 
+class MALBlock(nn.Module):
+    """Memory as Layer Block (Titans Eq. 29-31).
+
+    Architecture:
+    1. mem_out = M([persistent || norm1(h)]) — memory first
+    2. h_mid = h + mem_out — internal residual
+    3. attn_out = SW-Attn(norm2(h_mid), prefix=persistent) — attention second
+    4. core_out = mem_out + attn_out
+    """
+
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
+        super().__init__()
+        self.config = config
+
+        if config.use_tnt:
+            raise NotImplementedError(
+                "TNT hierarchical memory not yet ported. "
+                "See archive/titans_mlx/tnt_memory.py"
+            )
+        if config.use_attn_res:
+            raise NotImplementedError(
+                "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
+            )
+        if config.use_mca and layer_idx in config.mca_active_insertion_layers:
+            raise NotImplementedError(
+                "MCA not yet ported. See archive/titans_mlx/mca.py"
+            )
+
+        self.persistent = PersistentMemory(config)
+        self.memory = NeuralLongTermMemory(config)
+        self.attention = SlidingWindowAttention(config)
+        self.ffn = FeedForward(config)
+
+        # norm1=memory, norm2=attention, norm3=FFN
+        self.norm1 = RMSNorm(config.dim)
+        self.norm2 = RMSNorm(config.dim)
+        self.norm3 = RMSNorm(config.dim)
+
+        self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
+        self.has_mca = False
+        self._last_falloff_centers: torch.Tensor | None = None
+
+    def core_forward(
+        self,
+        h: torch.Tensor,
+        state: MemoryState | None = None,
+        memory_gate: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, MemoryState]:
+        batch_size = h.shape[0]
+
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        persistent = self.persistent(batch_size)
+
+        # Eq. 29-30: Memory layer first
+        normed = self.norm1(h)
+        if persistent is not None:
+            mem_input = torch.cat([persistent, normed], dim=1)
+        else:
+            mem_input = normed
+        mem_out_full, new_state = self.memory(
+            mem_input, state=state, memory_gate=memory_gate
+        )
+        if persistent is not None:
+            mem_out = mem_out_full[:, persistent.shape[1] :, :]
+        else:
+            mem_out = mem_out_full
+        if self.dropout is not None:
+            mem_out = self.dropout(mem_out)
+
+        # Internal residual: attention sees h + mem contribution
+        h_mid = h + mem_out
+
+        # Eq. 31: Attention on memory-enriched representation
+        normed_mid = self.norm2(h_mid)
+        attn_out = self.attention(normed_mid, prefix=persistent)
+        if self.dropout is not None:
+            attn_out = self.dropout(attn_out)
+
+        core_out = mem_out + attn_out
+        return core_out, new_state
+
+    def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
+        normed = self.norm3(h)
+        ffn_out = self.ffn(normed)
+        if self.dropout is not None:
+            ffn_out = self.dropout(ffn_out)
+        return ffn_out
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None = None,
+    ) -> tuple[torch.Tensor, MemoryState]:
+        core_out, new_state = self.core_forward(x, state=state)
+        x = x + core_out
+        ffn_out = self.ffn_forward(x)
+        x = x + ffn_out
+        return x, new_state
+
+
 class TitansMAL(nn.Module):
-    """Titans with Memory as Layer — not yet ported."""
+    """Titans with Memory as Layer (Titans §4.3)."""
 
     def __init__(self, config: TitansConfig) -> None:
-        raise NotImplementedError(
-            "TitansMAL not yet ported. See archive/titans_mlx/models.py"
+        super().__init__()
+        self.config = config
+
+        self.embed = nn.Embedding(config.vocab_size, config.dim)
+        self.blocks = nn.ModuleList(
+            [MALBlock(config, layer_idx=i) for i in range(config.num_layers)]
         )
+        self.norm = RMSNorm(config.dim)
+        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
+
+        self._init_weights()
+        self.head.weight = self.embed.weight
+        self._step_count = 0
+
+    def _init_weights(self) -> None:
+        nn.init.normal_(self.embed.weight, std=self.config.init_std)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        states: list[MemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState]]:
+        batch_size, seq_len = input_ids.shape
+        chunk_size = self.config.chunk_size
+
+        if states is None:
+            states = [None] * len(self.blocks)
+
+        x = self.embed(input_ids)
+
+        if seq_len <= chunk_size:
+            x, new_states = process_chunk(
+                self.blocks, x, states, self.config, self._step_count
+            )
+        else:
+            outputs = []
+            new_states = list(states)
+            num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, seq_len)
+                chunk = x[:, chunk_start:chunk_end]
+                chunk, new_states = process_chunk(
+                    self.blocks, chunk, new_states, self.config, self._step_count
+                )
+                outputs.append(chunk)
+            x = torch.cat(outputs, dim=1)
+
+        x = self.norm(x)
+        logits = self.head(x)
+        self._step_count += 1
+        return logits, new_states
 
 
 class LMMBlock(nn.Module):
