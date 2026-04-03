@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "titans @ https://huggingface.co/FlatFootInternational/titans/resolve/main/titans-0.2.0-py3-none-any.whl",
+#     "titans @ https://huggingface.co/FlatFootInternational/titans/resolve/main/titans-0.3.0-py3-none-any.whl",
 #     "torch>=2.2.0",
 #     "accelerate>=0.27.0",
 #     "transformers>=4.36.0",

@@ -1,6 +1,6 @@
 [project]
 name = "titans"
-version = "0.2.0"
+version = "0.3.0"
 description = "Implementation of Titans: Learning to Memorize at Test Time"
 readme = "README.md"
 license = { text = "Apache-2.0" }
