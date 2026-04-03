@@ -82,6 +82,12 @@ MIXED_PRECISION = "bf16"
 HUB_REPO = "FlatFootInternational/titans-mac-1B"  # Where to push checkpoints
 PUSH_CHECKPOINTS = True
 
+# Resume — set to a Hub checkpoint path to continue training, e.g.:
+#   RESUME_FROM = "checkpoints/step_10000.pt"   (resumes from step 10000)
+#   RESUME_FROM = "checkpoints/final.pt"         (resumes from final checkpoint)
+#   RESUME_FROM = None                           (train from scratch)
+RESUME_FROM = None
+
 # Seed
 SEED = 42
 
@@ -234,13 +240,54 @@ def train():
             repo_id=HUB_REPO,
         )
 
-    # Training loop
+    # ---------------------------------------------------------------------------
+    # Resume from Hub checkpoint
+    # ---------------------------------------------------------------------------
     global_step = 0
     memory_states = None
     running_loss = 0.0
 
+    if RESUME_FROM is not None:
+        logger.info(f"Resuming from {HUB_REPO}/{RESUME_FROM} ...")
+        from huggingface_hub import hf_hub_download
+
+        ckpt_local = hf_hub_download(
+            repo_id=HUB_REPO,
+            filename=RESUME_FROM,
+            token=token,
+        )
+        checkpoint = torch.load(ckpt_local, map_location="cpu", weights_only=False)
+
+        unwrapped = accelerator.unwrap_model(model)
+        unwrapped.load_state_dict(checkpoint["model"])
+
+        if "optimizer" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scheduler" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+
+        global_step = checkpoint.get("step", 0)
+        logger.info(f"Resumed at step {global_step}, training to {MAX_STEPS}")
+
+        # Also try to load memory states
+        mem_filename = RESUME_FROM.replace(".pt", "").replace("step_", "memory_step_") + ".npz"
+        if "final" in RESUME_FROM:
+            mem_filename = "checkpoints/memory_final.npz"
+        try:
+            from titans.memory_dump import load_memory_states
+
+            mem_local = hf_hub_download(
+                repo_id=HUB_REPO, filename=mem_filename, token=token
+            )
+            memory_states = load_memory_states(mem_local, device=accelerator.device)
+            logger.info(f"Loaded memory states from {mem_filename}")
+        except Exception as e:
+            logger.info(f"No memory states found ({e}), starting fresh")
+
+        del checkpoint
+
     model.train()
-    pbar = tqdm(total=MAX_STEPS, desc="Training", disable=not accelerator.is_main_process)
+    pbar = tqdm(total=MAX_STEPS, initial=global_step, desc="Training", disable=not accelerator.is_main_process)
 
     for batch in dataloader:
         if global_step >= MAX_STEPS:
@@ -278,7 +325,13 @@ def train():
             with tempfile.TemporaryDirectory() as tmpdir:
                 ckpt_path = Path(tmpdir) / f"step_{global_step}.pt"
                 torch.save(
-                    {"model": unwrapped.state_dict(), "config": config.to_dict(), "step": global_step},
+                    {
+                        "model": unwrapped.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "config": config.to_dict(),
+                        "step": global_step,
+                    },
                     ckpt_path,
                 )
 
@@ -309,7 +362,13 @@ def train():
         with tempfile.TemporaryDirectory() as tmpdir:
             final_path = Path(tmpdir) / "final.pt"
             torch.save(
-                {"model": unwrapped.state_dict(), "config": config.to_dict(), "step": global_step},
+                {
+                    "model": unwrapped.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                    "config": config.to_dict(),
+                    "step": global_step,
+                },
                 final_path,
             )
 
