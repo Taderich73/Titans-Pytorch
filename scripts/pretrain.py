@@ -27,11 +27,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
-import math
-import os
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -59,19 +57,8 @@ except ImportError:
     HAS_TRANSFORMERS = False
     PreTrainedTokenizerBase = Any  # type: ignore
 
-try:
-    from datasets import load_dataset
-
-    HAS_DATASETS = True
-except ImportError:
-    HAS_DATASETS = False
-
-try:
-    import wandb
-
-    HAS_WANDB = True
-except ImportError:
-    HAS_WANDB = False
+HAS_DATASETS = importlib.util.find_spec("datasets") is not None
+HAS_WANDB = importlib.util.find_spec("wandb") is not None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -248,7 +235,9 @@ def train(config: TrainingConfig) -> None:
         drop_last=True,
     )
 
-    total_steps = config.max_steps if config.max_steps > 0 else len(dataloader) * config.epochs
+    total_steps = (
+        config.max_steps if config.max_steps > 0 else len(dataloader) * config.epochs
+    )
     warmup_steps = int(total_steps * config.warmup_ratio)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=max(1, total_steps - warmup_steps)
@@ -276,7 +265,11 @@ def train(config: TrainingConfig) -> None:
         epoch_loss = 0.0
         num_batches = 0
 
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}", disable=not accelerator.is_main_process)
+        pbar = tqdm(
+            dataloader,
+            desc=f"Epoch {epoch + 1}",
+            disable=not accelerator.is_main_process,
+        )
 
         for batch in pbar:
             if config.max_steps > 0 and global_step >= config.max_steps:
@@ -310,7 +303,9 @@ def train(config: TrainingConfig) -> None:
             if global_step % config.log_every == 0:
                 avg_loss = epoch_loss / num_batches
                 lr = optimizer.param_groups[0]["lr"]
-                pbar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{lr:.2e}", step=global_step)
+                pbar.set_postfix(
+                    loss=f"{avg_loss:.4f}", lr=f"{lr:.2e}", step=global_step
+                )
 
                 if config.wandb and HAS_WANDB:
                     accelerator.log(
@@ -349,7 +344,9 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--window-size", type=int, default=512)
     parser.add_argument("--num-persistent-tokens", type=int, default=16)
     parser.add_argument("--num-memory-layers", type=int, default=2)
-    parser.add_argument("--memory-objective", type=str, default="l2", choices=["l2", "huber"])
+    parser.add_argument(
+        "--memory-objective", type=str, default="l2", choices=["l2", "huber"]
+    )
 
     parser.add_argument("--dataset", type=str, default=None)
     parser.add_argument("--dataset-subset", type=str, default=None)
@@ -365,7 +362,9 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
-    parser.add_argument("--mixed-precision", type=str, default="no", choices=["no", "fp16", "bf16"])
+    parser.add_argument(
+        "--mixed-precision", type=str, default="no", choices=["no", "fp16", "bf16"]
+    )
 
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--save-every", type=int, default=10000)

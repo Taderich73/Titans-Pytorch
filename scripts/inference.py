@@ -21,7 +21,9 @@ import torch
 from titans import TitansConfig, TitansMAC
 from titans.memory_dump import load_memory_states, save_memory_states
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 try:
@@ -32,7 +34,9 @@ except ImportError:
     HAS_TRANSFORMERS = False
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> tuple[TitansMAC, TitansConfig]:
+def load_model(
+    checkpoint_path: str, device: torch.device
+) -> tuple[TitansMAC, TitansConfig]:
     """Load model from checkpoint."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
@@ -92,8 +96,15 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--memory-state", type=str, default=None, help="Path to memory state .npz")
-    parser.add_argument("--save-memory", type=str, default=None, help="Save memory state after inference")
+    parser.add_argument(
+        "--memory-state", type=str, default=None, help="Path to memory state .npz"
+    )
+    parser.add_argument(
+        "--save-memory",
+        type=str,
+        default=None,
+        help="Save memory state after inference",
+    )
 
     args = parser.parse_args()
 
@@ -119,7 +130,8 @@ def main() -> None:
         logger.info(f"Loaded memory state from {args.memory_state}")
 
     generated, final_states = generate(
-        model, input_ids,
+        model,
+        input_ids,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_k=args.top_k,
