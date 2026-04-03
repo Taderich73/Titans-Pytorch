@@ -346,10 +346,10 @@ class NeuralLongTermMemory(nn.Module):
             state = self.init_state(batch_size)
 
         if self.config.quantize_memory_state:
-            raise NotImplementedError(
-                "Quantized memory state not yet ported. "
-                "See archive/titans_mlx/quantize_state.py"
-            )
+            from titans.quantize_state import QuantizedMemoryState, get_weights, get_momentum
+
+            if isinstance(state, QuantizedMemoryState):
+                state = state.dequantize()
 
         k = self.proj_k(x)
         v = self.proj_v(x)
@@ -409,6 +409,14 @@ class NeuralLongTermMemory(nn.Module):
 
         if return_state:
             detached = new_state.detach()
+            if self.config.quantize_memory_state:
+                from titans.quantize_state import quantize_memory_state
+
+                detached = quantize_memory_state(
+                    detached,
+                    weight_bits=self.config.memory_state_weight_bits,
+                    momentum_bits=self.config.memory_state_momentum_bits,
+                )
             if return_keys:
                 return output, detached, k
             return output, detached

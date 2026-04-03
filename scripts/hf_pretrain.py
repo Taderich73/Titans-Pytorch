@@ -51,10 +51,10 @@ if torch.cuda.is_available():
 # Configuration — edit these for your run
 # ---------------------------------------------------------------------------
 
-# Model
-DIM = 512
-NUM_HEADS = 8
-NUM_LAYERS = 12
+# Model — 1B parameter MAC configuration
+DIM = 2048
+NUM_HEADS = 32
+NUM_LAYERS = 16
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
 NUM_MEMORY_LAYERS = 2
@@ -79,7 +79,7 @@ SAVE_EVERY = 2500
 MIXED_PRECISION = "bf16"
 
 # Hub persistence
-HUB_REPO = "FlatFootInternational/titans-mac-512"  # Where to push checkpoints
+HUB_REPO = "FlatFootInternational/titans-mac-1B"  # Where to push checkpoints
 PUSH_CHECKPOINTS = True
 
 # Seed
@@ -175,6 +175,11 @@ def train():
         chunk_size=CHUNK_SIZE,
         num_memory_layers=NUM_MEMORY_LAYERS,
         num_persistent_tokens=NUM_PERSISTENT_TOKENS,
+        use_tnt=True,
+        use_attn_res=True,
+        use_mca=True,
+        memory_objective="huber",
+        adaptive_window=True,
     )
     model = TitansMAC(config)
     num_params = sum(p.numel() for p in model.parameters())

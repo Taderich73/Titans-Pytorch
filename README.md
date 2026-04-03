@@ -35,6 +35,7 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
+- [Fine-Tuning (SFT, LoRA, DPO)](#fine-tuning)
 - [Inference](#inference)
 - [Configuration Reference](#configuration-reference)
 - [API Reference](#api-reference)
@@ -348,6 +349,65 @@ The pretraining script supports HuggingFace Accelerate for multi-GPU training, m
 
 ---
 
+## Fine-Tuning
+
+### Supervised Fine-Tuning (SFT)
+
+```bash
+# SFT from pretrained checkpoint on a chat dataset
+uv run python scripts/sft.py \
+    --model mac --init-weights checkpoints/final.pt \
+    --dataset HuggingFaceH4/ultrachat_200k \
+    --tokenizer meta-llama/Llama-2-7b-hf \
+    --dim 512 --num-layers 12 --mixed-precision bf16
+
+# Train on all tokens (not just assistant turns)
+uv run python scripts/sft.py --model mac --dataset myorg/data --train-on-all
+```
+
+SFT supports chat template formatting (tokenizer's built-in if available, ChatML fallback), per-token loss masking (assistant-only by default), and all model architecture flags.
+
+### LoRA Fine-Tuning
+
+```bash
+# LoRA with default settings (rank=8, attn targets)
+uv run python scripts/lora.py \
+    --init-weights checkpoints/final.pt \
+    --dataset allenai/Dolci-Instruct-SFT \
+    --tokenizer gpt2 --lora-targets attn
+
+# LoRA with custom rank and targets
+uv run python scripts/lora.py \
+    --init-weights checkpoints/final.pt \
+    --dataset myorg/data --lora-rank 16 --lora-alpha 32 --lora-targets attn,ffn
+
+# Merge adapters into base model after training
+uv run python scripts/lora.py \
+    --init-weights checkpoints/final.pt \
+    --dataset myorg/data --merge-and-save checkpoints/merged
+```
+
+LoRA wraps targeted `nn.Linear` layers with low-rank adapters. Only LoRA A/B matrices are trained; base model stays frozen. Adapters can be saved separately (~1-5% of model size) or merged into the base model.
+
+### DPO (Direct Preference Optimization)
+
+```bash
+# Standard DPO with LoRA-as-reference
+uv run python scripts/dpo.py \
+    --init-weights checkpoints/sft/final.pt \
+    --dataset Anthropic/hh-rlhf \
+    --tokenizer gpt2 --loss-type dpo --beta 0.1
+
+# SimPO (reference-free, length-normalized)
+uv run python scripts/dpo.py \
+    --init-weights checkpoints/sft/final.pt \
+    --dataset myorg/prefs --loss-type simpo
+```
+
+DPO uses the LoRA-as-reference trick: the frozen base model serves as the reference policy while LoRA adapters form the trainable policy, avoiding a second model copy. SimPO is reference-free and normalizes by response length.
+
+---
+
 ## Inference
 
 ```bash
@@ -462,6 +522,21 @@ from titans import (
     # State Persistence
     save_memory_states,
     load_memory_states,
+
+    # LoRA
+    LoRALinear,
+    wrap_lora_layers,
+    set_lora_enabled,
+    save_adapters,
+    load_adapters,
+    merge_lora_weights,
+    count_lora_parameters,
+
+    # Memory State Quantization
+    QuantizedTensor,
+    QuantizedMemoryState,
+    quantize_tensor,
+    quantize_memory_state,
 )
 ```
 
@@ -474,25 +549,30 @@ from titans import (
 ```
 titans-pytorch/
 +-- src/titans/
-|   +-- config.py           # TitansConfig
-|   +-- memory.py           # NeuralLongTermMemory, MemoryState, TNTMemoryState
-|   +-- tnt_memory.py       # GlobalMemory, LocalMemory, HierarchicalMemory
-|   +-- attn_res.py         # BlockAttnRes, AttnResMemoryGate
-|   +-- models.py           # MAC/MAG/MAL/LMM blocks and models, process_chunk
-|   +-- attention.py        # SegmentedAttention, SlidingWindowAttention
-|   +-- persistent.py       # PersistentMemory
-|   +-- qk_projection.py    # QKProjection
-|   +-- mca.py              # MemoryCrossAttention
-|   +-- adaptive_window.py  # AdaptiveWindowPredictor, compute_window_regularization
-|   +-- memory_dump.py      # save/load memory states (.npz)
+|   +-- config.py            # TitansConfig
+|   +-- memory.py            # NeuralLongTermMemory, MemoryState, TNTMemoryState
+|   +-- tnt_memory.py        # GlobalMemory, LocalMemory, HierarchicalMemory
+|   +-- attn_res.py          # BlockAttnRes, AttnResMemoryGate
+|   +-- models.py            # MAC/MAG/MAL/LMM blocks and models, process_chunk
+|   +-- attention.py         # SegmentedAttention, SlidingWindowAttention (cached masks)
+|   +-- persistent.py        # PersistentMemory
+|   +-- qk_projection.py     # QKProjection
+|   +-- mca.py               # MemoryCrossAttention
+|   +-- adaptive_window.py   # AdaptiveWindowPredictor, compute_window_regularization
+|   +-- memory_dump.py       # save/load memory states (.npz)
+|   +-- lora.py              # LoRA adapters: wrap, save, load, merge
+|   +-- quantize_state.py    # Memory state quantization (4-bit / 8-bit)
 |
 +-- scripts/
-|   +-- pretrain.py         # Pretraining with HuggingFace Accelerate
-|   +-- inference.py        # Text generation with memory persistence
-|   +-- hf_pretrain.py      # HuggingFace Jobs training script
-|   +-- launch_hf_job.py    # HF Jobs launcher
+|   +-- pretrain.py          # Pretraining with HuggingFace Accelerate
+|   +-- sft.py               # Supervised fine-tuning (chat datasets)
+|   +-- lora.py              # LoRA fine-tuning
+|   +-- dpo.py               # DPO / SimPO preference optimization
+|   +-- inference.py         # Text generation with memory persistence
+|   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
+|   +-- launch_hf_job.py     # HF Jobs launcher
 |
-+-- tests/                  # 101 tests
++-- tests/                   # 101 tests
 ```
 
 ### Running Tests

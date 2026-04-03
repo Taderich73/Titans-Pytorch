@@ -41,6 +41,21 @@ from titans.models import (
     process_chunk,
 )
 from titans.persistent import PersistentMemory
+from titans.quantize_state import (
+    QuantizedMemoryState,
+    QuantizedTensor,
+    quantize_memory_state,
+    quantize_tensor,
+)
+from titans.lora import (
+    LoRALinear,
+    wrap_lora_layers,
+    set_lora_enabled,
+    save_adapters,
+    load_adapters,
+    merge_lora_weights,
+    count_lora_parameters,
+)
 
 __version__ = "0.2.0"
 
@@ -84,4 +99,12 @@ __all__ = [
     "TitansMAL",
     "TitansLMM",
     "process_chunk",
+    # LoRA
+    "LoRALinear",
+    "wrap_lora_layers",
+    "set_lora_enabled",
+    "save_adapters",
+    "load_adapters",
+    "merge_lora_weights",
+    "count_lora_parameters",
 ]

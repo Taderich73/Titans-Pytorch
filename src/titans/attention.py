@@ -5,11 +5,27 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from titans.config import TitansConfig
+
+
+@lru_cache(maxsize=32)
+def _cached_sliding_window_mask(
+    seq_len: int, window_size: int, device: torch.device
+) -> torch.Tensor:
+    """LRU-cached sliding window mask to avoid rebuilding every forward pass."""
+    positions = torch.arange(seq_len, device=device)
+    row_idx = positions.unsqueeze(1)
+    col_idx = positions.unsqueeze(0)
+    causal_mask = col_idx <= row_idx
+    window_mask = (row_idx - col_idx) < window_size
+    bool_mask = causal_mask & window_mask
+    return torch.where(bool_mask, 0.0, float("-inf"))
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -118,13 +134,7 @@ class SlidingWindowAttention(nn.Module):
     def _create_sliding_window_mask(
         self, seq_len: int, device: torch.device
     ) -> torch.Tensor:
-        positions = torch.arange(seq_len, device=device)
-        row_idx = positions.unsqueeze(1)
-        col_idx = positions.unsqueeze(0)
-        causal_mask = col_idx <= row_idx
-        window_mask = (row_idx - col_idx) < self.window_size
-        bool_mask = causal_mask & window_mask
-        return torch.where(bool_mask, 0.0, float("-inf"))
+        return _cached_sliding_window_mask(seq_len, self.window_size, device)
 
     def forward(
         self,
