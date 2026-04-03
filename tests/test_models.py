@@ -199,13 +199,6 @@ class TestDeferredFeatures:
         with pytest.raises(NotImplementedError, match="TNT"):
             TitansMAC(config)
 
-    def test_attn_res_raises(self):
-        config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256, use_attn_res=True
-        )
-        with pytest.raises(NotImplementedError, match="AttnRes"):
-            TitansMAC(config)
-
 
 class TestMCAIntegration:
     def test_mac_with_mca(self, device):
@@ -231,4 +224,47 @@ class TestMCAIntegration:
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
         logits, states = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
+
+
+class TestAttnResIntegration:
+    def test_mac_with_attn_res(self, device):
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAC(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, config.vocab_size)
+
+    def test_mag_with_attn_res(self, device):
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAG(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, config.vocab_size)
+
+    def test_attn_res_backward(self, device):
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAC(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        labels = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, _ = model(x)
+        loss = torch.nn.functional.cross_entropy(
+            logits.view(-1, config.vocab_size), labels.view(-1)
+        )
+        loss.backward()
+        assert model.embed.weight.grad is not None
 

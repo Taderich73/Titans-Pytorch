@@ -20,6 +20,7 @@ from titans.attention import (
     SegmentedAttention,
     SlidingWindowAttention,
 )
+from titans.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans.config import TitansConfig
 from titans.mca import MemoryCrossAttention
 from titans.memory import MemoryState, NeuralLongTermMemory
@@ -56,6 +57,9 @@ __all__ = [
     "PersistentMemory",
     # MCA
     "MemoryCrossAttention",
+    # AttnRes
+    "BlockAttnRes",
+    "AttnResMemoryGate",
     # Models
     "RMSNorm",
     "FeedForward",

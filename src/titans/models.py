@@ -56,6 +56,12 @@ def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
         from titans.mca import MemoryCrossAttention
 
         block.mca = MemoryCrossAttention(config)
+        if config.use_attn_res:
+            from titans.attn_res import BlockAttnRes
+
+            block.attn_res_mca = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
 
 
 def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
@@ -79,26 +85,89 @@ def process_chunk(
     config: TitansConfig,
     _step_count: int = 0,
 ) -> tuple[torch.Tensor, list]:
-    """Process a single chunk through all blocks with standard residuals."""
-    if config.use_attn_res:
-        raise NotImplementedError(
-            "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
-        )
-
+    """Process a single chunk through all blocks."""
     new_states = []
-    x = chunk
+
+    if not config.use_attn_res:
+        # Standard residual path
+        x = chunk
+        for i, block in enumerate(blocks):
+            core_out, new_state = block.core_forward(x, state=states[i])
+            x = x + core_out
+
+            if hasattr(block, "has_mca") and block.has_mca:
+                mca_out = block.mca_forward(x, new_state)
+                x = x + mca_out
+
+            ffn_out = block.ffn_forward(x)
+            x = x + ffn_out
+            new_states.append(new_state)
+        return x, new_states
+
+    # AttnRes path — replaces residual connections per AttnRes paper
+    S = config.attnres_sub_layer_block_size
+    completed_blocks: list[torch.Tensor] = [chunk]  # b_0 = embedding
+    partial_block: torch.Tensor | None = None
+    sub_idx = 0
+    warmup = (
+        config.attnres_warmup_steps > 0
+        and _step_count < config.attnres_warmup_steps
+    )
+
     for i, block in enumerate(blocks):
-        core_out, new_state = block.core_forward(x, state=states[i])
-        x = x + core_out
+        # --- Core sub-layer ---
+        h, attn_weights = block.attn_res_core(completed_blocks, partial_block)
 
-        if hasattr(block, "has_mca") and block.has_mca:
-            mca_out = block.mca_forward(x, new_state)
-            x = x + mca_out
+        memory_gate = None
+        if not warmup:
+            memory_gate = block.attn_res_gate(attn_weights)
 
-        ffn_out = block.ffn_forward(x)
-        x = x + ffn_out
+        core_out, new_state = block.core_forward(
+            h, state=states[i], memory_gate=memory_gate
+        )
         new_states.append(new_state)
-    return x, new_states
+
+        if partial_block is None:
+            partial_block = core_out
+        else:
+            partial_block = partial_block + core_out
+        sub_idx += 1
+
+        if sub_idx % S == 0:
+            completed_blocks.append(partial_block)
+            partial_block = None
+
+        # --- MCA sub-layer ---
+        if hasattr(block, "has_mca") and block.has_mca:
+            h_mca, _ = block.attn_res_mca(completed_blocks, partial_block)
+            mca_out = block.mca_forward(h_mca, new_state)
+
+            if partial_block is None:
+                partial_block = mca_out
+            else:
+                partial_block = partial_block + mca_out
+            sub_idx += 1
+            if sub_idx % S == 0:
+                completed_blocks.append(partial_block)
+                partial_block = None
+
+        # --- FFN sub-layer ---
+        h, _ = block.attn_res_ffn(completed_blocks, partial_block)
+        ffn_out = block.ffn_forward(h)
+
+        if partial_block is None:
+            partial_block = ffn_out
+        else:
+            partial_block = partial_block + ffn_out
+        sub_idx += 1
+
+        if sub_idx % S == 0 or i == len(blocks) - 1:
+            completed_blocks.append(partial_block)
+            partial_block = None
+
+        chunk = h + ffn_out
+
+    return chunk, new_states
 
 
 class MACBlock(nn.Module):
@@ -112,10 +181,6 @@ class MACBlock(nn.Module):
             raise NotImplementedError(
                 "TNT hierarchical memory not yet ported. "
                 "See archive/titans_mlx/tnt_memory.py"
-            )
-        if config.use_attn_res:
-            raise NotImplementedError(
-                "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
             )
 
         self.memory = NeuralLongTermMemory(config)
@@ -135,6 +200,17 @@ class MACBlock(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         _init_mca(self, config, layer_idx)
+
+        if config.use_attn_res:
+            from titans.attn_res import AttnResMemoryGate, BlockAttnRes
+
+            self.attn_res_core = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_ffn = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_gate = AttnResMemoryGate()
 
     def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
         return _mca_forward(self, h, mem_state)
@@ -267,10 +343,6 @@ class MAGBlock(nn.Module):
                 "TNT hierarchical memory not yet ported. "
                 "See archive/titans_mlx/tnt_memory.py"
             )
-        if config.use_attn_res:
-            raise NotImplementedError(
-                "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
-            )
 
         self.persistent = PersistentMemory(config)
         self.attention = SlidingWindowAttention(config)
@@ -286,6 +358,17 @@ class MAGBlock(nn.Module):
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
         _init_mca(self, config, layer_idx)
+
+        if config.use_attn_res:
+            from titans.attn_res import AttnResMemoryGate, BlockAttnRes
+
+            self.attn_res_core = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_ffn = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_gate = AttnResMemoryGate()
 
     def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
         return _mca_forward(self, h, mem_state)
@@ -429,10 +512,6 @@ class MALBlock(nn.Module):
                 "TNT hierarchical memory not yet ported. "
                 "See archive/titans_mlx/tnt_memory.py"
             )
-        if config.use_attn_res:
-            raise NotImplementedError(
-                "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
-            )
 
         self.persistent = PersistentMemory(config)
         self.memory = NeuralLongTermMemory(config)
@@ -447,6 +526,17 @@ class MALBlock(nn.Module):
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
         _init_mca(self, config, layer_idx)
+
+        if config.use_attn_res:
+            from titans.attn_res import AttnResMemoryGate, BlockAttnRes
+
+            self.attn_res_core = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_ffn = BlockAttnRes(
+                config.dim, logit_clip=config.attnres_logit_clip
+            )
+            self.attn_res_gate = AttnResMemoryGate()
 
     def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
         return _mca_forward(self, h, mem_state)
