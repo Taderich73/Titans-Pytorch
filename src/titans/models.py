@@ -49,6 +49,29 @@ class FeedForward(nn.Module):
         return self.down_proj(hidden)
 
 
+def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
+    """Initialize MCA components on a block (shared across MAC/MAG/MAL)."""
+    block.has_mca = layer_idx in config.mca_active_insertion_layers
+    if block.has_mca:
+        from titans.mca import MemoryCrossAttention
+
+        block.mca = MemoryCrossAttention(config)
+
+
+def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
+    """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
+    weights = (
+        mem_state.global_state.weights
+        if hasattr(mem_state, "global_state")
+        else mem_state.weights
+    )
+    if not weights:
+        raise ValueError("MCA requires non-empty memory weights.")
+    W = weights[0].detach()
+    assert W.ndim == 2, f"Expected 2D weight matrix, got {W.ndim}D"
+    return block.mca(h, W)
+
+
 def process_chunk(
     blocks: nn.ModuleList,
     chunk: torch.Tensor,
@@ -69,9 +92,8 @@ def process_chunk(
         x = x + core_out
 
         if hasattr(block, "has_mca") and block.has_mca:
-            raise NotImplementedError(
-                "MCA not yet ported. See archive/titans_mlx/mca.py"
-            )
+            mca_out = block.mca_forward(x, new_state)
+            x = x + mca_out
 
         ffn_out = block.ffn_forward(x)
         x = x + ffn_out
@@ -95,10 +117,6 @@ class MACBlock(nn.Module):
             raise NotImplementedError(
                 "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
             )
-        if config.use_mca and layer_idx in config.mca_active_insertion_layers:
-            raise NotImplementedError(
-                "MCA not yet ported. See archive/titans_mlx/mca.py"
-            )
 
         self.memory = NeuralLongTermMemory(config)
         self.memory_query = nn.Parameter(
@@ -116,7 +134,10 @@ class MACBlock(nn.Module):
         self.gate_norm_mem = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        self.has_mca = False
+        _init_mca(self, config, layer_idx)
+
+    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,
@@ -250,10 +271,6 @@ class MAGBlock(nn.Module):
             raise NotImplementedError(
                 "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
             )
-        if config.use_mca and layer_idx in config.mca_active_insertion_layers:
-            raise NotImplementedError(
-                "MCA not yet ported. See archive/titans_mlx/mca.py"
-            )
 
         self.persistent = PersistentMemory(config)
         self.attention = SlidingWindowAttention(config)
@@ -267,8 +284,11 @@ class MAGBlock(nn.Module):
         self.gate_norm_mem = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        self.has_mca = False
         self._last_falloff_centers: torch.Tensor | None = None
+        _init_mca(self, config, layer_idx)
+
+    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,
@@ -413,10 +433,6 @@ class MALBlock(nn.Module):
             raise NotImplementedError(
                 "AttnRes not yet ported. See archive/titans_mlx/attn_res.py"
             )
-        if config.use_mca and layer_idx in config.mca_active_insertion_layers:
-            raise NotImplementedError(
-                "MCA not yet ported. See archive/titans_mlx/mca.py"
-            )
 
         self.persistent = PersistentMemory(config)
         self.memory = NeuralLongTermMemory(config)
@@ -429,8 +445,11 @@ class MALBlock(nn.Module):
         self.norm3 = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        self.has_mca = False
         self._last_falloff_centers: torch.Tensor | None = None
+        _init_mca(self, config, layer_idx)
+
+    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
+        return _mca_forward(self, h, mem_state)
 
     def core_forward(
         self,

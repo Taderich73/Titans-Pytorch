@@ -7,12 +7,13 @@ from titans.config import TitansConfig
 from titans.models import (
     FeedForward,
     LMMBlock,
+    MACBlock,
+    MALBlock,
     RMSNorm,
     TitansLMM,
     TitansMAC,
     TitansMAG,
     TitansMAL,
-    MALBlock,
 )
 
 
@@ -205,14 +206,29 @@ class TestDeferredFeatures:
         with pytest.raises(NotImplementedError, match="AttnRes"):
             TitansMAC(config)
 
-    def test_mca_raises(self):
+
+class TestMCAIntegration:
+    def test_mac_with_mca(self, device):
         config = TitansConfig(
-            dim=64,
-            num_heads=4,
-            num_layers=2,
-            vocab_size=256,
-            use_mca=True,
-            mca_insertion_layers=[0],
+            dim=64, num_heads=4, num_layers=2, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_mca=True, mca_insertion_layers=[0],
         )
-        with pytest.raises(NotImplementedError, match="MCA"):
-            TitansMAC(config)
+        model = TitansMAC(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, config.vocab_size)
+
+    def test_mag_with_mca(self, device):
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=2, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_mca=True, mca_insertion_layers=[0],
+        )
+        model = TitansMAG(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, config.vocab_size)
+
