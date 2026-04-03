@@ -17,6 +17,7 @@ uv run --extra train python scripts/pretrain.py --model mac \
   --save-every 200 \
   --log-every 10 \
   --dtype bfloat16 \
+  --memory-objective l2 \
   --use-tnt \
   --local-chunk-sizes 8 16 \
   --local-shard-length 2048 \

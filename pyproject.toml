@@ -1,6 +1,6 @@
 [project]
 name = "titans"
-version = "0.1.0"
+version = "0.2.0"
 description = "Implementation of Titans: Learning to Memorize at Test Time"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -8,7 +8,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "Delanoe Pirard", email = "contact@aedelon.com" }
 ]
-keywords = ["deep-learning", "memory", "transformers", "mlx", "apple-silicon"]
+keywords = ["deep-learning", "memory", "transformers", "pytorch", "cuda", "gpu"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -18,7 +18,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "mlx>=0.18.0",
+    "torch>=2.2.0",
     "numpy>=2.0.0",
     "pydantic>=2.5.0",
     "pyyaml>=6.0",
@@ -34,6 +34,7 @@ dev = [
     "ruff>=0.2",
 ]
 train = [
+    "accelerate>=0.27.0",
     "transformers>=4.36.0",
     "datasets>=2.16.0",
     "wandb>=0.16.0",
@@ -50,7 +51,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/titans_mlx"]
+packages = ["src/titans"]
 
 [tool.ruff]
 target-version = "py312"
@@ -70,20 +71,20 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
-    "B905",   # zip() without strict= — internal iterables with guaranteed equal lengths
-    "C408",   # dict() call — used intentionally for kwargs merge pattern
-    "SIM102", # nested if — clearer than single compound condition in validation
-    "SIM108", # ternary — clearer as if/else for None-check accumulation
+    "B905",   # zip() without strict=
+    "C408",   # dict() call
+    "SIM102", # nested if
+    "SIM108", # ternary
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
-    "ARG002",  # unused method arguments — fixtures create side effects (e.g. dump_dir via tmp_path)
-    "E402",    # module-level imports — deferred imports for test isolation
+    "ARG002",  # unused method arguments
+    "E402",    # module-level imports
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["titans", "titans_mlx"]
+known-first-party = ["titans"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -95,29 +96,10 @@ disallow_incomplete_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_configs = true
-# MLX lacks complete type stubs; suppress errors from untyped nn.Module subclassing
-disable_error_code = ["name-defined", "misc"]
 
 [[tool.mypy.overrides]]
-module = ["mlx.*", "transformers.*", "datasets.*", "wandb.*", "huggingface_hub.*"]
+module = ["torch.*", "transformers.*", "datasets.*", "wandb.*", "huggingface_hub.*", "accelerate.*"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["titans_mlx.metal_kernels", "titans_mlx.optimizations"]
-disallow_untyped_defs = false
-disable_error_code = ["attr-defined", "name-defined", "misc", "no-any-return"]
-
-[[tool.mypy.overrides]]
-# Heavy MLX nn.Module subclassing — untyped API produces arg-type/return-value/assignment noise
-module = [
-    "titans_mlx.models",
-    "titans_mlx.memory",
-    "titans_mlx.tnt_memory",
-    "titans_mlx.memory_dump",
-    "titans_mlx.persistent",
-    "titans_mlx.config",
-]
-disable_error_code = ["arg-type", "return-value", "assignment", "list-item", "no-untyped-def", "call-overload", "call-arg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -150,7 +132,7 @@ commands = [
 
 [tool.tox.env.typecheck]
 description = "Run mypy type checking"
-commands = [["mypy", "src/titans_mlx"]]
+commands = [["mypy", "src/titans"]]
 
 [tool.tox.env.test]
 description = "Run pytest suite"
@@ -158,9 +140,4 @@ commands = [["pytest", "tests/", "-v", "--tb=short"]]
 
 [tool.tox.env.test-cov]
 description = "Run tests with coverage"
-commands = [["pytest", "tests/", "--cov=titans_mlx", "--cov-report=term-missing"]]
-
-[tool.tox.env.test-train]
-description = "Run training-related tests"
-extras = ["dev", "train"]
-commands = [["pytest", "tests/", "-v", "--tb=short", "-k", "dpo or rlvr or sft or lora"]]
+commands = [["pytest", "tests/", "--cov=titans", "--cov-report=term-missing"]]
