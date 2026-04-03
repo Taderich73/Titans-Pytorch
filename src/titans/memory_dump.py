@@ -14,20 +14,64 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from titans.memory import MemoryState
+from titans.memory import MemoryState, TNTMemoryState
 
 
-def save_memory_states(states: list[MemoryState], path: Path) -> None:
-    """Serialize memory states to a single .npz file."""
+def _save_memory_state(arrays: dict, prefix: str, state: MemoryState) -> None:
+    """Save a single MemoryState into the arrays dict."""
+    arrays[f"{prefix}_num_memory_layers"] = np.array([len(state.weights)])
+    for j, w in enumerate(state.weights):
+        arrays[f"{prefix}_weight_{j}"] = w.detach().cpu().numpy()
+    for j, m in enumerate(state.momentum):
+        arrays[f"{prefix}_momentum_{j}"] = m.detach().cpu().numpy()
+
+
+def _load_memory_state(
+    data: np.lib.npyio.NpzFile, prefix: str, device: torch.device
+) -> MemoryState:
+    """Load a single MemoryState from the npz data."""
+    num_memory_layers = int(data[f"{prefix}_num_memory_layers"][0])
+    weights: list[torch.Tensor] = []
+    momentum: list[torch.Tensor] = []
+    for j in range(num_memory_layers):
+        weights.append(torch.from_numpy(data[f"{prefix}_weight_{j}"].copy()).to(device))
+        momentum.append(torch.from_numpy(data[f"{prefix}_momentum_{j}"].copy()).to(device))
+    return MemoryState(weights=weights, momentum=momentum)
+
+
+def save_memory_states(
+    states: list[MemoryState | TNTMemoryState], path: Path
+) -> None:
+    """Serialize memory states to a single .npz file.
+
+    Handles both MemoryState and TNTMemoryState transparently.
+    """
     arrays: dict[str, np.ndarray] = {}
     arrays["num_layers"] = np.array([len(states)])
 
     for i, state in enumerate(states):
-        arrays[f"num_memory_layers_{i}"] = np.array([len(state.weights)])
-        for j, w in enumerate(state.weights):
-            arrays[f"layer_{i}_weight_{j}"] = w.detach().cpu().numpy()
-        for j, m in enumerate(state.momentum):
-            arrays[f"layer_{i}_momentum_{j}"] = m.detach().cpu().numpy()
+        if isinstance(state, TNTMemoryState):
+            arrays[f"layer_{i}_type"] = np.array([1])  # 1 = TNT
+            _save_memory_state(arrays, f"layer_{i}_global", state.global_state)
+            arrays[f"layer_{i}_num_locals"] = np.array([len(state.local_states)])
+            for k, local_s in enumerate(state.local_states):
+                _save_memory_state(arrays, f"layer_{i}_local_{k}", local_s)
+            # Save local_inits
+            for k, inits in enumerate(state.local_inits):
+                arrays[f"layer_{i}_local_init_{k}_count"] = np.array([len(inits)])
+                for j, t in enumerate(inits):
+                    arrays[f"layer_{i}_local_init_{k}_{j}"] = t.detach().cpu().numpy()
+            # Save qk_projections
+            arrays[f"layer_{i}_num_qk"] = np.array([len(state.qk_projections)])
+            for k, qk in enumerate(state.qk_projections):
+                arrays[f"layer_{i}_qk_{k}"] = qk.detach().cpu().numpy()
+            # Save step counters
+            arrays[f"layer_{i}_step_counters"] = np.array(
+                state.local_step_counters, dtype=np.int64
+            )
+        else:
+            arrays[f"layer_{i}_type"] = np.array([0])  # 0 = plain MemoryState
+            _save_memory_state(arrays, f"layer_{i}", state)
 
     path = Path(path)
     np.savez(path, **arrays)
@@ -35,8 +79,12 @@ def save_memory_states(states: list[MemoryState], path: Path) -> None:
 
 def load_memory_states(
     path: Path, device: torch.device | None = None
-) -> list[MemoryState]:
-    """Deserialize memory states from a .npz file."""
+) -> list[MemoryState | TNTMemoryState]:
+    """Deserialize memory states from a .npz file.
+
+    Handles both MemoryState and TNTMemoryState transparently.
+    Also loads legacy files that lack the layer_type marker.
+    """
     if device is None:
         device = torch.device("cpu")
 
@@ -52,27 +100,65 @@ def load_memory_states(
         raise ValueError("Invalid memory state file: missing 'num_layers' metadata")
 
     num_layers = int(data["num_layers"][0])
-    states: list[MemoryState] = []
+    states: list[MemoryState | TNTMemoryState] = []
 
     for i in range(num_layers):
-        key = f"num_memory_layers_{i}"
-        if key not in data:
-            raise ValueError(f"Invalid memory state file: missing '{key}'")
-        num_memory_layers = int(data[key][0])
+        # Check type marker (default 0 for backwards compat with old files)
+        type_key = f"layer_{i}_type"
+        layer_type = int(data[type_key][0]) if type_key in data else 0
 
-        weights: list[torch.Tensor] = []
-        momentum: list[torch.Tensor] = []
-        for j in range(num_memory_layers):
-            wk = f"layer_{i}_weight_{j}"
-            mk = f"layer_{i}_momentum_{j}"
-            if wk not in data:
-                raise ValueError(f"Invalid memory state file: missing '{wk}'")
-            if mk not in data:
-                raise ValueError(f"Invalid memory state file: missing '{mk}'")
-            weights.append(torch.from_numpy(data[wk].copy()).to(device))
-            momentum.append(torch.from_numpy(data[mk].copy()).to(device))
-
-        states.append(MemoryState(weights=weights, momentum=momentum))
+        if layer_type == 1:
+            # TNTMemoryState
+            global_state = _load_memory_state(data, f"layer_{i}_global", device)
+            num_locals = int(data[f"layer_{i}_num_locals"][0])
+            local_states = [
+                _load_memory_state(data, f"layer_{i}_local_{k}", device)
+                for k in range(num_locals)
+            ]
+            # Load local_inits
+            local_inits: list[list[torch.Tensor]] = []
+            for k in range(num_locals):
+                count = int(data[f"layer_{i}_local_init_{k}_count"][0])
+                inits = [
+                    torch.from_numpy(data[f"layer_{i}_local_init_{k}_{j}"].copy()).to(device)
+                    for j in range(count)
+                ]
+                local_inits.append(inits)
+            # Load qk_projections
+            num_qk = int(data[f"layer_{i}_num_qk"][0])
+            qk_projections = [
+                torch.from_numpy(data[f"layer_{i}_qk_{k}"].copy()).to(device)
+                for k in range(num_qk)
+            ]
+            # Load step counters
+            step_counters = data[f"layer_{i}_step_counters"].tolist()
+            states.append(
+                TNTMemoryState(
+                    global_state=global_state,
+                    local_states=local_states,
+                    local_inits=local_inits,
+                    qk_projections=qk_projections,
+                    local_step_counters=step_counters,
+                )
+            )
+        else:
+            # Legacy / plain MemoryState
+            # Support both new prefix format and legacy format
+            prefix = f"layer_{i}"
+            if f"{prefix}_num_memory_layers" in data:
+                states.append(_load_memory_state(data, prefix, device))
+            else:
+                # Legacy format: num_memory_layers_{i}
+                num_memory_layers = int(data[f"num_memory_layers_{i}"][0])
+                weights = [
+                    torch.from_numpy(data[f"layer_{i}_weight_{j}"].copy()).to(device)
+                    for j in range(num_memory_layers)
+                ]
+                momentum = [
+                    torch.from_numpy(data[f"layer_{i}_momentum_{j}"].copy()).to(device)
+                    for j in range(num_memory_layers)
+                ]
+                states.append(MemoryState(weights=weights, momentum=momentum))
 
     return states
 
