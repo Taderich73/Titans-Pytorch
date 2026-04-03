@@ -355,6 +355,10 @@ class MAGBlock(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
+        if config.adaptive_window:
+            from titans.adaptive_window import AdaptiveWindowPredictor
+
+            self.window_predictor = AdaptiveWindowPredictor(config)
         _init_mca(self, config, layer_idx)
 
         if config.use_attn_res:
@@ -386,7 +390,11 @@ class MAGBlock(nn.Module):
         normed = self.norm1(h)
 
         # Eq. 26: y = SW-Attn([p || norm(h)])
-        attn_out = self.attention(normed, prefix=persistent)
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
+
+        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
         if self.dropout is not None:
             attn_out = self.dropout(attn_out)
 
@@ -523,6 +531,10 @@ class MALBlock(nn.Module):
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
+        if config.adaptive_window:
+            from titans.adaptive_window import AdaptiveWindowPredictor
+
+            self.window_predictor = AdaptiveWindowPredictor(config)
         _init_mca(self, config, layer_idx)
 
         if config.use_attn_res:
@@ -573,7 +585,11 @@ class MALBlock(nn.Module):
 
         # Eq. 31: Attention on memory-enriched representation
         normed_mid = self.norm2(h_mid)
-        attn_out = self.attention(normed_mid, prefix=persistent)
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed_mid)
+
+        attn_out = self.attention(normed_mid, prefix=persistent, adaptive_mask=adaptive_mask)
         if self.dropout is not None:
             attn_out = self.dropout(attn_out)
 

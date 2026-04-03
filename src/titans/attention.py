@@ -133,12 +133,6 @@ class SlidingWindowAttention(nn.Module):
         seq_offset: int = 0,
         adaptive_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if adaptive_mask is not None:
-            raise NotImplementedError(
-                "Adaptive window masking not yet ported. "
-                "See archive/titans_mlx/adaptive_window.py"
-            )
-
         batch_size, seq_len, _ = x.shape
 
         if prefix is not None:
@@ -160,9 +154,21 @@ class SlidingWindowAttention(nn.Module):
             q, _ = self.rope(q, q, seq_offset=prefix_len + seq_offset)
             k, _ = self.rope(k, k, seq_offset=seq_offset)
 
-        mask = self._create_extended_mask(
-            seq_len, full_x.shape[1], prefix_len, x.device
-        )
+        if adaptive_mask is not None:
+            # adaptive_mask: (batch, 1, seq_len, seq_len) with values in [0, 1]
+            # Convert to additive: log(mask + eps) so 1->0.0, 0->-inf
+            if prefix_len > 0:
+                prefix_attn = torch.zeros(
+                    (batch_size, 1, seq_len, prefix_len), device=x.device
+                )
+                additive = torch.log(adaptive_mask + 1e-8)
+                mask = torch.cat([prefix_attn, additive], dim=-1)
+            else:
+                mask = torch.log(adaptive_mask + 1e-8)
+        else:
+            mask = self._create_extended_mask(
+                seq_len, full_x.shape[1], prefix_len, x.device
+            )
         output = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, scale=self.scale
         )

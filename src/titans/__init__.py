@@ -15,6 +15,7 @@ Usage:
     logits, states = model(x)
 """
 
+from titans.adaptive_window import AdaptiveWindowPredictor, compute_window_regularization
 from titans.attention import (
     RotaryPositionEmbedding,
     SegmentedAttention,
@@ -44,6 +45,9 @@ __version__ = "0.2.0"
 __all__ = [
     # Config
     "TitansConfig",
+    # Adaptive Window
+    "AdaptiveWindowPredictor",
+    "compute_window_regularization",
     # Memory
     "NeuralLongTermMemory",
     "MemoryState",
