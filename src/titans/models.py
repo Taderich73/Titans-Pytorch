@@ -165,9 +165,7 @@ def process_chunk(
             completed_blocks.append(partial_block)
             partial_block = None
 
-        chunk = h + ffn_out
-
-    return chunk, new_states
+    return completed_blocks[-1], new_states
 
 
 class MACBlock(nn.Module):

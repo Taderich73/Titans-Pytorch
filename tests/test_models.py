@@ -251,6 +251,18 @@ class TestAttnResIntegration:
         logits, states = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
+    def test_mal_with_attn_res(self, device):
+        config = TitansConfig(
+            dim=64, num_heads=4, num_layers=4, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=2, num_persistent_tokens=4,
+            use_attn_res=True, num_attnres_blocks=2,
+        )
+        model = TitansMAL(config).to(device)
+        x = torch.randint(0, config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, config.vocab_size)
+
     def test_attn_res_backward(self, device):
         config = TitansConfig(
             dim=64, num_heads=4, num_layers=4, vocab_size=256,
