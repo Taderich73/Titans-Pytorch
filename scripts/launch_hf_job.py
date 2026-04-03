@@ -89,8 +89,13 @@ def main():
     tmp.write(script)
     tmp.close()
 
+    # Pass titans as a runtime dependency with token embedded in git URL
+    # so UV can clone the private repo during environment setup
+    titans_dep = f"titans @ git+https://hf_user:{token}@huggingface.co/FlatFootInternational/titans"
+
     job = api.run_uv_job(
         script=tmp.name,
+        dependencies=[titans_dep],
         flavor=flavor,
         timeout=timeout,
         secrets={"HF_TOKEN": token},
@@ -103,7 +108,7 @@ def main():
     print(f"  Status: {job.status.stage}")
     print(f"  URL: https://huggingface.co/jobs/{job.id}")
     print(f"\nMonitor with:")
-    print(f"  uv run python -c \"from huggingface_hub import fetch_job_logs; [print(l) for l in fetch_job_logs('{job.id}')]\"")
+    print(f"  uv run python -c \"from huggingface_hub import HfApi; [print(l) for l in HfApi().fetch_job_logs(job_id='{job.id}')]\"")
 
 
 if __name__ == "__main__":

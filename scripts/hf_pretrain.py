@@ -24,21 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
-import sys
 import tempfile
 from pathlib import Path
-
-# Install titans from private HF repo using token for git auth
-_hf_token = os.environ.get("HF_TOKEN", "")
-if _hf_token:
-    _repo_url = f"git+https://hf_user:{_hf_token}@huggingface.co/FlatFootInternational/titans"
-else:
-    _repo_url = "git+https://huggingface.co/FlatFootInternational/titans"
-subprocess.check_call(
-    ["uv", "pip", "install", "--quiet", _repo_url],
-    stdout=subprocess.DEVNULL,
-)
 
 import numpy as np
 import torch
