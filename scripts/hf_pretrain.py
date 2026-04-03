@@ -55,7 +55,7 @@ if torch.cuda.is_available():
 DIM = 512
 NUM_HEADS = 8
 NUM_LAYERS = 12
-VOCAB_SIZE = 32000
+VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
 NUM_MEMORY_LAYERS = 2
 NUM_PERSISTENT_TOKENS = 16
@@ -63,7 +63,7 @@ NUM_PERSISTENT_TOKENS = 16
 # Data
 DATASET_NAME = "HuggingFaceFW/fineweb-edu"
 DATASET_SUBSET = "sample-10BT"
-TOKENIZER_NAME = "meta-llama/Llama-2-7b-hf"
+TOKENIZER_NAME = "gpt2"
 SEQ_LEN = 2048
 
 # Training
