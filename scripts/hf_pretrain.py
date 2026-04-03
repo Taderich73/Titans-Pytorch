@@ -51,9 +51,9 @@ if torch.cuda.is_available():
 # Configuration — edit these for your run
 # ---------------------------------------------------------------------------
 
-# Model — 1B parameter MAC configuration
-DIM = 2048
-NUM_HEADS = 32
+# Model — ~1.2B parameter MAC configuration (with TNT/AttnRes/MCA/Huber/AdaptiveWindow)
+DIM = 1024
+NUM_HEADS = 16
 NUM_LAYERS = 16
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512

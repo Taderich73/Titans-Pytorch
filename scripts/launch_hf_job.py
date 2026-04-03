@@ -71,8 +71,8 @@ def main():
 
     # For test mode, override the config constants
     if args.test:
-        script = script.replace("DIM = 2048", "DIM = 128")
-        script = script.replace("NUM_HEADS = 32", "NUM_HEADS = 4")
+        script = script.replace("DIM = 1024", "DIM = 128")
+        script = script.replace("NUM_HEADS = 16", "NUM_HEADS = 4")
         script = script.replace("NUM_LAYERS = 16", "NUM_LAYERS = 4")
         script = script.replace("MAX_STEPS = 10000", "MAX_STEPS = 100")
         script = script.replace("SAVE_EVERY = 2500", "SAVE_EVERY = 50")
