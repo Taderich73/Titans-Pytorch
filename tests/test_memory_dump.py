@@ -3,15 +3,16 @@
 import pytest
 import torch
 
-from titans.config import TitansConfig
-from titans.memory import MemoryState, NeuralLongTermMemory
+from titans.memory import NeuralLongTermMemory
 from titans.memory_dump import load_memory_states, save_memory_states
 
 
 class TestMemoryDump:
     def test_round_trip(self, default_config, tmp_path, device):
         mem = NeuralLongTermMemory(default_config).to(device)
-        states = [mem.init_state(batch_size=2) for _ in range(default_config.num_layers)]
+        states = [
+            mem.init_state(batch_size=2) for _ in range(default_config.num_layers)
+        ]
         path = tmp_path / "states.npz"
         save_memory_states(states, path)
         loaded = load_memory_states(path, device=device)

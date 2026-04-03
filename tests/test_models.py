@@ -11,7 +11,6 @@ from titans.models import (
     TitansMAC,
     TitansMAG,
     TitansMAL,
-    process_chunk,
 )
 
 
@@ -113,8 +112,12 @@ class TestDeferredFeatures:
 
     def test_mca_raises(self):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            use_mca=True, mca_insertion_layers=[0],
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            use_mca=True,
+            mca_insertion_layers=[0],
         )
         with pytest.raises(NotImplementedError, match="MCA"):
             TitansMAC(config)

@@ -54,7 +54,7 @@ def process_chunk(
     chunk: torch.Tensor,
     states: list,
     config: TitansConfig,
-    step_count: int = 0,
+    _step_count: int = 0,
 ) -> tuple[torch.Tensor, list]:
     """Process a single chunk through all blocks with standard residuals."""
     if config.use_attn_res:
