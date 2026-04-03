@@ -24,7 +24,9 @@ from titans.attention import (
 from titans.attn_res import AttnResMemoryGate, BlockAttnRes
 from titans.config import TitansConfig
 from titans.mca import MemoryCrossAttention
-from titans.memory import MemoryState, NeuralLongTermMemory
+from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
+from titans.qk_projection import QKProjection
+from titans.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 from titans.memory_dump import load_memory_states, save_memory_states
 from titans.models import (
     FeedForward,
@@ -51,8 +53,15 @@ __all__ = [
     # Memory
     "NeuralLongTermMemory",
     "MemoryState",
+    "TNTMemoryState",
     "save_memory_states",
     "load_memory_states",
+    # Q-K Projection
+    "QKProjection",
+    # TNT Memory
+    "GlobalMemory",
+    "LocalMemory",
+    "HierarchicalMemory",
     # Attention
     "RotaryPositionEmbedding",
     "SlidingWindowAttention",

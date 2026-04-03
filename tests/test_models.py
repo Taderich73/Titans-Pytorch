@@ -191,13 +191,35 @@ class TestTitansLMM:
         assert model.embed.weight.grad is not None
 
 
-class TestDeferredFeatures:
-    def test_tnt_raises(self):
-        config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256, use_tnt=True
+class TestTNTIntegration:
+    @pytest.fixture
+    def tnt_config(self):
+        return TitansConfig(
+            dim=64, num_heads=4, num_layers=2, vocab_size=256,
+            chunk_size=32, window_size=32, max_seq_len=256,
+            num_memory_layers=1, num_persistent_tokens=4,
+            use_tnt=True, global_chunk_size=64,
+            local_chunk_sizes=[8], local_shard_length=64,
+            use_qk_projection=True,
         )
-        with pytest.raises(NotImplementedError, match="TNT"):
-            TitansMAC(config)
+
+    def test_mac_with_tnt(self, tnt_config, device):
+        model = TitansMAC(tnt_config).to(device)
+        x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, tnt_config.vocab_size)
+
+    def test_mag_with_tnt(self, tnt_config, device):
+        model = TitansMAG(tnt_config).to(device)
+        x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, tnt_config.vocab_size)
+
+    def test_mal_with_tnt(self, tnt_config, device):
+        model = TitansMAL(tnt_config).to(device)
+        x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
+        logits, states = model(x)
+        assert logits.shape == (2, 16, tnt_config.vocab_size)
 
 
 class TestMCAIntegration:

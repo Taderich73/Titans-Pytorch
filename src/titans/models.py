@@ -176,12 +176,10 @@ class MACBlock(nn.Module):
         self.config = config
 
         if config.use_tnt:
-            raise NotImplementedError(
-                "TNT hierarchical memory not yet ported. "
-                "See archive/titans_mlx/tnt_memory.py"
-            )
-
-        self.memory = NeuralLongTermMemory(config)
+            from titans.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
         self.memory_query = nn.Parameter(
             torch.randn(1, 1, config.dim) * config.init_std
         )
@@ -337,14 +335,13 @@ class MAGBlock(nn.Module):
         self.config = config
 
         if config.use_tnt:
-            raise NotImplementedError(
-                "TNT hierarchical memory not yet ported. "
-                "See archive/titans_mlx/tnt_memory.py"
-            )
+            from titans.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
 
         self.persistent = PersistentMemory(config)
         self.attention = SlidingWindowAttention(config)
-        self.memory = NeuralLongTermMemory(config)
         self.ffn = FeedForward(config)
 
         self.norm1 = RMSNorm(config.dim)
@@ -514,13 +511,12 @@ class MALBlock(nn.Module):
         self.config = config
 
         if config.use_tnt:
-            raise NotImplementedError(
-                "TNT hierarchical memory not yet ported. "
-                "See archive/titans_mlx/tnt_memory.py"
-            )
+            from titans.tnt_memory import HierarchicalMemory
+            self.memory = HierarchicalMemory(config)
+        else:
+            self.memory = NeuralLongTermMemory(config)
 
         self.persistent = PersistentMemory(config)
-        self.memory = NeuralLongTermMemory(config)
         self.attention = SlidingWindowAttention(config)
         self.ffn = FeedForward(config)
 
