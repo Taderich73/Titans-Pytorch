@@ -83,3 +83,12 @@ profiler_logs/
 
 # Todos
 todos/
+
+# Superpowers
+docs/superpowers
+
+# Training
+training/
+
+# Archive
+archive/
