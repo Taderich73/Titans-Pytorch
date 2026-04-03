@@ -22,45 +22,30 @@ Designed to run via: hf jobs uv run scripts/hf_pretrain.py --flavor a10g-large
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import sys
+import tempfile
 import traceback
+from pathlib import Path
 
-# Force stdout/stderr to flush immediately so HF Jobs logs capture everything
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+import numpy as np
+import torch
+import torch.nn.functional as F
+from accelerate import Accelerator
+from torch.utils.data import DataLoader, Dataset, IterableDataset
+from tqdm import tqdm
 
-print("=== Titans HF Jobs Training Script Starting ===", flush=True)
-
-try:
-    import json
-    import logging
-    import os
-    import tempfile
-    from pathlib import Path
-
-    import numpy as np
-    import torch
-    import torch.nn.functional as F
-    from accelerate import Accelerator
-    from torch.utils.data import DataLoader, Dataset, IterableDataset
-    from tqdm import tqdm
-
-    print(f"PyTorch version: {torch.__version__}", flush=True)
-    print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name()}", flush=True)
-
-    from titans import TitansConfig, TitansMAC
-    from titans.memory_dump import save_memory_states
-
-    print("All imports successful", flush=True)
-except Exception as e:
-    print(f"IMPORT ERROR: {e}", flush=True)
-    traceback.print_exc()
-    sys.exit(1)
+from titans import TitansConfig, TitansMAC
+from titans.memory_dump import save_memory_states
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+print(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}", flush=True)
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name()}", flush=True)
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these for your run
