@@ -70,6 +70,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
+from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -626,6 +627,7 @@ class RLVRConfig:
     # --- Checkpointing ---
     checkpoint_dir: str = "checkpoints/rlvr"
     save_every: int = 1000
+    save_format: str = "pt"
     resume: str | None = None
     init_weights: str | None = None
 
@@ -1080,67 +1082,6 @@ def live_collate_fn(batch: list[dict[str, Any]], pad_token_id: int = 0) -> dict[
 # ---------------------------------------------------------------------------
 
 
-def _save_checkpoint(
-    accelerator: "Accelerator",
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
-    titans_config: TitansConfig,
-    config: RLVRConfig,
-    checkpoint_dir: Path,
-    global_step: int,
-    epoch: int,
-    use_lora: bool,
-) -> None:
-    """Save a mid-training checkpoint.
-
-    Args:
-        accelerator: Accelerate Accelerator instance.
-        model: The (possibly wrapped) model.
-        optimizer: Current optimizer state.
-        scheduler: Current LR scheduler state.
-        titans_config: TitansConfig used to build the model.
-        config: RLVRConfig.
-        checkpoint_dir: Target directory.
-        global_step: Current training step.
-        epoch: Current epoch.
-        use_lora: If True, also save adapter-only file.
-    """
-    ckpt_path = checkpoint_dir / f"step_{global_step}.pt"
-    unwrapped = accelerator.unwrap_model(model)
-    torch.save(
-        {
-            "model": unwrapped.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "config": vars(config),
-            "titans_config": titans_config.__dict__
-            if hasattr(titans_config, "__dict__")
-            else {},
-            "step": global_step,
-            "epoch": epoch,
-        },
-        ckpt_path,
-    )
-    logger.info(f"Saved checkpoint: {ckpt_path}")
-
-    if use_lora:
-        adapter_path = checkpoint_dir / f"adapters_step_{global_step}.safetensors"
-        meta = {
-            "lora_rank": config.lora_rank,
-            "lora_alpha": config.lora_alpha,
-            "lora_targets": config.lora_targets,
-            "global_step": global_step,
-        }
-        try:
-            save_adapters(unwrapped, adapter_path, meta)
-        except ImportError:
-            logger.warning(
-                "safetensors not installed — skipping adapter-only save. "
-                "Install with: pip install safetensors"
-            )
-
-
 # ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
@@ -1448,7 +1389,7 @@ def train(config: RLVRConfig) -> None:
         resume_path = Path(config.resume)
         if not resume_path.exists():
             raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
-        checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+        checkpoint = load_checkpoint(resume_path, weights_only=False)
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1653,18 +1594,42 @@ def train(config: RLVRConfig) -> None:
             # ----------------------------------------------------------
             if global_step > 0 and global_step % config.save_every == 0:
                 if accelerator.is_main_process:
-                    _save_checkpoint(
-                        accelerator,
-                        model,
-                        optimizer,
-                        scheduler,
-                        titans_config,
-                        config,
-                        checkpoint_dir,
-                        global_step,
-                        epoch,
-                        use_lora=True,
+                    ckpt_stem = checkpoint_dir / f"step_{global_step}"
+                    unwrapped = accelerator.unwrap_model(model)
+                    save_checkpoint(
+                        unwrapped.state_dict(),
+                        ckpt_stem,
+                        format=config.save_format,
+                        metadata={
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(),
+                            "config": vars(config),
+                            "titans_config": titans_config.__dict__
+                            if hasattr(titans_config, "__dict__")
+                            else {},
+                            "step": global_step,
+                            "epoch": epoch,
+                        },
                     )
+                    logger.info(f"Saved checkpoint: step {global_step}")
+
+                    adapter_path = (
+                        checkpoint_dir
+                        / f"adapters_step_{global_step}.safetensors"
+                    )
+                    meta = {
+                        "lora_rank": config.lora_rank,
+                        "lora_alpha": config.lora_alpha,
+                        "lora_targets": config.lora_targets,
+                        "global_step": global_step,
+                    }
+                    try:
+                        save_adapters(unwrapped, adapter_path, meta)
+                    except ImportError:
+                        logger.warning(
+                            "safetensors not installed — skipping "
+                            "adapter-only save."
+                        )
 
         # End-of-epoch summary
         if accelerator.is_main_process:
@@ -1679,20 +1644,21 @@ def train(config: RLVRConfig) -> None:
     # Final checkpoint
     # ------------------------------------------------------------------
     if accelerator.is_main_process:
-        final_path = checkpoint_dir / "final.pt"
+        final_stem = checkpoint_dir / "final"
         unwrapped = accelerator.unwrap_model(model)
-        torch.save(
-            {
-                "model": unwrapped.state_dict(),
+        paths = save_checkpoint(
+            unwrapped.state_dict(),
+            final_stem,
+            format=config.save_format,
+            metadata={
                 "config": vars(config),
                 "titans_config": titans_config.__dict__
                 if hasattr(titans_config, "__dict__")
                 else {},
                 "step": global_step,
             },
-            final_path,
         )
-        logger.info(f"RLVR training complete. Final checkpoint: {final_path}")
+        logger.info(f"RLVR training complete. Final checkpoint: {paths[0]}")
 
         # Adapter-only save
         adapter_path = checkpoint_dir / "adapters.safetensors"
@@ -1725,8 +1691,13 @@ def train(config: RLVRConfig) -> None:
             merge_path.parent.mkdir(parents=True, exist_ok=True)
             logger.info("Merging LoRA weights into base model...")
             merge_lora_weights(unwrapped)
-            torch.save(unwrapped.state_dict(), merge_path)
-            logger.info(f"Saved merged model to {merge_path}")
+            merge_stem = merge_path.with_suffix("")
+            merge_files = save_checkpoint(
+                unwrapped.state_dict(),
+                merge_stem,
+                format=config.save_format,
+            )
+            logger.info(f"Saved merged model to {merge_files[0]}")
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
@@ -1965,6 +1936,12 @@ def parse_args() -> RLVRConfig:
     ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/rlvr")
     ckpt.add_argument("--save-every", type=int, default=1000)
     ckpt.add_argument(
+        "--save-format",
+        type=str,
+        default="pt",
+        choices=["pt", "safetensors"],
+    )
+    ckpt.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -2072,6 +2049,7 @@ def parse_args() -> RLVRConfig:
         # Checkpointing
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        save_format=args.save_format,
         resume=args.resume,
         init_weights=args.init_weights,
         # Logging
