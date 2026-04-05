@@ -47,6 +47,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
+from titans.checkpoint import save_checkpoint
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -142,6 +143,7 @@ class LoRATrainingConfig:
     # Checkpointing
     checkpoint_dir: str = "checkpoints/lora"
     save_every: int = 5000
+    save_format: str = "pt"
     eval_every: int = 500
     resume: str | None = None
 
@@ -650,9 +652,36 @@ def train(config: LoRATrainingConfig) -> None:
                 global_step % config.save_every == 0
                 and accelerator.is_main_process
             ):
-                _save_adapter_checkpoint(
-                    accelerator, model, checkpoint_dir, config, global_step
+                unwrapped = accelerator.unwrap_model(model)
+                adapter_path = (
+                    checkpoint_dir
+                    / f"adapters_step_{global_step}.safetensors"
                 )
+                meta = {
+                    "lora_rank": config.lora_rank,
+                    "lora_alpha": config.lora_alpha,
+                    "lora_targets": config.lora_targets,
+                    "global_step": global_step,
+                }
+                try:
+                    save_adapters(unwrapped, adapter_path, meta)
+                    logger.info(
+                        f"Checkpoint: saved adapters at step "
+                        f"{global_step}"
+                    )
+                except ImportError:
+                    ckpt_stem = (
+                        checkpoint_dir / f"step_{global_step}"
+                    )
+                    save_checkpoint(
+                        unwrapped.state_dict(),
+                        ckpt_stem,
+                        format=config.save_format,
+                    )
+                    logger.info(
+                        f"Checkpoint: saved full model at step "
+                        f"{global_step}"
+                    )
 
         if accelerator.is_main_process:
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -661,10 +690,14 @@ def train(config: LoRATrainingConfig) -> None:
     # --- 9. Final save ---
     if accelerator.is_main_process:
         # Save full model checkpoint
-        final_ckpt = checkpoint_dir / "final.pt"
+        final_stem = checkpoint_dir / "final"
         unwrapped = accelerator.unwrap_model(model)
-        torch.save(unwrapped.state_dict(), final_ckpt)
-        logger.info(f"Saved full checkpoint to {final_ckpt}")
+        paths = save_checkpoint(
+            unwrapped.state_dict(),
+            final_stem,
+            format=config.save_format,
+        )
+        logger.info(f"Saved full checkpoint to {paths[0]}")
 
         # Save adapter-only file (small, portable)
         adapter_path = checkpoint_dir / "adapters.safetensors"
@@ -696,47 +729,18 @@ def train(config: LoRATrainingConfig) -> None:
             merge_path.parent.mkdir(parents=True, exist_ok=True)
             logger.info("Merging LoRA weights into base model...")
             merge_lora_weights(unwrapped)
-            torch.save(unwrapped.state_dict(), merge_path)
-            logger.info(f"Saved merged model to {merge_path}")
+            merge_stem = merge_path.with_suffix("")
+            merge_files = save_checkpoint(
+                unwrapped.state_dict(),
+                merge_stem,
+                format=config.save_format,
+            )
+            logger.info(f"Saved merged model to {merge_files[0]}")
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
 
     logger.info("LoRA training complete.")
-
-
-def _save_adapter_checkpoint(
-    accelerator: "Accelerator",
-    model: nn.Module,
-    checkpoint_dir: Path,
-    config: LoRATrainingConfig,
-    global_step: int,
-) -> None:
-    """Save a mid-training adapter checkpoint.
-
-    Args:
-        accelerator: The Accelerate Accelerator instance.
-        model: The (possibly wrapped) model.
-        checkpoint_dir: Directory to write checkpoints.
-        config: Training configuration.
-        global_step: Current training step.
-    """
-    unwrapped = accelerator.unwrap_model(model)
-    ckpt_path = checkpoint_dir / f"adapters_step_{global_step}.safetensors"
-    meta = {
-        "lora_rank": config.lora_rank,
-        "lora_alpha": config.lora_alpha,
-        "lora_targets": config.lora_targets,
-        "global_step": global_step,
-    }
-    try:
-        save_adapters(unwrapped, ckpt_path, meta)
-        logger.info(f"Checkpoint: saved adapters at step {global_step} → {ckpt_path}")
-    except ImportError:
-        # Fall back to full checkpoint if safetensors not available
-        fallback_path = checkpoint_dir / f"step_{global_step}.pt"
-        torch.save(unwrapped.state_dict(), fallback_path)
-        logger.info(f"Checkpoint: saved full model at step {global_step} → {fallback_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +829,12 @@ def parse_args() -> LoRATrainingConfig:
         "--checkpoint-dir", type=str, default="checkpoints/lora"
     )
     ckpt_group.add_argument("--save-every", type=int, default=5000)
+    ckpt_group.add_argument(
+        "--save-format",
+        type=str,
+        default="pt",
+        choices=["pt", "safetensors"],
+    )
     ckpt_group.add_argument("--eval-every", type=int, default=500)
     ckpt_group.add_argument("--resume", type=str, default=None)
 
@@ -876,6 +886,7 @@ def parse_args() -> LoRATrainingConfig:
         merge_and_save=args.merge_and_save,
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        save_format=args.save_format,
         eval_every=args.eval_every,
         resume=args.resume,
         log_every=args.log_every,
