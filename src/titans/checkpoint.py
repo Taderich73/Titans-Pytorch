@@ -71,9 +71,18 @@ def _save_safetensors(
         ) from exc
 
     sf_path = path.with_suffix(".safetensors")
-    # safetensors requires contiguous tensors
-    contiguous = {k: v.contiguous() for k, v in state_dict.items()}
-    save_file(contiguous, sf_path)
+    # safetensors requires contiguous tensors; clone shared tensors to avoid
+    # duplicate-memory errors (e.g. tied embed/head weights)
+    seen: dict[int, str] = {}
+    prepared: dict[str, torch.Tensor] = {}
+    for k, v in state_dict.items():
+        data_ptr = v.data_ptr()
+        if data_ptr in seen:
+            prepared[k] = v.clone().contiguous()
+        else:
+            seen[data_ptr] = k
+            prepared[k] = v.contiguous()
+    save_file(prepared, sf_path)
     written: list[Path] = [sf_path]
     logger.info("Saved safetensors checkpoint: %s", sf_path)
 
