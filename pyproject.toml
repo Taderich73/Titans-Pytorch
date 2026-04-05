@@ -38,6 +38,7 @@ train = [
     "transformers>=4.36.0",
     "datasets>=2.16.0",
     "wandb>=0.16.0",
+    "safetensors>=0.4.0",
 ]
 hub = [
     "huggingface_hub>=0.20.0",
