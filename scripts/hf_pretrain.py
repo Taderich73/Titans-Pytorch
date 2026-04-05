@@ -38,6 +38,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansMAC
+from titans.checkpoint import save_checkpoint
 from titans.memory_dump import save_memory_states
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -73,9 +74,10 @@ LR = 4e-4
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
 WARMUP_RATIO = 0.03
-MAX_STEPS = 10000
+MAX_STEPS = 50000
 LOG_EVERY = 10
 SAVE_EVERY = 2500
+SAVE_FORMAT = "pt"
 MIXED_PRECISION = "bf16"
 
 # Hub persistence
@@ -323,24 +325,26 @@ def train():
         if global_step % SAVE_EVERY == 0 and accelerator.is_main_process:
             unwrapped = accelerator.unwrap_model(model)
             with tempfile.TemporaryDirectory() as tmpdir:
-                ckpt_path = Path(tmpdir) / f"step_{global_step}.pt"
-                torch.save(
-                    {
-                        "model": unwrapped.state_dict(),
+                ckpt_stem = Path(tmpdir) / f"step_{global_step}"
+                ckpt_files = save_checkpoint(
+                    unwrapped.state_dict(),
+                    ckpt_stem,
+                    format=SAVE_FORMAT,
+                    metadata={
                         "optimizer": optimizer.state_dict(),
                         "scheduler": scheduler.state_dict(),
                         "config": config.to_dict(),
                         "step": global_step,
                     },
-                    ckpt_path,
                 )
 
                 if PUSH_CHECKPOINTS and token:
-                    api.upload_file(
-                        path_or_fileobj=str(ckpt_path),
-                        path_in_repo=f"checkpoints/step_{global_step}.pt",
-                        repo_id=HUB_REPO,
-                    )
+                    for fpath in ckpt_files:
+                        api.upload_file(
+                            path_or_fileobj=str(fpath),
+                            path_in_repo=f"checkpoints/{fpath.name}",
+                            repo_id=HUB_REPO,
+                        )
                     logger.info(f"Pushed checkpoint step {global_step} to {HUB_REPO}")
 
                 # Also save memory states
@@ -360,24 +364,26 @@ def train():
     if accelerator.is_main_process:
         unwrapped = accelerator.unwrap_model(model)
         with tempfile.TemporaryDirectory() as tmpdir:
-            final_path = Path(tmpdir) / "final.pt"
-            torch.save(
-                {
-                    "model": unwrapped.state_dict(),
+            final_stem = Path(tmpdir) / "final"
+            final_files = save_checkpoint(
+                unwrapped.state_dict(),
+                final_stem,
+                format=SAVE_FORMAT,
+                metadata={
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "config": config.to_dict(),
                     "step": global_step,
                 },
-                final_path,
             )
 
             if PUSH_CHECKPOINTS and token:
-                api.upload_file(
-                    path_or_fileobj=str(final_path),
-                    path_in_repo="checkpoints/final.pt",
-                    repo_id=HUB_REPO,
-                )
+                for fpath in final_files:
+                    api.upload_file(
+                        path_or_fileobj=str(fpath),
+                        path_in_repo=f"checkpoints/{fpath.name}",
+                        repo_id=HUB_REPO,
+                    )
                 if memory_states is not None:
                     mem_path = Path(tmpdir) / "memory_final.npz"
                     save_memory_states(memory_states, mem_path)
