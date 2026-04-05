@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from safetensors.torch import load_file, save_file
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +62,14 @@ def _save_safetensors(
     Returns:
         List of files written (safetensors file, and optionally sidecar).
     """
+    try:
+        from safetensors.torch import save_file
+    except ImportError as exc:
+        raise ImportError(
+            "safetensors is required for format='safetensors'. "
+            "Install with: pip install safetensors"
+        ) from exc
+
     sf_path = path.with_suffix(".safetensors")
     # safetensors requires contiguous tensors
     contiguous = {k: v.contiguous() for k, v in state_dict.items()}
@@ -125,7 +132,7 @@ def save_checkpoint(
 def load_checkpoint(
     path: str | Path,
     *,
-    device: str = "cpu",
+    device: str | torch.device = "cpu",
     weights_only: bool = True,
 ) -> dict[str, Any]:
     """Load a checkpoint with automatic format detection.
@@ -185,7 +192,7 @@ def _load_pt(
         Normalized dict with ``"model"`` key.
     """
     data = torch.load(path, map_location=device, weights_only=weights_only)
-    if "model" not in data:
+    if "model" not in data and all(isinstance(v, torch.Tensor) for v in data.values()):
         # Bare state dict — wrap it
         data = {"model": data}
     logger.info("Loaded pt checkpoint: %s", path)
@@ -206,6 +213,14 @@ def _load_safetensors(
     Returns:
         Dict with ``"model"`` key and any metadata from the sidecar.
     """
+    try:
+        from safetensors.torch import load_file
+    except ImportError as exc:
+        raise ImportError(
+            "safetensors is required for format='safetensors'. "
+            "Install with: pip install safetensors"
+        ) from exc
+
     tensors = load_file(path, device=device)
     result: dict[str, Any] = {"model": tensors}
 
