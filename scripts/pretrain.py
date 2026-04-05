@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansMAC
+from titans.checkpoint import save_checkpoint
 
 # Optional imports
 try:
@@ -102,6 +103,7 @@ class TrainingConfig:
 
     checkpoint_dir: str = "checkpoints"
     save_every: int = 10000
+    save_format: str = "pt"
     eval_every: int = 500
     resume: str | None = None
 
@@ -314,20 +316,28 @@ def train(config: TrainingConfig) -> None:
                     )
 
             if global_step % config.save_every == 0 and accelerator.is_main_process:
-                ckpt_path = checkpoint_dir / f"step_{global_step}.pt"
+                ckpt_stem = checkpoint_dir / f"step_{global_step}"
                 unwrapped = accelerator.unwrap_model(model)
-                torch.save(unwrapped.state_dict(), ckpt_path)
-                logger.info(f"Saved checkpoint to {ckpt_path}")
+                paths = save_checkpoint(
+                    unwrapped.state_dict(),
+                    ckpt_stem,
+                    format=config.save_format,
+                )
+                logger.info(f"Saved checkpoint to {paths[0]}")
 
         if accelerator.is_main_process:
             avg_loss = epoch_loss / max(num_batches, 1)
             logger.info(f"Epoch {epoch + 1} — avg loss: {avg_loss:.4f}")
 
     if accelerator.is_main_process:
-        final_path = checkpoint_dir / "final.pt"
+        final_stem = checkpoint_dir / "final"
         unwrapped = accelerator.unwrap_model(model)
-        torch.save(unwrapped.state_dict(), final_path)
-        logger.info(f"Training complete. Final checkpoint: {final_path}")
+        paths = save_checkpoint(
+            unwrapped.state_dict(),
+            final_stem,
+            format=config.save_format,
+        )
+        logger.info(f"Training complete. Final checkpoint: {paths[0]}")
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
@@ -368,6 +378,12 @@ def parse_args() -> TrainingConfig:
 
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     parser.add_argument("--save-every", type=int, default=10000)
+    parser.add_argument(
+        "--save-format",
+        type=str,
+        default="pt",
+        choices=["pt", "safetensors"],
+    )
     parser.add_argument("--eval-every", type=int, default=500)
     parser.add_argument("--resume", type=str, default=None)
 
@@ -408,6 +424,7 @@ def parse_args() -> TrainingConfig:
         mixed_precision=args.mixed_precision,
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        save_format=args.save_format,
         eval_every=args.eval_every,
         resume=args.resume,
         log_every=args.log_every,
