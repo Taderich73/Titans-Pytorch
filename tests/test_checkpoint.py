@@ -118,3 +118,95 @@ class TestSaveCheckpointSafetensors:
 
         with pytest.raises(ValueError, match="Unsupported checkpoint format"):
             save_checkpoint(state_dict, stem, format="onnx")
+
+
+class TestLoadCheckpoint:
+    """Tests for load_checkpoint with auto-detection."""
+
+    def test_load_pt(self, tmp_path: Path) -> None:
+        """Load a .pt checkpoint by explicit path."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {"weight": torch.randn(4, 4)}
+        metadata = {"step": 50}
+        stem = tmp_path / "ckpt"
+        save_checkpoint(state_dict, stem, format="pt", metadata=metadata)
+
+        result = load_checkpoint(stem.with_suffix(".pt"))
+
+        assert "model" in result
+        assert torch.equal(result["model"]["weight"], state_dict["weight"])
+        assert result["step"] == 50
+
+    def test_load_safetensors_with_sidecar(self, tmp_path: Path) -> None:
+        """Load a .safetensors checkpoint that has a .meta.pt sidecar."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {"weight": torch.randn(4, 4)}
+        metadata = {"step": 75, "lr": 1e-4}
+        stem = tmp_path / "ckpt"
+        save_checkpoint(
+            state_dict, stem, format="safetensors", metadata=metadata
+        )
+
+        result = load_checkpoint(stem.with_suffix(".safetensors"))
+
+        assert torch.equal(result["model"]["weight"], state_dict["weight"])
+        assert result["step"] == 75
+        assert result["lr"] == 1e-4
+
+    def test_load_safetensors_no_sidecar(self, tmp_path: Path) -> None:
+        """Load a .safetensors checkpoint without metadata sidecar."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {"weight": torch.randn(4, 4)}
+        stem = tmp_path / "ckpt"
+        save_checkpoint(state_dict, stem, format="safetensors")
+
+        # Remove sidecar if it exists (it shouldn't, but be safe)
+        sidecar = stem.with_suffix(".meta.pt")
+        if sidecar.exists():
+            sidecar.unlink()
+
+        result = load_checkpoint(stem.with_suffix(".safetensors"))
+
+        assert "model" in result
+        assert torch.equal(result["model"]["weight"], state_dict["weight"])
+        assert set(result.keys()) == {"model"}
+
+    def test_extensionless_prefers_safetensors(self, tmp_path: Path) -> None:
+        """Extensionless path loads .safetensors when both formats exist."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        st_dict_sf = {"weight": torch.ones(2, 2)}
+        st_dict_pt = {"weight": torch.zeros(2, 2)}
+        stem = tmp_path / "ckpt"
+
+        save_checkpoint(st_dict_sf, stem, format="safetensors")
+        save_checkpoint(st_dict_pt, stem, format="pt")
+
+        result = load_checkpoint(stem)
+
+        # Should load safetensors (ones), not pt (zeros)
+        assert torch.equal(
+            result["model"]["weight"], torch.ones(2, 2)
+        )
+
+    def test_extensionless_falls_back_to_pt(self, tmp_path: Path) -> None:
+        """Extensionless path falls back to .pt when no .safetensors exists."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {"weight": torch.randn(2, 2)}
+        stem = tmp_path / "ckpt"
+        save_checkpoint(state_dict, stem, format="pt")
+
+        result = load_checkpoint(stem)
+
+        assert torch.equal(result["model"]["weight"], state_dict["weight"])
+
+    def test_nonexistent_raises(self, tmp_path: Path) -> None:
+        """Loading a nonexistent checkpoint raises FileNotFoundError."""
+        from titans.checkpoint import load_checkpoint
+
+        with pytest.raises(FileNotFoundError, match="No checkpoint found"):
+            load_checkpoint(tmp_path / "missing")
