@@ -345,7 +345,7 @@ uv run python scripts/pretrain.py --model mac \
     --resume checkpoints/latest.pt
 ```
 
-The pretraining script supports HuggingFace Accelerate for multi-GPU training, mixed precision, gradient accumulation, cosine annealing with warmup, and optional WandB logging.
+The pretraining script supports HuggingFace Accelerate for multi-GPU training, mixed precision, gradient accumulation, cosine annealing with warmup, and optional WandB logging. Use `--save-format safetensors` to save model weights in safetensors format (faster, safer loading) instead of the default `.pt`.
 
 ---
 
@@ -417,6 +417,11 @@ uv run python scripts/inference.py \
     --prompt "Once upon a time" \
     --max-tokens 100
 
+# Load from safetensors checkpoint (auto-detected)
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/best_model.safetensors \
+    --prompt "Once upon a time"
+
 # With memory state persistence across sessions
 uv run python scripts/inference.py \
     --checkpoint checkpoints/best_model.pt \
@@ -424,7 +429,22 @@ uv run python scripts/inference.py \
     --prompt "Continue the story"
 ```
 
-Memory states can be saved and loaded via `save_memory_states()` / `load_memory_states()` for inference-time continual learning across sessions.
+Inference auto-detects `.pt` or `.safetensors` checkpoints. Memory states can be saved and loaded via `save_memory_states()` / `load_memory_states()` for inference-time continual learning across sessions.
+
+### Checkpoint Conversion
+
+Convert existing checkpoints between formats:
+
+```bash
+# Convert .pt to .safetensors
+uv run python scripts/convert_checkpoint.py checkpoints/final.pt
+
+# Convert .safetensors back to .pt
+uv run python scripts/convert_checkpoint.py checkpoints/final.safetensors
+
+# Weights only (skip optimizer/scheduler metadata)
+uv run python scripts/convert_checkpoint.py checkpoints/final.pt --weights-only
+```
 
 ---
 
