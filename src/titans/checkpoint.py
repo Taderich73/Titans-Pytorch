@@ -187,7 +187,7 @@ def load_checkpoint(
 def _load_pt(
     path: Path,
     *,
-    device: str = "cpu",
+    device: str | torch.device = "cpu",
     weights_only: bool = True,
 ) -> dict[str, Any]:
     """Load a PyTorch native checkpoint.
@@ -211,7 +211,7 @@ def _load_pt(
 def _load_safetensors(
     path: Path,
     *,
-    device: str = "cpu",
+    device: str | torch.device = "cpu",
 ) -> dict[str, Any]:
     """Load a safetensors checkpoint with optional metadata sidecar.
 
@@ -230,7 +230,7 @@ def _load_safetensors(
             "Install with: pip install safetensors"
         ) from exc
 
-    tensors = load_file(path, device=device)
+    tensors = load_file(path, device=str(device))
     result: dict[str, Any] = {"model": tensors}
 
     sidecar = path.with_suffix(".meta.pt")
