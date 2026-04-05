@@ -52,10 +52,10 @@ if torch.cuda.is_available():
 # Configuration — edit these for your run
 # ---------------------------------------------------------------------------
 
-# Model — ~1.2B parameter MAC configuration (with TNT/AttnRes/MCA/Huber/AdaptiveWindow)
+# Model — ~1.5B parameter MAC configuration (with TNT/AttnRes/MCA/Huber/AdaptiveWindow)
 DIM = 1024
 NUM_HEADS = 16
-NUM_LAYERS = 16
+NUM_LAYERS = 20
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
 NUM_MEMORY_LAYERS = 2
@@ -63,14 +63,14 @@ NUM_PERSISTENT_TOKENS = 16
 
 # Data
 DATASET_NAME = "HuggingFaceFW/fineweb-edu"
-DATASET_SUBSET = "sample-10BT"
+DATASET_SUBSET = "sample-100BT"
 TOKENIZER_NAME = "gpt2"
 SEQ_LEN = 2048
 
 # Training
 BATCH_SIZE = 2
 GRADIENT_ACCUMULATION_STEPS = 24
-LR = 4e-4
+LR = 3e-4
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
 WARMUP_RATIO = 0.03
@@ -81,7 +81,7 @@ SAVE_FORMAT = "pt"
 MIXED_PRECISION = "bf16"
 
 # Hub persistence
-HUB_REPO = "FlatFootInternational/titans-mac-1B"  # Where to push checkpoints
+HUB_REPO = "FlatFootInternational/titans-mac-1.5B"  # Where to push checkpoints
 PUSH_CHECKPOINTS = True
 
 # Resume — set to a Hub checkpoint path to continue training, e.g.:
@@ -110,7 +110,7 @@ class StreamingTextDataset(IterableDataset):
             split="train",
             streaming=True,
             trust_remote_code=True,
-        ).shuffle(seed=seed, buffer_size=10000)
+        ).shuffle(seed=seed, buffer_size=100000)
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self._buffer = []

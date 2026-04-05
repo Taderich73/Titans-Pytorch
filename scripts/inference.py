@@ -67,12 +67,36 @@ def generate(
     top_k: int = 50,
     memory_states: list | None = None,
 ) -> tuple[torch.Tensor, list]:
-    """Generate tokens autoregressively."""
+    """Generate tokens autoregressively, mirroring training chunking.
+
+    Titans MAC uses segmented attention (no KV cache) with neural memory that
+    updates per-chunk. During training, the model processes chunk_size tokens
+    at a time — attention is local within each chunk, and memory states carry
+    long-range context across chunks.
+
+    To match this at inference:
+    1. Prefill: process the prompt in chunk_size chunks (mirrors training)
+    2. Decode: accumulate generated tokens into a buffer. Each step, feed the
+       full buffer (up to chunk_size) so attention has local context. When the
+       buffer reaches chunk_size, commit the memory update and start a new
+       buffer. This avoids redundant memory updates on already-processed tokens.
+    """
+    chunk_size = model.config.chunk_size
     generated = input_ids
     states = memory_states
 
+    # Prefill: process full prompt, updating memory per-chunk (handled by model)
+    logits, states = model(generated, states=states)
+    if states is not None:
+        states = [s.detach() for s in states]
+
+    # committed_states: memory after the last full chunk was processed
+    # We restore from this each step so partial-buffer re-processing
+    # doesn't compound memory updates
+    committed_states = [s.detach() for s in states] if states else None
+    buffer_start = generated.shape[1]  # where the decode buffer begins
+
     for _ in range(max_new_tokens):
-        logits, states = model(generated, states=states)
         next_logits = logits[:, -1, :] / temperature
 
         if top_k > 0:
@@ -83,7 +107,28 @@ def generate(
         next_token = torch.multinomial(probs, num_samples=1)
         generated = torch.cat([generated, next_token], dim=1)
 
-        if states is not None:
+        # Current decode buffer: tokens generated since last committed chunk
+        buffer = generated[:, buffer_start:]
+        buffer_len = buffer.shape[1]
+
+        if buffer_len >= chunk_size:
+            # Full chunk ready — process and commit memory update
+            chunk = buffer[:, :chunk_size]
+            logits, states = model(chunk, states=committed_states)
+            states = [s.detach() for s in states]
+            committed_states = [s.detach() for s in states]
+            buffer_start += chunk_size
+
+            # If there are leftover tokens after the chunk boundary,
+            # re-process them for the next logits
+            if buffer_len > chunk_size:
+                remainder = buffer[:, chunk_size:]
+                logits, states = model(remainder, states=committed_states)
+                states = [s.detach() for s in states]
+        else:
+            # Partial buffer — re-feed from committed state so memory
+            # only sees these tokens once when the chunk completes
+            logits, states = model(buffer, states=committed_states)
             states = [s.detach() for s in states]
 
     return generated, states
