@@ -29,6 +29,7 @@ from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans.qk_projection import QKProjection
 from titans.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 from titans.memory_dump import load_memory_states, save_memory_states
+from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.models import (
     FeedForward,
     LMMBlock,
@@ -73,6 +74,9 @@ __all__ = [
     "TNTMemoryState",
     "save_memory_states",
     "load_memory_states",
+    # Checkpoint
+    "save_checkpoint",
+    "load_checkpoint",
     # Q-K Projection
     "QKProjection",
     # TNT Memory
