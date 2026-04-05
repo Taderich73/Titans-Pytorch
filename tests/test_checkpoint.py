@@ -210,3 +210,56 @@ class TestLoadCheckpoint:
 
         with pytest.raises(FileNotFoundError, match="No checkpoint found"):
             load_checkpoint(tmp_path / "missing")
+
+
+class TestRoundTrip:
+    """Round-trip save/load tests across formats."""
+
+    @pytest.mark.parametrize("fmt", ["pt", "safetensors"])
+    def test_round_trip(self, tmp_path: Path, fmt: str) -> None:
+        """State dict survives a save/load round-trip for each format."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {
+            "layer.0.weight": torch.randn(8, 8),
+            "layer.0.bias": torch.randn(8),
+            "layer.1.weight": torch.randn(4, 8),
+        }
+        metadata = {"step": 999, "config": {"dim": 8}}
+        stem = tmp_path / "model"
+
+        written = save_checkpoint(
+            state_dict, stem, format=fmt, metadata=metadata
+        )
+        result = load_checkpoint(written[0])
+
+        assert set(result["model"].keys()) == set(state_dict.keys())
+        for key in state_dict:
+            assert torch.equal(result["model"][key], state_dict[key]), (
+                f"Mismatch on {key}"
+            )
+        assert result["step"] == 999
+
+    def test_pt_to_safetensors_conversion(self, tmp_path: Path) -> None:
+        """Load a pt checkpoint and re-save as safetensors."""
+        from titans.checkpoint import load_checkpoint, save_checkpoint
+
+        state_dict = {"weight": torch.randn(4, 4), "bias": torch.randn(4)}
+        metadata = {"step": 10}
+        stem_pt = tmp_path / "orig"
+        stem_sf = tmp_path / "converted"
+
+        save_checkpoint(state_dict, stem_pt, format="pt", metadata=metadata)
+        loaded = load_checkpoint(stem_pt.with_suffix(".pt"))
+
+        save_checkpoint(
+            loaded["model"],
+            stem_sf,
+            format="safetensors",
+            metadata={"step": loaded["step"]},
+        )
+        result = load_checkpoint(stem_sf.with_suffix(".safetensors"))
+
+        assert torch.equal(result["model"]["weight"], state_dict["weight"])
+        assert torch.equal(result["model"]["bias"], state_dict["bias"])
+        assert result["step"] == 10
