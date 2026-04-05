@@ -49,6 +49,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansMAC, TitansMAG, TitansMAL, TitansLMM
+from titans.checkpoint import load_checkpoint, save_checkpoint
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -380,6 +381,7 @@ class SFTConfig:
     # --- Checkpointing ---
     checkpoint_dir: str = "checkpoints/sft"
     save_every: int = 1000
+    save_format: str = "pt"
     eval_every: int = 200
     eval_batches: int = 50
     resume: str | None = None
@@ -942,7 +944,7 @@ def train(config: SFTConfig) -> None:
         resume_path = Path(config.resume)
         if not resume_path.exists():
             raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
-        checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+        checkpoint = load_checkpoint(resume_path, weights_only=False)
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1054,11 +1056,13 @@ def train(config: SFTConfig) -> None:
             # ----------------------------------------------------------
             if global_step > 0 and global_step % config.save_every == 0:
                 if accelerator.is_main_process:
-                    ckpt_path = checkpoint_dir / f"step_{global_step}.pt"
+                    ckpt_stem = checkpoint_dir / f"step_{global_step}"
                     unwrapped = accelerator.unwrap_model(model)
-                    torch.save(
-                        {
-                            "model": unwrapped.state_dict(),
+                    save_checkpoint(
+                        unwrapped.state_dict(),
+                        ckpt_stem,
+                        format=config.save_format,
+                        metadata={
                             "optimizer": optimizer.state_dict(),
                             "scheduler": scheduler.state_dict(),
                             "config": vars(config),
@@ -1068,9 +1072,8 @@ def train(config: SFTConfig) -> None:
                             "step": global_step,
                             "epoch": epoch,
                         },
-                        ckpt_path,
                     )
-                    logger.info(f"Saved checkpoint: {ckpt_path}")
+                    logger.info(f"Saved checkpoint: step {global_step}")
 
         # End-of-epoch summary
         if accelerator.is_main_process:
@@ -1084,20 +1087,21 @@ def train(config: SFTConfig) -> None:
     # Final checkpoint
     # ------------------------------------------------------------------
     if accelerator.is_main_process:
-        final_path = checkpoint_dir / "final.pt"
+        final_stem = checkpoint_dir / "final"
         unwrapped = accelerator.unwrap_model(model)
-        torch.save(
-            {
-                "model": unwrapped.state_dict(),
+        paths = save_checkpoint(
+            unwrapped.state_dict(),
+            final_stem,
+            format=config.save_format,
+            metadata={
                 "config": vars(config),
                 "titans_config": titans_config.__dict__
                 if hasattr(titans_config, "__dict__")
                 else {},
                 "step": global_step,
             },
-            final_path,
         )
-        logger.info(f"SFT training complete. Final checkpoint: {final_path}")
+        logger.info(f"SFT training complete. Final checkpoint: {paths[0]}")
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
@@ -1233,6 +1237,12 @@ def parse_args() -> SFTConfig:
     ckpt = parser.add_argument_group("Checkpointing")
     ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/sft")
     ckpt.add_argument("--save-every", type=int, default=1000)
+    ckpt.add_argument(
+        "--save-format",
+        type=str,
+        default="pt",
+        choices=["pt", "safetensors"],
+    )
     ckpt.add_argument("--eval-every", type=int, default=200)
     ckpt.add_argument("--eval-batches", type=int, default=50)
     ckpt.add_argument(
@@ -1327,6 +1337,7 @@ def parse_args() -> SFTConfig:
         # Checkpointing
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        save_format=args.save_format,
         eval_every=args.eval_every,
         eval_batches=args.eval_batches,
         resume=args.resume,
