@@ -38,7 +38,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansMAC
-from titans.checkpoint import save_checkpoint
+from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -258,7 +258,7 @@ def train():
             filename=RESUME_FROM,
             token=token,
         )
-        checkpoint = torch.load(ckpt_local, map_location="cpu", weights_only=False)
+        checkpoint = load_checkpoint(ckpt_local, weights_only=False)
 
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])

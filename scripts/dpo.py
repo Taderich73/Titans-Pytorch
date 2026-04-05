@@ -1451,8 +1451,13 @@ def train(config: DPOConfig) -> None:
                 merge_path.parent.mkdir(parents=True, exist_ok=True)
                 logger.info("Merging LoRA weights into base model...")
                 merge_lora_weights(unwrapped)
-                torch.save(unwrapped.state_dict(), merge_path)
-                logger.info(f"Saved merged model to {merge_path}")
+                merge_stem = merge_path.with_suffix("")
+                merge_paths = save_checkpoint(
+                    unwrapped.state_dict(),
+                    merge_stem,
+                    format=config.save_format,
+                )
+                logger.info(f"Saved merged model to {merge_paths[0]}")
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
