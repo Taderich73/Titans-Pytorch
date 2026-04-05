@@ -46,6 +46,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Binary assets (HF rejects binary files — use Xet storage if needed)
+assets/
+*.png
+
 # Checkpoints
 checkpoints/
 *.pt
