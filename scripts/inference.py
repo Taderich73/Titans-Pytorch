@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 
 from titans import TitansConfig, TitansMAC
+from titans.checkpoint import load_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 
 logging.basicConfig(
@@ -37,12 +38,13 @@ except ImportError:
 def load_model(
     checkpoint_path: str, device: torch.device
 ) -> tuple[TitansMAC, TitansConfig]:
-    """Load model from checkpoint."""
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    """Load model from checkpoint (.pt or .safetensors, auto-detected)."""
+    ckpt = load_checkpoint(checkpoint_path, device=device)
 
     if "config" in ckpt:
         config = TitansConfig.from_dict(ckpt["config"])
-        state_dict = ckpt["model"]
+    elif "titans_config" in ckpt:
+        config = TitansConfig.from_dict(ckpt["titans_config"])
     else:
         raise ValueError(
             "Checkpoint does not contain config. "
@@ -50,7 +52,7 @@ def load_model(
         )
 
     model = TitansMAC(config)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(ckpt["model"])
     model.to(device)
     model.eval()
     return model, config
