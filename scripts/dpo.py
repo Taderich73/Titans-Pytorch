@@ -62,6 +62,7 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
+from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -542,6 +543,7 @@ class DPOConfig:
     # --- Checkpointing ---
     checkpoint_dir: str = "checkpoints/dpo"
     save_every: int = 1000
+    save_format: str = "pt"
     resume: str | None = None
     init_weights: str | None = None
 
@@ -879,67 +881,6 @@ def build_titans_config(cfg: DPOConfig) -> TitansConfig:
 # ---------------------------------------------------------------------------
 
 
-def _save_checkpoint(
-    accelerator: "Accelerator",
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LRScheduler,
-    titans_config: TitansConfig,
-    config: DPOConfig,
-    checkpoint_dir: Path,
-    global_step: int,
-    epoch: int,
-    use_lora: bool,
-) -> None:
-    """Save a mid-training checkpoint (adapters or full model).
-
-    Args:
-        accelerator: The Accelerate Accelerator instance.
-        model: The (possibly wrapped) model.
-        optimizer: Current optimizer state.
-        scheduler: Current LR scheduler state.
-        titans_config: TitansConfig used to build the model.
-        config: DPOConfig.
-        checkpoint_dir: Target directory.
-        global_step: Current training step.
-        epoch: Current epoch.
-        use_lora: If True, attempt to save adapters-only file.
-    """
-    ckpt_path = checkpoint_dir / f"step_{global_step}.pt"
-    unwrapped = accelerator.unwrap_model(model)
-    torch.save(
-        {
-            "model": unwrapped.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "config": vars(config),
-            "titans_config": titans_config.__dict__
-            if hasattr(titans_config, "__dict__")
-            else {},
-            "step": global_step,
-            "epoch": epoch,
-        },
-        ckpt_path,
-    )
-    logger.info(f"Saved checkpoint: {ckpt_path}")
-
-    if use_lora:
-        adapter_path = checkpoint_dir / f"adapters_step_{global_step}.safetensors"
-        meta = {
-            "lora_rank": config.lora_rank,
-            "lora_alpha": config.lora_alpha,
-            "lora_targets": config.lora_targets,
-            "global_step": global_step,
-        }
-        try:
-            save_adapters(unwrapped, adapter_path, meta)
-        except ImportError:
-            logger.warning(
-                "safetensors not installed — skipping adapter-only save. "
-                "Install with: pip install safetensors"
-            )
-
-
 # ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
@@ -1205,7 +1146,7 @@ def train(config: DPOConfig) -> None:
         resume_path = Path(config.resume)
         if not resume_path.exists():
             raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
-        checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+        checkpoint = load_checkpoint(resume_path, weights_only=False)
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1411,18 +1352,43 @@ def train(config: DPOConfig) -> None:
             # ----------------------------------------------------------
             if global_step > 0 and global_step % config.save_every == 0:
                 if accelerator.is_main_process:
-                    _save_checkpoint(
-                        accelerator,
-                        model,
-                        optimizer,
-                        scheduler,
-                        titans_config,
-                        config,
-                        checkpoint_dir,
-                        global_step,
-                        epoch,
-                        use_lora,
+                    ckpt_stem = checkpoint_dir / f"step_{global_step}"
+                    unwrapped = accelerator.unwrap_model(model)
+                    save_checkpoint(
+                        unwrapped.state_dict(),
+                        ckpt_stem,
+                        format=config.save_format,
+                        metadata={
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(),
+                            "config": vars(config),
+                            "titans_config": titans_config.__dict__
+                            if hasattr(titans_config, "__dict__")
+                            else {},
+                            "step": global_step,
+                            "epoch": epoch,
+                        },
                     )
+                    logger.info(f"Saved checkpoint: step {global_step}")
+
+                    if use_lora:
+                        adapter_path = (
+                            checkpoint_dir
+                            / f"adapters_step_{global_step}.safetensors"
+                        )
+                        meta = {
+                            "lora_rank": config.lora_rank,
+                            "lora_alpha": config.lora_alpha,
+                            "lora_targets": config.lora_targets,
+                            "global_step": global_step,
+                        }
+                        try:
+                            save_adapters(unwrapped, adapter_path, meta)
+                        except ImportError:
+                            logger.warning(
+                                "safetensors not installed — skipping "
+                                "adapter-only save."
+                            )
 
         # End-of-epoch summary
         if accelerator.is_main_process:
@@ -1437,20 +1403,21 @@ def train(config: DPOConfig) -> None:
     # Final checkpoint
     # ------------------------------------------------------------------
     if accelerator.is_main_process:
-        final_path = checkpoint_dir / "final.pt"
+        final_stem = checkpoint_dir / "final"
         unwrapped = accelerator.unwrap_model(model)
-        torch.save(
-            {
-                "model": unwrapped.state_dict(),
+        paths = save_checkpoint(
+            unwrapped.state_dict(),
+            final_stem,
+            format=config.save_format,
+            metadata={
                 "config": vars(config),
                 "titans_config": titans_config.__dict__
                 if hasattr(titans_config, "__dict__")
                 else {},
                 "step": global_step,
             },
-            final_path,
         )
-        logger.info(f"DPO training complete. Final checkpoint: {final_path}")
+        logger.info(f"DPO training complete. Final checkpoint: {paths[0]}")
 
         # Adapter-only save
         if use_lora:
@@ -1677,6 +1644,12 @@ def parse_args() -> DPOConfig:
     ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/dpo")
     ckpt.add_argument("--save-every", type=int, default=1000)
     ckpt.add_argument(
+        "--save-format",
+        type=str,
+        default="pt",
+        choices=["pt", "safetensors"],
+    )
+    ckpt.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -1777,6 +1750,7 @@ def parse_args() -> DPOConfig:
         # Checkpointing
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
+        save_format=args.save_format,
         resume=args.resume,
         init_weights=args.init_weights,
         # Logging
