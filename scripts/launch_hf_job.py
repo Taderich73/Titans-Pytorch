@@ -57,6 +57,12 @@ def main():
         default=None,
         help="Override MAX_STEPS (useful when resuming, e.g. --max-steps 50000)",
     )
+    parser.add_argument(
+        "--rope-proportion",
+        type=float,
+        default=None,
+        help="Override ROPE_PROPORTION (0.0-1.0, e.g. --rope-proportion 0.25)",
+    )
     args = parser.parse_args()
 
     token = get_token()
@@ -112,6 +118,16 @@ def main():
             script,
         )
         print(f"  Max steps: {args.max_steps}")
+
+    # Apply --rope-proportion override
+    if args.rope_proportion is not None:
+        import re
+        script = re.sub(
+            r"ROPE_PROPORTION = [\d.]+",
+            f"ROPE_PROPORTION = {args.rope_proportion}",
+            script,
+        )
+        print(f"  Rope proportion: {args.rope_proportion}")
 
     api = HfApi(token=token)
 
