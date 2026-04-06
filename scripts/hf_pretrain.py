@@ -60,6 +60,7 @@ VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
 NUM_MEMORY_LAYERS = 2
 NUM_PERSISTENT_TOKENS = 16
+ROPE_PROPORTION = 1.0  # Fraction of head_dim pairs to apply RoPE to (0.0-1.0)
 
 # Data
 DATASET_NAME = "HuggingFaceFW/fineweb-edu"
@@ -183,6 +184,7 @@ def train():
         chunk_size=CHUNK_SIZE,
         num_memory_layers=NUM_MEMORY_LAYERS,
         num_persistent_tokens=NUM_PERSISTENT_TOKENS,
+        rope_proportion=ROPE_PROPORTION,
         use_tnt=True,
         use_attn_res=True,
         use_mca=True,
