@@ -441,6 +441,10 @@ def main() -> None:
         default="l2",
         help="Memory loss objective.",
     )
+    parser.add_argument(
+        "--rope-proportion", type=float, default=1.0,
+        help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
+    )
 
     # Diagnostic parameters
     parser.add_argument("--num-steps", type=int, default=5, help="Number of synthetic steps.")
@@ -467,6 +471,7 @@ def main() -> None:
         "use_tnt": args.use_tnt,
         "use_attn_res": args.use_attn_res,
         "use_mca": args.use_mca,
+        "rope_proportion": args.rope_proportion,
     }
 
     try:
