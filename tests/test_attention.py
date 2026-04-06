@@ -42,6 +42,72 @@ class TestRotaryPositionEmbedding:
         assert not torch.allclose(q_rot1, q_rot2)
 
 
+class TestProportionalRoPE:
+    def test_shape_preserved(self, device):
+        """p-RoPE output shape matches input for various proportions."""
+        for proportion in [0.25, 0.5, 0.75, 1.0]:
+            rope = RotaryPositionEmbedding(
+                dim=16, max_seq_len=64, rope_proportion=proportion
+            ).to(device)
+            q = torch.randn(2, 4, 8, 16, device=device)
+            k = torch.randn(2, 4, 8, 16, device=device)
+            q_rot, k_rot = rope(q, k)
+            assert q_rot.shape == q.shape, f"Failed for proportion={proportion}"
+            assert k_rot.shape == k.shape, f"Failed for proportion={proportion}"
+
+    def test_passthrough_unchanged(self, device):
+        """Dimensions beyond rotate_dim are not modified."""
+        rope = RotaryPositionEmbedding(
+            dim=16, max_seq_len=64, rope_proportion=0.5
+        ).to(device)
+        q = torch.randn(2, 4, 8, 16, device=device)
+        k = torch.randn(2, 4, 8, 16, device=device)
+        q_rot, k_rot = rope(q, k)
+        # rotate_dim = 2 * (int(16 * 0.5) // 2) = 8
+        torch.testing.assert_close(q_rot[..., 8:], q[..., 8:])
+        torch.testing.assert_close(k_rot[..., 8:], k[..., 8:])
+
+    def test_rotated_dims_changed(self, device):
+        """Dimensions within rotate_dim are modified."""
+        rope = RotaryPositionEmbedding(
+            dim=16, max_seq_len=64, rope_proportion=0.5
+        ).to(device)
+        q = torch.randn(2, 4, 8, 16, device=device)
+        k = torch.randn(2, 4, 8, 16, device=device)
+        q_rot, k_rot = rope(q, k)
+        assert not torch.allclose(q_rot[..., :8], q[..., :8])
+
+    def test_full_proportion_matches_standard(self, device):
+        """rope_proportion=1.0 is bit-identical to standard RoPE."""
+        torch.manual_seed(42)
+        q = torch.randn(2, 4, 8, 16, device=device)
+        k = torch.randn(2, 4, 8, 16, device=device)
+
+        rope_full = RotaryPositionEmbedding(
+            dim=16, max_seq_len=64, rope_proportion=1.0
+        ).to(device)
+        q_full, k_full = rope_full(q.clone(), k.clone())
+
+        rope_std = RotaryPositionEmbedding(
+            dim=16, max_seq_len=64
+        ).to(device)
+        q_std, k_std = rope_std(q.clone(), k.clone())
+
+        torch.testing.assert_close(q_full, q_std)
+        torch.testing.assert_close(k_full, k_std)
+
+    def test_zero_proportion_is_identity(self, device):
+        """rope_proportion=0.0 returns input unchanged."""
+        rope = RotaryPositionEmbedding(
+            dim=16, max_seq_len=64, rope_proportion=0.0
+        ).to(device)
+        q = torch.randn(2, 4, 8, 16, device=device)
+        k = torch.randn(2, 4, 8, 16, device=device)
+        q_rot, k_rot = rope(q, k)
+        torch.testing.assert_close(q_rot, q)
+        torch.testing.assert_close(k_rot, k)
+
+
 class TestSlidingWindowAttention:
     def test_output_shape(self, default_config, device):
         attn = SlidingWindowAttention(default_config).to(device)

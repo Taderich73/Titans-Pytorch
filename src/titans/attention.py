@@ -48,17 +48,30 @@ def _cached_sliding_window_mask(
 
 
 class RotaryPositionEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE)."""
+    """Rotary Position Embedding (RoPE) with proportional dimension support.
+
+    When rope_proportion < 1.0, only the first fraction of dimension pairs
+    receive rotary embeddings. The remaining pairs pass through unchanged,
+    preserving them for semantic content (p-RoPE, as used in Gemma 4).
+    """
 
     def __init__(
-        self, dim: int, max_seq_len: int = 8192, base: float = 10000.0
+        self,
+        dim: int,
+        max_seq_len: int = 8192,
+        base: float = 10000.0,
+        rope_proportion: float = 1.0,
     ) -> None:
         super().__init__()
         self.dim = dim
         self.base = base
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
-        self._build_cache(max_seq_len)
+        self.rotate_dim = 2 * (int(dim * rope_proportion) // 2)
+        if self.rotate_dim > 0:
+            inv_freq = 1.0 / (
+                base ** (torch.arange(0, self.rotate_dim, 2).float() / self.rotate_dim)
+            )
+            self.register_buffer("inv_freq", inv_freq)
+            self._build_cache(max_seq_len)
 
     def _build_cache(self, seq_len: int) -> None:
         positions = torch.arange(seq_len, dtype=torch.float32)
@@ -80,6 +93,9 @@ class RotaryPositionEmbedding(nn.Module):
             k: (batch, heads, seq, head_dim)
             seq_offset: Offset for position indices
         """
+        if self.rotate_dim == 0:
+            return q, k
+
         seq_len = q.shape[2]
         if seq_offset + seq_len > self._max_seq_len:
             self._build_cache(seq_offset + seq_len)
@@ -94,10 +110,13 @@ class RotaryPositionEmbedding(nn.Module):
     def _apply_rotary(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
+        x_rotate = x[..., : self.rotate_dim]
+        x_pass = x[..., self.rotate_dim :]
 
-        cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, dim//2)
+        x1 = x_rotate[..., ::2]
+        x2 = x_rotate[..., 1::2]
+
+        cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, seq, rotate_dim//2)
         sin = sin.unsqueeze(0).unsqueeze(0)
 
         rotated_even = x1 * cos - x2 * sin
@@ -105,7 +124,9 @@ class RotaryPositionEmbedding(nn.Module):
 
         batch, heads, seq, half_dim = rotated_even.shape
         rotated = torch.stack([rotated_even, rotated_odd], dim=-1)
-        return rotated.reshape(batch, heads, seq, half_dim * 2)
+        rotated = rotated.reshape(batch, heads, seq, half_dim * 2)
+
+        return torch.cat([rotated, x_pass], dim=-1)
 
 
 def _rearrange_to_heads(x: torch.Tensor, num_heads: int) -> torch.Tensor:
