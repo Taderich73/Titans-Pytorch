@@ -62,3 +62,31 @@ class TestTitansConfig:
         )
         assert config.use_tnt is True
         assert config.use_attn_res is True
+
+
+class TestRopeProportionConfig:
+    def test_default_rope_proportion(self):
+        config = TitansConfig()
+        assert config.rope_proportion == 1.0
+
+    def test_custom_rope_proportion(self):
+        config = TitansConfig(rope_proportion=0.25)
+        assert config.rope_proportion == 0.25
+
+    def test_rope_proportion_in_to_dict(self):
+        config = TitansConfig(rope_proportion=0.5)
+        d = config.to_dict()
+        assert d["rope_proportion"] == 0.5
+
+    def test_rope_proportion_round_trip(self):
+        config = TitansConfig(rope_proportion=0.25)
+        config2 = TitansConfig.from_dict(config.to_dict())
+        assert config2.rope_proportion == 0.25
+
+    def test_rope_proportion_invalid_above_one(self):
+        with pytest.raises(ValueError, match="rope_proportion"):
+            TitansConfig(rope_proportion=1.5)
+
+    def test_rope_proportion_invalid_negative(self):
+        with pytest.raises(ValueError, match="rope_proportion"):
+            TitansConfig(rope_proportion=-0.1)

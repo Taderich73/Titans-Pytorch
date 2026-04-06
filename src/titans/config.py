@@ -48,6 +48,7 @@ class TitansConfig:
     use_conv: bool = True
     conv_kernel_size: int = 4
     use_rope: bool = True
+    rope_proportion: float = 1.0  # Fraction of head_dim pairs to rotate (0.0-1.0)
 
     # TNT Hierarchical Memory (deferred)
     use_tnt: bool = False
@@ -130,6 +131,10 @@ class TitansConfig:
         return self.local_chunk_sizes
 
     def __post_init__(self) -> None:
+        if not 0.0 <= self.rope_proportion <= 1.0:
+            raise ValueError(
+                f"rope_proportion must be in [0.0, 1.0], got {self.rope_proportion}"
+            )
         valid_objectives = ("l2", "huber")
         if self.memory_objective not in valid_objectives:
             raise ValueError(
@@ -179,6 +184,7 @@ class TitansConfig:
             "use_conv": self.use_conv,
             "conv_kernel_size": self.conv_kernel_size,
             "use_rope": self.use_rope,
+            "rope_proportion": self.rope_proportion,
             "use_tnt": self.use_tnt,
             "global_chunk_size": self.global_chunk_size,
             "local_chunk_sizes": self.local_chunk_sizes,
