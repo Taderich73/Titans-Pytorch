@@ -466,6 +466,7 @@ class DPOConfig:
     vocab_size: int = 32000
     chunk_size: int = 512
     window_size: int = 512
+    rope_proportion: float = 1.0
     num_persistent_tokens: int = 16
     num_memory_layers: int = 2
     memory_objective: str = "l2"
@@ -824,6 +825,7 @@ def build_titans_config(cfg: DPOConfig) -> TitansConfig:
         vocab_size=cfg.vocab_size,
         chunk_size=cfg.chunk_size,
         window_size=cfg.window_size,
+        rope_proportion=cfg.rope_proportion,
         num_persistent_tokens=cfg.num_persistent_tokens,
         num_memory_layers=cfg.num_memory_layers,
         memory_objective=cfg.memory_objective,
@@ -1490,6 +1492,10 @@ def parse_args() -> DPOConfig:
     arch.add_argument("--vocab-size", type=int, default=32000)
     arch.add_argument("--chunk-size", type=int, default=512)
     arch.add_argument("--window-size", type=int, default=512)
+    arch.add_argument(
+        "--rope-proportion", type=float, default=1.0,
+        help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
+    )
     arch.add_argument("--num-persistent-tokens", type=int, default=16)
     arch.add_argument("--num-memory-layers", type=int, default=2)
     arch.add_argument(
@@ -1692,6 +1698,7 @@ def parse_args() -> DPOConfig:
         vocab_size=args.vocab_size,
         chunk_size=args.chunk_size,
         window_size=args.window_size,
+        rope_proportion=args.rope_proportion,
         num_persistent_tokens=args.num_persistent_tokens,
         num_memory_layers=args.num_memory_layers,
         memory_objective=args.memory_objective,
