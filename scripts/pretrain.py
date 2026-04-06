@@ -79,6 +79,7 @@ class TrainingConfig:
     vocab_size: int = 32000
     chunk_size: int = 512
     window_size: int = 512
+    rope_proportion: float = 1.0
     num_persistent_tokens: int = 16
     num_memory_layers: int = 2
     memory_objective: str = "l2"
@@ -165,6 +166,7 @@ def build_model(config: TrainingConfig) -> TitansMAC:
         vocab_size=config.vocab_size,
         chunk_size=config.chunk_size,
         window_size=config.window_size,
+        rope_proportion=config.rope_proportion,
         num_persistent_tokens=config.num_persistent_tokens,
         num_memory_layers=config.num_memory_layers,
         memory_objective=config.memory_objective,
@@ -352,6 +354,10 @@ def parse_args() -> TrainingConfig:
     parser.add_argument("--vocab-size", type=int, default=32000)
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--window-size", type=int, default=512)
+    parser.add_argument(
+        "--rope-proportion", type=float, default=1.0,
+        help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
+    )
     parser.add_argument("--num-persistent-tokens", type=int, default=16)
     parser.add_argument("--num-memory-layers", type=int, default=2)
     parser.add_argument(
@@ -405,6 +411,7 @@ def parse_args() -> TrainingConfig:
         vocab_size=args.vocab_size,
         chunk_size=args.chunk_size,
         window_size=args.window_size,
+        rope_proportion=args.rope_proportion,
         num_persistent_tokens=args.num_persistent_tokens,
         num_memory_layers=args.num_memory_layers,
         memory_objective=args.memory_objective,
