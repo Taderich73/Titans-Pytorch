@@ -32,6 +32,7 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 - [Memory Cross-Attention (MCA)](#memory-cross-attention-mca)
 - [Yaad: Huber Attentional Bias](#yaad-huber-attentional-bias)
 - [Adaptive Window Sizing](#adaptive-window-sizing)
+- [Proportional RoPE (p-RoPE)](#proportional-rope-p-rope)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
@@ -56,6 +57,8 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 > **AttnRes**: Kimi Team (2025). *Attention Residuals*. [arXiv:2603.15031](https://arxiv.org/abs/2603.15031)
 
 > **Miras (Yaad)**: Behrouz, A., Razaviyayn, M., Zhong, P., & Mirrokni, V. (2025). *It's All Connected: A Journey Through Test-Time Memorization, Attentional Bias, Retention, and Online Optimization*. [arXiv:2504.13173](https://arxiv.org/abs/2504.13173)
+
+> **Gemma 4 (p-RoPE)**: Gemma Team, Google (2025). *Gemma 4 Technical Report*. [Model: google/gemma-4-E2B](https://huggingface.co/google/gemma-4-E2B)
 
 ---
 
@@ -272,6 +275,33 @@ Supported for **MAG** and **MAL** blocks (both use sliding window attention).
 
 ---
 
+## Proportional RoPE (p-RoPE)
+
+Standard RoPE applies rotary position embeddings to all dimension pairs. Research shows that low-frequency pairs (later dimensions) carry negligible positional signal and can disturb semantic representations over long sequences. Proportional RoPE (p-RoPE) applies rotation to only the first `p` fraction of dimension pairs, leaving the rest for semantic content.
+
+Inspired by [Gemma 4 E2B/E4B](https://huggingface.co/google/gemma-4-E2B), which uses p-RoPE to maximize parameter efficiency in on-device deployments.
+
+| `rope_proportion` | Positional dims | Semantic dims | Use case |
+|---|---|---|---|
+| `1.0` (default) | 100% | 0% | Standard RoPE (backward-compatible) |
+| `0.25` | 25% | 75% | Gemma 4 default; recommended starting point |
+| `0.0` | 0% | 100% | No rotation (equivalent to `use_rope=False`) |
+
+```python
+from titans import TitansConfig, TitansMAC
+
+config = TitansConfig(
+    dim=512, num_heads=8, num_layers=12, vocab_size=32000,
+    chunk_size=512,
+    rope_proportion=0.25,  # 25% positional, 75% semantic
+)
+model = TitansMAC(config)
+```
+
+**Note:** Changing `rope_proportion` requires training from scratch. The model must learn which dimensions carry positional vs semantic information during training. The proportion is saved in checkpoint config and restored automatically at inference.
+
+---
+
 ## Installation
 
 ```bash
@@ -343,6 +373,12 @@ uv run python scripts/pretrain.py --model mac --dim 256 --epochs 10
 # Resume from checkpoint
 uv run python scripts/pretrain.py --model mac \
     --resume checkpoints/latest.pt
+
+# Train with proportional RoPE (25% positional, 75% semantic)
+uv run python scripts/pretrain.py --model mac \
+    --dataset HuggingFaceFW/fineweb-edu \
+    --tokenizer gpt2 \
+    --dim 512 --num-layers 12 --rope-proportion 0.25
 ```
 
 The pretraining script supports HuggingFace Accelerate for multi-GPU training, mixed precision, gradient accumulation, cosine annealing with warmup, and optional WandB logging. Use `--save-format safetensors` to save model weights in safetensors format (faster, safer loading) instead of the default `.pt`.
@@ -494,6 +530,8 @@ uv run python scripts/convert_checkpoint.py checkpoints/final.pt --weights-only
 | `adaptive_window_max` | None | Maximum window size (None = `window_size`) |
 | `adaptive_window_temperature` | 10.0 | Sigmoid sharpness at boundary |
 | `adaptive_window_lambda` | 0.01 | Efficiency regularization weight |
+| **Proportional RoPE** |
+| `rope_proportion` | 1.0 | Fraction of head_dim pairs to rotate (0.0–1.0) |
 
 ---
 
