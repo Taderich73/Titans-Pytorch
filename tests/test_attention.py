@@ -129,6 +129,15 @@ class TestSlidingWindowAttention:
         out = attn(x)
         assert out.shape == x.shape
 
+    def test_with_rope_proportion(self, device):
+        config = TitansConfig(dim=64, num_heads=4, use_rope=True, rope_proportion=0.5)
+        attn = SlidingWindowAttention(config).to(device)
+        assert attn.rope is not None
+        assert attn.rope.rotate_dim == 8  # head_dim=16, 0.5 * 16 = 8
+        x = torch.randn(2, 16, 64, device=device)
+        out = attn(x)
+        assert out.shape == x.shape
+
 
 class TestSegmentedAttention:
     def test_output_shape(self, default_config, device):
@@ -155,3 +164,18 @@ class TestSegmentedAttention:
         x_mod[:, -1, :] = torch.randn(1, default_config.dim, device=device)
         out2 = attn(x_mod)
         torch.testing.assert_close(out1[:, 0, :], out2[:, 0, :])
+
+    def test_with_rope_proportion(self, default_config, device):
+        config = TitansConfig(
+            dim=default_config.dim,
+            num_heads=default_config.num_heads,
+            num_layers=default_config.num_layers,
+            rope_proportion=0.25,
+        )
+        attn = SegmentedAttention(config).to(device)
+        assert attn.rope is not None
+        # head_dim=16, rotate_dim = 2*(int(16*0.25)//2) = 2*(4//2) = 4
+        assert attn.rope.rotate_dim == 4
+        x = torch.randn(2, 16, config.dim, device=device)
+        out = attn(x)
+        assert out.shape == x.shape

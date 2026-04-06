@@ -161,7 +161,9 @@ class SlidingWindowAttention(nn.Module):
         self.rope: RotaryPositionEmbedding | None = None
         if config.use_rope:
             self.rope = RotaryPositionEmbedding(
-                dim=config.head_dim, max_seq_len=config.max_seq_len
+                dim=config.head_dim,
+                max_seq_len=config.max_seq_len,
+                rope_proportion=config.rope_proportion,
             )
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
@@ -263,7 +265,9 @@ class SegmentedAttention(nn.Module):
         self.rope: RotaryPositionEmbedding | None = None
         if config.use_rope:
             self.rope = RotaryPositionEmbedding(
-                dim=config.head_dim, max_seq_len=config.max_seq_len
+                dim=config.head_dim,
+                max_seq_len=config.max_seq_len,
+                rope_proportion=config.rope_proportion,
             )
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
