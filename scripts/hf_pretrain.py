@@ -28,6 +28,7 @@ import os
 import sys
 import tempfile
 import traceback
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -339,7 +340,30 @@ def train():
             optimizer.zero_grad()
 
         if memory_states is not None:
-            memory_states = [s.detach() for s in memory_states]
+            memory_states = [
+                s.detach() if s is not None else None for s in memory_states
+            ]
+            # Reset global memory state at every batch boundary while keeping
+            # local memory state intact (local_states, qk_projections,
+            # local_step_counters, local_inits). Isolates the cross-batch
+            # global-carry variable from local-memory threading semantics so
+            # the A/B comparison measures only the global-reset effect.
+            unwrapped_for_reset = accelerator.unwrap_model(model)
+            reset_batch_size = batch["input_ids"].shape[0]
+            new_memory_states = []
+            for block, state in zip(unwrapped_for_reset.blocks, memory_states):
+                if state is None:
+                    new_memory_states.append(None)
+                    continue
+                global_mem = getattr(
+                    getattr(block, "memory", None), "global_memory", None
+                )
+                if global_mem is not None and hasattr(state, "global_state"):
+                    fresh_global = global_mem.init_state(reset_batch_size)
+                    new_memory_states.append(replace(state, global_state=fresh_global))
+                else:
+                    new_memory_states.append(state)
+            memory_states = new_memory_states
 
         running_loss += loss.item()
         global_step += 1
