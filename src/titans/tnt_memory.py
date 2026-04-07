@@ -71,8 +71,23 @@ class LocalMemory(nn.Module):
         return MemoryState(weights=weights, momentum=momentum)
 
     def maybe_reset(
-        self, state: MemoryState, step_counter: int, batch_size: int = 1,
+        self, state: MemoryState, step_counter: int, batch_size: int,
     ) -> tuple[MemoryState, int]:
+        """Reset local memory state at shard boundaries.
+
+        Args:
+            state: Current local memory state.
+            step_counter: Cumulative tokens processed since last reset.
+            batch_size: Batch size to use when reinitializing the state.
+                Forwarded to init_state for API consistency; LocalMemory
+                weights are currently shape [out_dim, in_dim] with no batch
+                axis (see init_state).
+
+        Returns:
+            Tuple of (state, counter). On reset, returns a freshly
+            initialized state and counter=0. Otherwise returns the inputs
+            unchanged.
+        """
         if step_counter > 0 and step_counter % self.shard_length == 0:
             return self.init_state(batch_size=batch_size), 0
         return state, step_counter

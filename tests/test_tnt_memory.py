@@ -1,9 +1,12 @@
 """Tests for TNT Hierarchical Memory."""
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
 from titans.config import TitansConfig
+from titans.tnt_memory import HierarchicalMemory, LocalMemory
 
 
 class TestQKProjection:
@@ -66,8 +69,6 @@ class TestHierarchicalMemory:
         )
 
     def test_init_state(self, tnt_config, device):
-        from titans.tnt_memory import HierarchicalMemory
-
         mem = HierarchicalMemory(tnt_config).to(device)
         state = mem.init_state(batch_size=2)
         assert len(state.local_states) == 2
@@ -75,8 +76,6 @@ class TestHierarchicalMemory:
         assert state.local_step_counters == [0, 0]
 
     def test_forward_shape(self, tnt_config, device):
-        from titans.tnt_memory import HierarchicalMemory
-
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device)
         output, new_state = mem(x)
@@ -84,8 +83,6 @@ class TestHierarchicalMemory:
         assert new_state.local_step_counters == [8, 8]
 
     def test_state_updates(self, tnt_config, device):
-        from titans.tnt_memory import HierarchicalMemory
-
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device)
         state = mem.init_state(2)
@@ -95,8 +92,6 @@ class TestHierarchicalMemory:
         )
 
     def test_retrieve_shape(self, tnt_config, device):
-        from titans.tnt_memory import HierarchicalMemory
-
         mem = HierarchicalMemory(tnt_config).to(device)
         state = mem.init_state(2)
         queries = torch.randn(2, 4, tnt_config.dim, device=device)
@@ -104,8 +99,6 @@ class TestHierarchicalMemory:
         assert out.shape == (2, 4, tnt_config.dim)
 
     def test_backward(self, tnt_config, device):
-        from titans.tnt_memory import HierarchicalMemory
-
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device, requires_grad=True)
         output, _ = mem(x)
@@ -116,27 +109,21 @@ class TestHierarchicalMemory:
 class TestLocalMemoryReset:
     """Regression tests for LocalMemory.maybe_reset batch handling."""
 
-    def test_maybe_reset_accepts_batch_size(self, device):
-        """maybe_reset must accept a batch_size parameter."""
-        from titans.tnt_memory import LocalMemory
-
+    def test_maybe_reset_passes_batch_size_to_init_state(self, device):
+        """maybe_reset must forward batch_size to init_state on the reset path."""
         config = TitansConfig(dim=64, num_heads=4, num_memory_layers=2)
         local = LocalMemory(config, chunk_size=8, shard_length=16).to(device)
 
-        batch_size = 4
-        state = local.init_state(batch_size=batch_size)
-
-        # Trigger a reset (step_counter is a multiple of shard_length and > 0)
-        new_state, new_counter = local.maybe_reset(
-            state, step_counter=16, batch_size=batch_size,
-        )
-
+        state = local.init_state(batch_size=1)
+        with patch.object(local, "init_state", wraps=local.init_state) as spy:
+            new_state, new_counter = local.maybe_reset(
+                state, step_counter=16, batch_size=4,
+            )
+        spy.assert_called_once_with(batch_size=4)
         assert new_counter == 0
 
     def test_maybe_reset_no_reset_when_not_at_boundary(self, device):
         """maybe_reset must return the same state when not at a shard boundary."""
-        from titans.tnt_memory import LocalMemory
-
         config = TitansConfig(dim=64, num_heads=4, num_memory_layers=2)
         local = LocalMemory(config, chunk_size=8, shard_length=16).to(device)
 
@@ -147,10 +134,9 @@ class TestLocalMemoryReset:
         assert returned_state is state
 
     def test_hierarchical_memory_forward_batch_gt_one_across_shard(self, device):
-        """End-to-end: HierarchicalMemory must not crash when reset
-        triggers mid-sequence with batch_size > 1."""
-        from titans.tnt_memory import HierarchicalMemory
-
+        """End-to-end: HierarchicalMemory must not crash and must actually
+        reset the local step counter when crossing a shard boundary with
+        batch_size > 1."""
         config = TitansConfig(
             dim=64, num_heads=4, num_memory_layers=2,
             local_chunk_sizes=[8], local_shard_length=8,
@@ -161,9 +147,14 @@ class TestLocalMemoryReset:
         seq_len = 16
         x = torch.randn(batch_size, seq_len, config.dim, device=device)
 
-        # First call: counter goes from 0 -> seq_len (16), crossing shard boundary
         out1, state1 = hm(x)
-        # Second call: counter is 16, divisible by shard_length=8, will reset
-        out2, state2 = hm(x, state=state1)
+        # After first call: counter = seq_len = 16, which is divisible by shard_length=8
+        assert state1.local_step_counters[0] == seq_len
 
+        out2, state2 = hm(x, state=state1)
+        # Reset path runs at start of second call (16 % 8 == 0), then counter
+        # increments by seq_len, so the new value should be exactly seq_len.
+        assert state2.local_step_counters[0] == seq_len, (
+            f"expected reset+increment to {seq_len}, got {state2.local_step_counters[0]}"
+        )
         assert out2.shape == (batch_size, seq_len, config.dim)
