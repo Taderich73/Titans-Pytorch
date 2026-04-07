@@ -348,7 +348,32 @@ def train():
         if global_step % LOG_EVERY == 0:
             avg_loss = running_loss / LOG_EVERY
             lr = optimizer.param_groups[0]["lr"]
-            pbar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{lr:.2e}")
+            postfix = {"loss": f"{avg_loss:.4f}", "lr": f"{lr:.2e}"}
+
+            # Instrumentation: track global memory norm + decay alpha for layer 0.
+            # Diagnoses global-state decay-to-zero by surfacing how fast the global
+            # weight norm collapses and whether alpha is being learned upward.
+            if memory_states is not None:
+                try:
+                    g_state = getattr(memory_states[0], "global_state", None)
+                    if g_state is not None and len(g_state.weights) > 0:
+                        g_norm = g_state.weights[0].detach().float().norm().item()
+                        postfix["g_norm"] = f"{g_norm:.2e}"
+                    unwrapped_for_log = accelerator.unwrap_model(model)
+                    block0 = unwrapped_for_log.blocks[0]
+                    gate_proj = getattr(
+                        getattr(getattr(block0, "memory", None), "global_memory", None),
+                        "memory",
+                        None,
+                    )
+                    gate_proj = getattr(gate_proj, "gate_decay_proj", None)
+                    if gate_proj is not None:
+                        alpha0 = torch.sigmoid(gate_proj.bias).item()
+                        postfix["alpha"] = f"{alpha0:.4f}"
+                except Exception:
+                    pass
+
+            pbar.set_postfix(**postfix)
             running_loss = 0.0
 
         if global_step % SAVE_EVERY == 0 and accelerator.is_main_process:
