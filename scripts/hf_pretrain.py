@@ -220,10 +220,37 @@ def train():
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
     )
-    warmup_steps = int(MAX_STEPS * WARMUP_RATIO)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(1, MAX_STEPS - warmup_steps)
+
+    # accelerator.prepare() wraps scheduler.step() so it only fires on real
+    # optimizer updates (sync_gradients=True). All schedule units must be in
+    # optimizer-step space, NOT mini-batch space, or the schedule will only
+    # consume ~1/GRADIENT_ACCUMULATION_STEPS of itself over the run.
+    total_opt_steps = max(1, MAX_STEPS // GRADIENT_ACCUMULATION_STEPS)
+    warmup_opt_steps = max(1, int(total_opt_steps * WARMUP_RATIO))
+    cosine_opt_steps = max(1, total_opt_steps - warmup_opt_steps)
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1e-8,
+        end_factor=1.0,
+        total_iters=warmup_opt_steps,
     )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cosine_opt_steps,
+        eta_min=LR * 0.1,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup, cosine],
+        milestones=[warmup_opt_steps],
+    )
+
+    if accelerator.is_main_process:
+        logger.info(
+            f"Scheduler: warmup={warmup_opt_steps} + cosine={cosine_opt_steps} "
+            f"optimizer steps (peak LR={LR:.2e}, min LR={LR * 0.1:.2e})"
+        )
 
     model, optimizer, dataloader, scheduler = accelerator.prepare(
         model, optimizer, dataloader, scheduler
