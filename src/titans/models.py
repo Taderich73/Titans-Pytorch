@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from titans.attention import SegmentedAttention, SlidingWindowAttention
 from titans.config import TitansConfig
-from titans.memory import MemoryState, NeuralLongTermMemory
+from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans.persistent import PersistentMemory
 
 
@@ -104,10 +104,10 @@ def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
 def process_chunk(
     blocks: nn.ModuleList,
     chunk: torch.Tensor,
-    states: list,
+    states: list[MemoryState | TNTMemoryState],
     config: TitansConfig,
     _step_count: int = 0,
-) -> tuple[torch.Tensor, list]:
+) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
     """Process a single chunk through all blocks."""
     new_states = []
 
@@ -309,8 +309,8 @@ class TitansMAC(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        states: list[MemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState]]:
+        states: list[MemoryState | TNTMemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
 
@@ -485,8 +485,8 @@ class TitansMAG(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        states: list[MemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState]]:
+        states: list[MemoryState | TNTMemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
 
@@ -658,8 +658,8 @@ class TitansMAL(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        states: list[MemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState]]:
+        states: list[MemoryState | TNTMemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
 
