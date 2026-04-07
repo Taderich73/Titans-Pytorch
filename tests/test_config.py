@@ -47,6 +47,19 @@ class TestTitansConfig:
         assert s2.tnt_stage == 2
         assert s2.finetune_local_chunk_sizes == [4, 8]
 
+    def test_tnt_stage2_rejects_non_stage1_input(self):
+        """Calling tnt_stage2 on a stage-2 config must raise."""
+        s1 = TitansConfig.tnt_stage1()
+        s2 = TitansConfig.tnt_stage2(s1)
+        with pytest.raises(ValueError, match="stage 1"):
+            TitansConfig.tnt_stage2(s2)
+
+    def test_tnt_stage2_halves_chunk_sizes_once(self):
+        """Stage-2 chunk sizes are exactly stage-1 sizes // 2."""
+        s1 = TitansConfig.tnt_stage1(local_chunk_sizes=[8, 16])
+        s2 = TitansConfig.tnt_stage2(s1)
+        assert s2.finetune_local_chunk_sizes == [4, 8]
+
     def test_attnres_sub_layer_block_size(self):
         config = TitansConfig(num_layers=6, num_attnres_blocks=4)
         assert config.attnres_sub_layer_block_size >= 1

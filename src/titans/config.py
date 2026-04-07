@@ -239,6 +239,11 @@ class TitansConfig:
 
     @classmethod
     def tnt_stage2(cls, stage1_config: TitansConfig) -> TitansConfig:
+        if stage1_config.tnt_stage != 1:
+            raise ValueError(
+                "tnt_stage2() requires a stage 1 config, got stage "
+                f"{stage1_config.tnt_stage}"
+            )
         d = stage1_config.to_dict()
         d["finetune_local_chunk_sizes"] = [
             max(1, cs // 2) for cs in d["local_chunk_sizes"]
