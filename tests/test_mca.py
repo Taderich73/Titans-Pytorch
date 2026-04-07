@@ -73,3 +73,29 @@ class TestMemoryCrossAttention:
         out = mca(x, memory_weights)
         out.sum().backward()
         assert x.grad is not None
+
+
+class TestMCAForwardValidation:
+    def test_mca_forward_raises_valueerror_on_non_2d_weight(self, device):
+        """_mca_forward must raise ValueError (not AssertionError) for
+        a memory weight tensor that is not 2D — robust under python -O."""
+        from titans.config import TitansConfig
+        from titans.memory import MemoryState
+        from titans.models import _mca_forward
+
+        config = TitansConfig(dim=32, num_heads=4, use_mca=True)
+        del config  # config is not actually needed by _mca_forward; kept for clarity
+
+        # Build a fake mem_state with a 3D weight tensor
+        bad_weight = torch.zeros(2, 4, 4, device=device)
+        mem_state = MemoryState(weights=[bad_weight], momentum=[bad_weight])
+
+        # A minimal stub block — _mca_forward only touches `block.mca`
+        class _Stub:
+            def mca(self, h, W):
+                return h
+        block = _Stub()
+
+        h = torch.randn(2, 8, 32, device=device)
+        with pytest.raises(ValueError, match="2D weight matrix"):
+            _mca_forward(block, h, mem_state)

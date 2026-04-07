@@ -96,7 +96,8 @@ def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
     if not weights:
         raise ValueError("MCA requires non-empty memory weights.")
     W = weights[0].detach()
-    assert W.ndim == 2, f"Expected 2D weight matrix, got {W.ndim}D"
+    if W.ndim != 2:
+        raise ValueError(f"Expected 2D weight matrix, got {W.ndim}D")
     return block.mca(h, W)
 
 
