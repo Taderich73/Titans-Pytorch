@@ -111,3 +111,59 @@ class TestHierarchicalMemory:
         output, _ = mem(x)
         output.sum().backward()
         assert x.grad is not None
+
+
+class TestLocalMemoryReset:
+    """Regression tests for LocalMemory.maybe_reset batch handling."""
+
+    def test_maybe_reset_accepts_batch_size(self, device):
+        """maybe_reset must accept a batch_size parameter."""
+        from titans.tnt_memory import LocalMemory
+
+        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=2)
+        local = LocalMemory(config, chunk_size=8, shard_length=16).to(device)
+
+        batch_size = 4
+        state = local.init_state(batch_size=batch_size)
+
+        # Trigger a reset (step_counter is a multiple of shard_length and > 0)
+        new_state, new_counter = local.maybe_reset(
+            state, step_counter=16, batch_size=batch_size,
+        )
+
+        assert new_counter == 0
+
+    def test_maybe_reset_no_reset_when_not_at_boundary(self, device):
+        """maybe_reset must return the same state when not at a shard boundary."""
+        from titans.tnt_memory import LocalMemory
+
+        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=2)
+        local = LocalMemory(config, chunk_size=8, shard_length=16).to(device)
+
+        state = local.init_state(batch_size=2)
+        returned_state, counter = local.maybe_reset(state, step_counter=8, batch_size=2)
+
+        assert counter == 8
+        assert returned_state is state
+
+    def test_hierarchical_memory_forward_batch_gt_one_across_shard(self, device):
+        """End-to-end: HierarchicalMemory must not crash when reset
+        triggers mid-sequence with batch_size > 1."""
+        from titans.tnt_memory import HierarchicalMemory
+
+        config = TitansConfig(
+            dim=64, num_heads=4, num_memory_layers=2,
+            local_chunk_sizes=[8], local_shard_length=8,
+        )
+        hm = HierarchicalMemory(config).to(device)
+
+        batch_size = 3
+        seq_len = 16
+        x = torch.randn(batch_size, seq_len, config.dim, device=device)
+
+        # First call: counter goes from 0 -> seq_len (16), crossing shard boundary
+        out1, state1 = hm(x)
+        # Second call: counter is 16, divisible by shard_length=8, will reset
+        out2, state2 = hm(x, state=state1)
+
+        assert out2.shape == (batch_size, seq_len, config.dim)

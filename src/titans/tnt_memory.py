@@ -71,10 +71,10 @@ class LocalMemory(nn.Module):
         return MemoryState(weights=weights, momentum=momentum)
 
     def maybe_reset(
-        self, state: MemoryState, step_counter: int,
+        self, state: MemoryState, step_counter: int, batch_size: int = 1,
     ) -> tuple[MemoryState, int]:
         if step_counter > 0 and step_counter % self.shard_length == 0:
-            return self.init_state(batch_size=1), 0
+            return self.init_state(batch_size=batch_size), 0
         return state, step_counter
 
     def forward(
@@ -160,7 +160,9 @@ class HierarchicalMemory(nn.Module):
 
         for i, local_mem in enumerate(self.local_memories):
             local_state, counter = local_mem.maybe_reset(
-                state.local_states[i], state.local_step_counters[i],
+                state.local_states[i],
+                state.local_step_counters[i],
+                batch_size=batch_size,
             )
 
             if counter == 0 and state.local_step_counters[i] > 0:
