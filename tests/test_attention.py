@@ -179,3 +179,21 @@ class TestSegmentedAttention:
         x = torch.randn(2, 16, config.dim, device=device)
         out = attn(x)
         assert out.shape == x.shape
+
+
+class TestSlidingWindowMaskCache:
+    def test_cache_hits_when_called_repeatedly(self):
+        """Repeated calls with the same args should hit the LRU cache."""
+        from titans.attention import _cached_sliding_window_mask
+
+        _cached_sliding_window_mask.cache_clear()
+
+        device_str = "cpu"
+        m1 = _cached_sliding_window_mask(64, 16, device_str)
+        m2 = _cached_sliding_window_mask(64, 16, device_str)
+
+        info = _cached_sliding_window_mask.cache_info()
+        assert info.hits >= 1, f"expected at least one cache hit, got {info}"
+        assert m1.data_ptr() == m2.data_ptr(), (
+            "second call should return the cached tensor"
+        )

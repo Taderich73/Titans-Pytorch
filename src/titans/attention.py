@@ -35,9 +35,14 @@ def log_sdpa_backend() -> str:
 
 @lru_cache(maxsize=32)
 def _cached_sliding_window_mask(
-    seq_len: int, window_size: int, device: torch.device
+    seq_len: int, window_size: int, device_str: str
 ) -> torch.Tensor:
-    """LRU-cached sliding window mask to avoid rebuilding every forward pass."""
+    """LRU-cached sliding window mask to avoid rebuilding every forward pass.
+
+    Uses a string device key (rather than torch.device) so the cache is
+    insensitive to ad-hoc device-object construction by callers.
+    """
+    device = torch.device(device_str)
     positions = torch.arange(seq_len, device=device)
     row_idx = positions.unsqueeze(1)
     col_idx = positions.unsqueeze(0)
@@ -176,7 +181,7 @@ class SlidingWindowAttention(nn.Module):
     def _create_sliding_window_mask(
         self, seq_len: int, device: torch.device
     ) -> torch.Tensor:
-        return _cached_sliding_window_mask(seq_len, self.window_size, device)
+        return _cached_sliding_window_mask(seq_len, self.window_size, str(device))
 
     def forward(
         self,
