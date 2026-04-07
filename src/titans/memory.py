@@ -408,18 +408,32 @@ class NeuralLongTermMemory(nn.Module):
         output = self.proj_out(retrieved)
 
         if return_state:
-            detached = new_state.detach()
+            # Detach only when explicitly requested (legacy behavior that
+            # freezes data-dependent gates), or when state quantization is on
+            # (quantization is a non-differentiable operation and would break
+            # autograd regardless). When neither applies, return new_state with
+            # its autograd graph intact so gate projections (alpha, theta, eta,
+            # delta) receive gradients via state -> retrieve -> proj_out ->
+            # loss. Cross-batch gradient flow is still prevented by the
+            # training loop detaching state at each batch boundary.
+            must_detach = (
+                self.config.detach_memory_state_in_forward
+                or self.config.quantize_memory_state
+            )
+            returned_state: MemoryState = (
+                new_state.detach() if must_detach else new_state
+            )
             if self.config.quantize_memory_state:
                 from titans.quantize_state import quantize_memory_state
 
-                detached = quantize_memory_state(
-                    detached,
+                returned_state = quantize_memory_state(
+                    returned_state,
                     weight_bits=self.config.memory_state_weight_bits,
                     momentum_bits=self.config.memory_state_momentum_bits,
                 )
             if return_keys:
-                return output, detached, k
-            return output, detached
+                return output, returned_state, k
+            return output, returned_state
 
         if return_keys:
             return output, None, k

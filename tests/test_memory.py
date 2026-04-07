@@ -85,10 +85,42 @@ class TestNeuralLongTermMemory:
         assert output.shape == x.shape
         assert state is not None
 
-    def test_state_detached(self, default_config, device):
-        """Returned state should be detached from computation graph."""
+    def test_state_graph_under_default_flag(self, default_config, device):
+        """Default behavior: returned state carries the autograd graph.
+
+        With detach_memory_state_in_forward=False (the fix), new_state is
+        returned with requires_grad=True so data-dependent gate projections
+        (alpha, theta, eta, delta) can receive gradients via downstream
+        consumers of new_state (e.g. HierarchicalMemory.retrieve on the
+        new state). Cross-batch gradient leakage is prevented at the
+        training loop boundary, not inside this function.
+        """
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device)
+        _, state = mem(x)
+        assert default_config.detach_memory_state_in_forward is False
+        for w in state.weights:
+            assert w.requires_grad
+        # Momentum isn't always a graph node (starts from zeros in init_state
+        # and updates through the analytical path); assert it's at least not
+        # explicitly detached into a leaf that blocks backward.
+        for m in state.momentum:
+            assert m.grad_fn is not None or not m.requires_grad
+
+    def test_state_detached_under_legacy_flag(self, device):
+        """Legacy flag: returned state is fully detached for backward compat."""
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            detach_memory_state_in_forward=True,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, config.dim, device=device)
         _, state = mem(x)
         for w in state.weights:
             assert not w.requires_grad
@@ -128,10 +160,12 @@ class TestNeuralLongTermMemory:
     def test_gradients_flow_through_projections(self, default_config, device):
         """Main training graph: gradients should flow through proj_q/out.
 
-        Note: proj_k feeds the analytical memory update path (detached state),
-        so it does not receive autograd gradients from the output. The retrieval
-        path (proj_q -> forward_with_weights -> proj_out) is the differentiable
-        path that carries gradients back to the input.
+        The retrieval path (proj_q -> forward_with_weights -> proj_out) is the
+        direct differentiable path that carries gradients back to the input.
+        With detach_memory_state_in_forward defaulting to False, proj_k and
+        proj_v also receive gradients indirectly through the state-update math
+        (k, v -> _parallel_memory_update_linear -> new_state -> retrieve ->
+        output).
         """
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device, requires_grad=True)
@@ -139,5 +173,109 @@ class TestNeuralLongTermMemory:
         loss = output.sum()
         loss.backward()
         assert x.grad is not None
+        assert mem.proj_q.weight.grad is not None
+        assert mem.proj_out.weight.grad is not None
+
+    def test_gradients_flow_through_data_dependent_gates(self, device):
+        """Gate projections (alpha, theta, eta, delta) must receive gradients.
+
+        Regression test for a structural bug where new_state was detached
+        unconditionally inside NeuralLongTermMemory.forward, severing the only
+        path from gate projections (gate_decay_proj, gate_lr_proj,
+        gate_momentum_proj, gate_delta_proj) to the loss. The fix makes the
+        detach conditional on config.detach_memory_state_in_forward (default
+        False), letting gate projections learn via autograd while cross-batch
+        gradient flow is still prevented by training-loop detach at batch
+        boundaries.
+
+        Two things matter for this test:
+
+        1. `output` from NLTM.forward only depends on the incoming state, not
+           the new state. The gates only affect new_state, so the test must
+           use new_state in some downstream computation (here via retrieve)
+           to get a gradient path. This mirrors how HierarchicalMemory.forward
+           consumes the output of global_memory: it discards the returned
+           `output` and uses the returned `new_state` in its own retrieve
+           call.
+
+        2. `gate_delta_proj` (Huber knee) is only active when some errors
+           exceed the current delta. With the default init (delta ~= 5.0) and
+           a randomly-initialized small model, errors never reach the knee
+           and delta has zero gradient even though the graph edge exists.
+           Setting huber_delta_init=-10 gives delta ~= 4.5e-4 so the Huber
+           else-branch activates and delta receives real gradient signal.
+        """
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device, requires_grad=True)
+        _, new_state = mem(x)
+
+        # Simulate HierarchicalMemory.forward: retrieve via the NEW state so
+        # the gates (which only affect new_state) have a path to the loss.
+        retrieved = mem.retrieve(x, new_state)
+        loss = retrieved.sum()
+        loss.backward()
+
+        for name in (
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_momentum_proj",
+            "gate_delta_proj",
+        ):
+            proj = getattr(mem, name)
+            assert proj.bias.grad is not None, f"{name}.bias.grad is None"
+            assert proj.bias.grad.abs().max() > 0, (
+                f"{name}.bias.grad is all zero (expected nonzero)"
+            )
+            assert proj.weight.grad is not None, f"{name}.weight.grad is None"
+            assert proj.weight.grad.abs().max() > 0, (
+                f"{name}.weight.grad is all zero (expected nonzero)"
+            )
+
+    def test_legacy_detach_flag_freezes_gates(self, device):
+        """Legacy flag preserves pre-fix broken behavior for backward compat.
+
+        When detach_memory_state_in_forward=True, new_state is detached inside
+        forward, severing gate projections from the loss even when downstream
+        code uses new_state in a retrieve call. Retained so checkpoints from
+        broken runs can be reloaded and scored with matching semantics.
+        """
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+            detach_memory_state_in_forward=True,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device, requires_grad=True)
+        _, new_state = mem(x)
+
+        # Downstream retrieve on the (now-detached) new_state can't reach the
+        # gates, so even this more forgiving path has no gradient signal.
+        retrieved = mem.retrieve(x, new_state)
+        loss = retrieved.sum()
+        loss.backward()
+
+        for name in (
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_momentum_proj",
+            "gate_delta_proj",
+        ):
+            proj = getattr(mem, name)
+            assert proj.bias.grad is None, (
+                f"{name}.bias.grad should be None under legacy flag"
+            )
+            assert proj.weight.grad is None, (
+                f"{name}.weight.grad should be None under legacy flag"
+            )
+
+        # Sanity: main retrieval-path gradients still flow under legacy flag.
         assert mem.proj_q.weight.grad is not None
         assert mem.proj_out.weight.grad is not None

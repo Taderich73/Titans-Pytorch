@@ -88,6 +88,19 @@ class TitansConfig:
     # Gate initialization
     gate_decay_bias_init: float = -6.0
 
+    # Gradient flow through the data-dependent gates (alpha, theta, eta, delta).
+    # When False (default, new behavior): the new memory state is returned with
+    # its autograd graph intact, letting gate projections receive gradients from
+    # the LM loss via state -> retrieve -> proj_out. Cross-batch gradient flow
+    # is still prevented by the training loop detaching state at the batch
+    # boundary.
+    # When True (legacy behavior prior to the fix): new_state is detached
+    # unconditionally inside NeuralLongTermMemory.forward, severing all gate
+    # projections from the loss and freezing them at their init values. Retained
+    # as a flag so checkpoints from broken runs can be reloaded with matching
+    # semantics if needed.
+    detach_memory_state_in_forward: bool = False
+
     # AttnRes numerical stability
     attnres_logit_clip: float = 30.0
 
@@ -211,6 +224,7 @@ class TitansConfig:
             "mca_gate_type": self.mca_gate_type,
             "mca_gate_bias_init": self.mca_gate_bias_init,
             "gate_decay_bias_init": self.gate_decay_bias_init,
+            "detach_memory_state_in_forward": self.detach_memory_state_in_forward,
             "attnres_logit_clip": self.attnres_logit_clip,
             "mca_auto_dump": self.mca_auto_dump,
             "mca_dump_trigger": self.mca_dump_trigger,
