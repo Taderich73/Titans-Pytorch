@@ -714,3 +714,122 @@ class TestChunkCheckpointing:
                 f"block[0].global.{name}.bias.grad is all zero under checkpointed runner"
             )
 
+    def test_titans_mac_multi_chunk_checkpointed_parity(self, device):
+        """Full TitansMAC.forward must match between checkpointed and
+        non-checkpointed runs on a multi-chunk sequence.
+
+        Seeds are pinned and both models are constructed from the same
+        state dict so the comparison is well-defined. Uses eval() to
+        eliminate dropout nondeterminism. Forward outputs must match
+        to float32 tolerance.
+        """
+        torch.manual_seed(0)
+        config_ref = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="l2",
+            use_chunk_checkpointing=False,
+        )
+        torch.manual_seed(0)
+        config_ck = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="l2",
+            use_chunk_checkpointing=True,
+        )
+
+        torch.manual_seed(0)
+        ref_model = TitansMAC(config_ref).to(device).eval()
+        torch.manual_seed(0)
+        ck_model = TitansMAC(config_ck).to(device).eval()
+        ck_model.load_state_dict(ref_model.state_dict())
+
+        seq_len = config_ref.chunk_size * 4  # 4 chunks
+        ids = torch.randint(0, config_ref.vocab_size, (2, seq_len), device=device)
+
+        with torch.no_grad():
+            ref_logits, _ = ref_model(ids, states=None)
+            ck_logits, _ = ck_model(ids, states=None)
+
+        assert ref_logits.shape == ck_logits.shape == (2, seq_len, config_ref.vocab_size)
+        assert torch.allclose(ref_logits, ck_logits, rtol=1e-5, atol=1e-6), (
+            f"max_abs_diff={(ref_logits - ck_logits).abs().max().item():.3e}"
+        )
+
+    def test_titans_mac_multi_chunk_checkpointed_gate_gradients(self, device):
+        """Gate gradients must still flow through the checkpointed
+        multi-chunk path. This is the production regression test that
+        `test_tnt_gate_gradients_with_multi_chunk_seq` could not catch
+        because it did not exercise use_chunk_checkpointing=True.
+        """
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=True,
+            use_mca=True,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+            adaptive_window=True,
+            local_shard_length=128,
+            use_chunk_checkpointing=True,
+        )
+        model = TitansMAC(config).to(device).train()
+
+        seq_len = config.chunk_size * 4
+        ids = torch.randint(0, config.vocab_size, (2, seq_len), device=device)
+        logits, _ = model(ids, states=None)
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, config.vocab_size), ids.reshape(-1)
+        )
+        loss.backward()
+
+        gate_names = (
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_momentum_proj",
+            "gate_delta_proj",
+        )
+        for block_idx, block in enumerate(model.blocks):
+            global_nltm = block.memory.global_memory.memory
+            for name in gate_names:
+                proj = getattr(global_nltm, name)
+                assert proj.bias.grad is not None, (
+                    f"block[{block_idx}].global.{name}.bias.grad is None "
+                    f"under use_chunk_checkpointing=True"
+                )
+                assert proj.bias.grad.abs().max() > 0, (
+                    f"block[{block_idx}].global.{name}.bias.grad is all zero "
+                    f"under use_chunk_checkpointing=True"
+                )
+            for local_idx, local_mem in enumerate(block.memory.local_memories):
+                local_nltm = local_mem.memory
+                for name in gate_names:
+                    proj = getattr(local_nltm, name)
+                    assert proj.bias.grad is not None, (
+                        f"block[{block_idx}].local[{local_idx}].{name}."
+                        f"bias.grad is None under use_chunk_checkpointing=True"
+                    )
+                    assert proj.bias.grad.abs().max() > 0, (
+                        f"block[{block_idx}].local[{local_idx}].{name}."
+                        f"bias.grad is all zero under use_chunk_checkpointing=True"
+                    )
