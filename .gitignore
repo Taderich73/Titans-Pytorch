@@ -96,3 +96,6 @@ training/
 
 # Archive
 archive/
+
+# Claude
+.claude/
