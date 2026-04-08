@@ -156,6 +156,63 @@ def _unflatten_tuples_to_states(
     return out
 
 
+def _run_process_chunk_checkpointed(
+    *,
+    chunk: torch.Tensor,
+    state_tuples: tuple,
+    blocks: nn.ModuleList,
+    config: TitansConfig,
+    step_count: int,
+) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
+    """Run :func:`process_chunk` under ``torch.utils.checkpoint.checkpoint``.
+
+    Activation checkpointing re-runs forward during backward so that
+    per-chunk memory-update activations can be discarded after the live
+    forward. This is the canonical memory-vs-compute trade and bounds
+    peak activation memory to ~O(one_chunk) regardless of num_chunks.
+
+    Args:
+        chunk: The slice of the full embedded sequence for this chunk.
+            Shape ``(B, chunk_size, dim)``. Must have an autograd graph
+            (it is a view of the embedding output).
+        state_tuples: The per-block memory state flattened via
+            :func:`_flatten_states_to_tuples`. A pytree of nested tuples
+            of tensors; torch.utils.checkpoint's saved-tensor hook will
+            use these as the boundary input tensors for the recompute.
+        blocks: The block list of the enclosing model. Closure-captured,
+            not a tensor arg, so it is NOT tracked by autograd but is
+            stable between forward and recompute.
+        config: The enclosing model's config. Closure-captured; contains
+            only Python scalars and references, and is not mutated during
+            forward.
+        step_count: The enclosing model's ``self._step_count`` captured
+            BEFORE the chunk loop. Passed explicitly (not via closure on
+            ``model``) to avoid the off-by-one caused by the
+            ``self._step_count += 1`` at the end of ``forward`` — during
+            the recompute backward, ``model._step_count`` would otherwise
+            read the NEXT step's value.
+
+    Returns:
+        ``(chunk_out, new_states)`` with ``new_states`` as a
+        ``list[MemoryState | TNTMemoryState]`` (dataclass wrappers
+        restored on the caller side).
+    """
+    import torch.utils.checkpoint
+
+    def _wrapped(chunk_arg, tuples_arg):
+        states = _unflatten_tuples_to_states(tuples_arg)
+        out, new_states = process_chunk(blocks, chunk_arg, states, config, step_count)
+        return out, _flatten_states_to_tuples(new_states)
+
+    chunk_out, new_state_tuples = torch.utils.checkpoint.checkpoint(
+        _wrapped,
+        chunk,
+        state_tuples,
+        use_reentrant=False,
+    )
+    return chunk_out, _unflatten_tuples_to_states(new_state_tuples)
+
+
 def compile_model(model: nn.Module, **kwargs) -> nn.Module:
     """Apply torch.compile() to the model for optimized execution.
 

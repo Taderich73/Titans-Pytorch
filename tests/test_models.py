@@ -581,3 +581,136 @@ class TestChunkCheckpointing:
         assert restored[0].local_inits[0][0].grad_fn is not None
         assert restored[0].qk_projections[0].grad_fn is not None
 
+    def test_checkpointed_chunk_matches_non_checkpointed(self, device):
+        """Checkpointed process_chunk must produce numerically identical
+        outputs and state tensors to non-checkpointed process_chunk.
+
+        This is the correctness contract: activation checkpointing is a
+        memory/compute trade, not a numerics change. Bitwise equality
+        is not guaranteed in bf16 (autocast rounding may reorder ops
+        across the recompute boundary), so we use a tight tolerance at
+        fp32 instead.
+        """
+        from titans.memory import TNTMemoryState
+        from titans.models import (
+            _flatten_states_to_tuples,
+            _run_process_chunk_checkpointed,
+            process_chunk,
+        )
+
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="l2",
+        )
+        model = TitansMAC(config).to(device)
+        model.eval()
+        # eval() disables dropout so the two paths are deterministic.
+
+        B, S = 2, config.chunk_size
+        x_ids = torch.randint(0, config.vocab_size, (B, S), device=device)
+        x = model.embed(x_ids)
+        init_states = [None] * config.num_layers
+
+        # Non-checkpointed reference.
+        with torch.no_grad():
+            ref_chunk, ref_states = process_chunk(
+                model.blocks, x, init_states, config, 0
+            )
+
+        # Checkpointed path (still runs under no_grad to match the reference;
+        # the grad-flow check is a separate test below).
+        with torch.no_grad():
+            ck_chunk, ck_states = _run_process_chunk_checkpointed(
+                chunk=x,
+                state_tuples=_flatten_states_to_tuples(init_states),
+                blocks=model.blocks,
+                config=config,
+                step_count=0,
+            )
+
+        assert torch.allclose(ref_chunk, ck_chunk, rtol=1e-5, atol=1e-6)
+        assert len(ref_states) == len(ck_states)
+        for r, c in zip(ref_states, ck_states):
+            assert isinstance(r, TNTMemoryState) and isinstance(c, TNTMemoryState)
+            assert torch.allclose(
+                r.global_state.weights[0], c.global_state.weights[0],
+                rtol=1e-5, atol=1e-6,
+            )
+            assert torch.allclose(
+                r.local_states[0].weights[0], c.local_states[0].weights[0],
+                rtol=1e-5, atol=1e-6,
+            )
+
+    def test_checkpointed_chunk_propagates_gradients(self, device):
+        """Backward through the checkpointed runner must populate grads.
+
+        Verifies that the checkpoint recompute path actually wires up
+        gradients. Without this, the outer TitansMAC.forward would
+        silently produce logits that no parameter can learn from.
+        """
+        from titans.models import (
+            _flatten_states_to_tuples,
+            _run_process_chunk_checkpointed,
+        )
+
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+        )
+        model = TitansMAC(config).to(device)
+        model.train()
+
+        B, S = 2, config.chunk_size
+        x_ids = torch.randint(0, config.vocab_size, (B, S), device=device)
+        x = model.embed(x_ids)
+
+        chunk_out, _ = _run_process_chunk_checkpointed(
+            chunk=x,
+            state_tuples=_flatten_states_to_tuples([None] * config.num_layers),
+            blocks=model.blocks,
+            config=config,
+            step_count=0,
+        )
+        loss = chunk_out.sum()
+        loss.backward()
+
+        # At least one meaningful param should receive gradient.
+        assert model.embed.weight.grad is not None
+        assert model.embed.weight.grad.abs().max() > 0
+        # The gate projections (the whole reason we care about the graph)
+        # should receive gradients via the retrieve-from-new-state path.
+        # Note: gate_momentum_proj is excluded here because with zero initial
+        # momentum (first chunk, init_states=[None]*num_layers), the dominant
+        # eta-dependent term eta^S * S_prev is zero and grad_eta_sum can also
+        # be negligibly small — this is a valid mathematical property of the
+        # parallel memory update, NOT a checkpointing regression. The
+        # non-checkpointed process_chunk path exhibits the same behavior.
+        block0_global_nltm = model.blocks[0].memory.global_memory.memory
+        for name in (
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_delta_proj",
+        ):
+            proj = getattr(block0_global_nltm, name)
+            assert proj.bias.grad is not None, f"block[0].global.{name}.bias.grad is None"
+            assert proj.bias.grad.abs().max() > 0, (
+                f"block[0].global.{name}.bias.grad is all zero under checkpointed runner"
+            )
+
