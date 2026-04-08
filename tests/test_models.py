@@ -881,3 +881,51 @@ class TestChunkCheckpointing:
         assert torch.allclose(ref_logits, ck_logits, rtol=1e-5, atol=1e-6), (
             f"max_abs_diff={(ref_logits - ck_logits).abs().max().item():.3e}"
         )
+
+    def test_titans_mal_multi_chunk_checkpointed_parity(self, device):
+        """TitansMAL checkpointed forward must match non-checkpointed."""
+        torch.manual_seed(0)
+        config_ref = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="l2",
+            use_chunk_checkpointing=False,
+        )
+        torch.manual_seed(0)
+        config_ck = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=False,
+            memory_objective="l2",
+            use_chunk_checkpointing=True,
+        )
+
+        torch.manual_seed(0)
+        ref_model = TitansMAL(config_ref).to(device).eval()
+        torch.manual_seed(0)
+        ck_model = TitansMAL(config_ck).to(device).eval()
+        ck_model.load_state_dict(ref_model.state_dict())
+
+        seq_len = config_ref.chunk_size * 4
+        ids = torch.randint(0, config_ref.vocab_size, (2, seq_len), device=device)
+
+        with torch.no_grad():
+            ref_logits, _ = ref_model(ids, states=None)
+            ck_logits, _ = ck_model(ids, states=None)
+
+        assert torch.allclose(ref_logits, ck_logits, rtol=1e-5, atol=1e-6), (
+            f"max_abs_diff={(ref_logits - ck_logits).abs().max().item():.3e}"
+        )
