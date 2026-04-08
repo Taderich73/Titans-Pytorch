@@ -724,26 +724,26 @@ class TitansMAG(nn.Module):
             outputs = []
             new_states = list(states)
             num_chunks = (seq_len + chunk_size - 1) // chunk_size
+            step_count_snapshot = self._step_count
             for i in range(num_chunks):
                 chunk_start = i * chunk_size
                 chunk_end = min(chunk_start + chunk_size, seq_len)
                 chunk = x[:, chunk_start:chunk_end]
-                chunk, new_states = process_chunk(
-                    self.blocks, chunk, new_states, self.config, self._step_count
-                )
+                if self.config.use_chunk_checkpointing:
+                    chunk, new_states = _run_process_chunk_checkpointed(
+                        chunk=chunk,
+                        state_tuples=_flatten_states_to_tuples(new_states),
+                        blocks=self.blocks,
+                        config=self.config,
+                        step_count=step_count_snapshot,
+                    )
+                else:
+                    chunk, new_states = process_chunk(
+                        self.blocks, chunk, new_states, self.config, step_count_snapshot
+                    )
                 outputs.append(chunk)
-                # Detach state thread between chunks to bound peak memory.
-                # The data-dependent memory gates (alpha, theta, eta, delta)
-                # are differentiable through new_state -> retrieve -> output,
-                # which means without this detach the autograd graph from
-                # chunk N is kept alive while chunk N+1 is being processed
-                # (since chunk N+1 takes new_states as input). For seq_len
-                # >> chunk_size that's an O(num_chunks) memory blowup. The
-                # detach here is the moral equivalent of truncated BPTT
-                # through chunks: gates still receive gradient signal from
-                # each chunk's contribution to the final loss, but the
-                # gradient does not flow across chunk boundaries, so only
-                # one chunk's worth of activations is alive at a time.
+                # Retained chunk-boundary detach — see TitansMAC.forward for
+                # rationale.
                 new_states = [
                     s.detach() if s is not None else None for s in new_states
                 ]
