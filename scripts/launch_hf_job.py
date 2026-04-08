@@ -292,7 +292,37 @@ def main():
 
     api = HfApi(token=token)
 
-    print(f"Submitting job to HF Jobs...")
+    # Self-verification: print the lines that the launcher's regex/string
+    # substitutions touched, so we can VISUALLY confirm they were applied
+    # before the job is submitted. After several silent-failure incidents
+    # (uv caching the wrong version, --profile-memory not propagating, etc.)
+    # the cheap insurance of seeing exactly what's about to ship is well
+    # worth a few extra lines of stdout.
+    print("\nLauncher substitution check (these will be in the submitted script):")
+    saw_dep = False
+    saw_profile = False
+    for i, line in enumerate(script.splitlines(), 1):
+        stripped = line.strip()
+        if "titans @ git" in stripped and "Titans-Pytorch.git" in stripped:
+            print(f"  [dep]      line {i:4d}: {stripped}")
+            saw_dep = True
+        elif stripped.startswith("PROFILE_MEMORY ="):
+            print(f"  [profile]  line {i:4d}: {stripped}")
+            saw_profile = True
+    if not saw_dep:
+        raise RuntimeError(
+            "Self-check FAILED: titans dependency line not found in "
+            "submitted script. The SHA pin substitution did not happen "
+            "and uv may install the wrong version. Aborting."
+        )
+    if not saw_profile:
+        raise RuntimeError(
+            "Self-check FAILED: PROFILE_MEMORY constant not found in "
+            "submitted script. The hf_pretrain.py file may have been "
+            "modified upstream. Aborting."
+        )
+
+    print(f"\nSubmitting job to HF Jobs...")
     print(f"  Hardware: {flavor}")
     print(f"  Timeout: {timeout}")
 
