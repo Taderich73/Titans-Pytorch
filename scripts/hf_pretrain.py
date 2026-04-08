@@ -22,9 +22,19 @@ Designed to run via: hf jobs uv run scripts/hf_pretrain.py --flavor a10g-large
 
 from __future__ import annotations
 
+import os
+
+# Configure CUDA allocator BEFORE importing torch. PyTorch reads
+# PYTORCH_CUDA_ALLOC_CONF once at first CUDA initialization and caches it,
+# so this must be set in os.environ prior to `import torch`. The
+# expandable_segments allocator reduces fragmentation overhead, which is
+# important when the autograd graph through the data-dependent memory gates
+# pushes peak memory close to the GPU's HBM ceiling. Recovers ~5-10 GB on
+# A100-80GB by avoiding wasted reserved-but-unallocated regions.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import json
 import logging
-import os
 import sys
 import tempfile
 import traceback

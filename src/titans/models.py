@@ -335,6 +335,21 @@ class TitansMAC(nn.Module):
                     self.blocks, chunk, new_states, self.config, self._step_count
                 )
                 outputs.append(chunk)
+                # Detach state thread between chunks to bound peak memory.
+                # The data-dependent memory gates (alpha, theta, eta, delta)
+                # are differentiable through new_state -> retrieve -> output,
+                # which means without this detach the autograd graph from
+                # chunk N is kept alive while chunk N+1 is being processed
+                # (since chunk N+1 takes new_states as input). For seq_len
+                # >> chunk_size that's an O(num_chunks) memory blowup. The
+                # detach here is the moral equivalent of truncated BPTT
+                # through chunks: gates still receive gradient signal from
+                # each chunk's contribution to the final loss, but the
+                # gradient does not flow across chunk boundaries, so only
+                # one chunk's worth of activations is alive at a time.
+                new_states = [
+                    s.detach() if s is not None else None for s in new_states
+                ]
             x = torch.cat(outputs, dim=1)
 
         x = self.norm(x)
@@ -511,6 +526,21 @@ class TitansMAG(nn.Module):
                     self.blocks, chunk, new_states, self.config, self._step_count
                 )
                 outputs.append(chunk)
+                # Detach state thread between chunks to bound peak memory.
+                # The data-dependent memory gates (alpha, theta, eta, delta)
+                # are differentiable through new_state -> retrieve -> output,
+                # which means without this detach the autograd graph from
+                # chunk N is kept alive while chunk N+1 is being processed
+                # (since chunk N+1 takes new_states as input). For seq_len
+                # >> chunk_size that's an O(num_chunks) memory blowup. The
+                # detach here is the moral equivalent of truncated BPTT
+                # through chunks: gates still receive gradient signal from
+                # each chunk's contribution to the final loss, but the
+                # gradient does not flow across chunk boundaries, so only
+                # one chunk's worth of activations is alive at a time.
+                new_states = [
+                    s.detach() if s is not None else None for s in new_states
+                ]
             x = torch.cat(outputs, dim=1)
 
         x = self.norm(x)
@@ -684,6 +714,21 @@ class TitansMAL(nn.Module):
                     self.blocks, chunk, new_states, self.config, self._step_count
                 )
                 outputs.append(chunk)
+                # Detach state thread between chunks to bound peak memory.
+                # The data-dependent memory gates (alpha, theta, eta, delta)
+                # are differentiable through new_state -> retrieve -> output,
+                # which means without this detach the autograd graph from
+                # chunk N is kept alive while chunk N+1 is being processed
+                # (since chunk N+1 takes new_states as input). For seq_len
+                # >> chunk_size that's an O(num_chunks) memory blowup. The
+                # detach here is the moral equivalent of truncated BPTT
+                # through chunks: gates still receive gradient signal from
+                # each chunk's contribution to the final loss, but the
+                # gradient does not flow across chunk boundaries, so only
+                # one chunk's worth of activations is alive at a time.
+                new_states = [
+                    s.detach() if s is not None else None for s in new_states
+                ]
             x = torch.cat(outputs, dim=1)
 
         x = self.norm(x)

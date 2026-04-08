@@ -165,6 +165,95 @@ class TestTitansMAC:
                         f"bias.grad is all zero"
                     )
 
+    def test_tnt_gate_gradients_with_multi_chunk_seq(self, device):
+        """Gate gradients must still flow when seq_len > chunk_size.
+
+        Regression test for a follow-up bug to the gate-fix work: with
+        seq_len > chunk_size, TitansMAC.forward processes the input as
+        multiple sequential chunks (process_chunk loop), threading
+        new_states from chunk N to chunk N+1. With the gate fix in place,
+        new_states carries its autograd graph, so without an explicit
+        chunk-boundary detach the entire multi-chunk graph is held alive
+        for the whole forward pass — causing OOM on production-size models.
+
+        The chunk-boundary detach in TitansMAC.forward severs the
+        cross-chunk gradient flow but preserves the within-chunk gradient
+        flow that the gate fix relies on. This test verifies that gates
+        in EVERY block still receive nonzero gradients when the model is
+        run with a multi-chunk sequence (chunk_size=32, seq_len=128 -> 4
+        chunks). Without within-chunk gradient flow, gates would be dead
+        again — defeating the purpose of the original gate fix.
+        """
+        config = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            use_attn_res=True,
+            use_mca=True,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+            adaptive_window=True,
+            local_shard_length=128,
+        )
+        model = TitansMAC(config).to(device)
+        model.train()
+
+        # seq_len = 4 * chunk_size, exercises the multi-chunk branch with
+        # 4 chunks of state threading.
+        seq_len = config.chunk_size * 4
+        ids = torch.randint(0, config.vocab_size, (2, seq_len), device=device)
+        logits, _ = model(ids, states=None)
+        assert logits.shape == (2, seq_len, config.vocab_size)
+
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, config.vocab_size), ids.reshape(-1)
+        )
+        loss.backward()
+
+        gate_names = (
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_momentum_proj",
+            "gate_delta_proj",
+        )
+
+        for block_idx, block in enumerate(model.blocks):
+            global_nltm = block.memory.global_memory.memory
+            for name in gate_names:
+                proj = getattr(global_nltm, name, None)
+                assert proj is not None, (
+                    f"block[{block_idx}].global.{name} missing"
+                )
+                assert proj.bias.grad is not None, (
+                    f"block[{block_idx}].global.{name}.bias.grad is None "
+                    f"(within-chunk gradient flow broken under multi-chunk)"
+                )
+                assert proj.bias.grad.abs().max() > 0, (
+                    f"block[{block_idx}].global.{name}.bias.grad is all zero "
+                    f"(within-chunk gradient flow severed under multi-chunk)"
+                )
+
+            for local_idx, local_mem in enumerate(block.memory.local_memories):
+                local_nltm = local_mem.memory
+                for name in gate_names:
+                    proj = getattr(local_nltm, name, None)
+                    assert proj is not None, (
+                        f"block[{block_idx}].local[{local_idx}].{name} missing"
+                    )
+                    assert proj.bias.grad is not None, (
+                        f"block[{block_idx}].local[{local_idx}].{name}."
+                        f"bias.grad is None under multi-chunk"
+                    )
+                    assert proj.bias.grad.abs().max() > 0, (
+                        f"block[{block_idx}].local[{local_idx}].{name}."
+                        f"bias.grad is all zero under multi-chunk"
+                    )
+
 
 class TestTitansMAG:
     def test_forward_shape(self, default_config, device):
