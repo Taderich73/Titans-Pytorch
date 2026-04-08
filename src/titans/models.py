@@ -937,7 +937,6 @@ class TitansMAL(nn.Module):
                 ]
             x = torch.cat(outputs, dim=1)
 
-
         x = self.norm(x)
         logits = self.head(x)
         self._step_count += 1
