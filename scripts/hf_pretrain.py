@@ -228,6 +228,7 @@ NUM_HEADS = 16
 NUM_LAYERS = 20
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
+USE_CHUNK_CHECKPOINTING = True  # bounds peak activation memory to ~O(one chunk)
 NUM_MEMORY_LAYERS = 2
 NUM_PERSISTENT_TOKENS = 16
 ROPE_PROPORTION = 1.0  # Fraction of head_dim pairs to apply RoPE to (0.0-1.0)
@@ -373,6 +374,7 @@ def train():
         use_mca=True,
         memory_objective="huber",
         adaptive_window=True,
+        use_chunk_checkpointing=USE_CHUNK_CHECKPOINTING,
     )
     model = TitansMAC(config)
     num_params = sum(p.numel() for p in model.parameters())
