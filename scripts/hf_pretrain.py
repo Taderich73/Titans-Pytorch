@@ -59,6 +59,100 @@ print(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}", flush=T
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name()}", flush=True)
 
+
+# ---------------------------------------------------------------------------
+# Memory profiling helpers
+# ---------------------------------------------------------------------------
+#
+# Toggled on by PROFILE_MEMORY (set via --profile-memory in the launcher).
+# Used to localize OOM root causes by capturing torch.cuda.memory_allocated()
+# / max_memory_allocated() / memory_reserved() at key points in the training
+# loop, plus per-block snapshots via forward hooks. All functions no-op when
+# PROFILE_MEMORY is False or CUDA is unavailable.
+
+
+def _mem_snapshot() -> tuple[float, float, float]:
+    """Return (allocated_gb, max_allocated_gb, reserved_gb).
+
+    Calls torch.cuda.synchronize() so the numbers reflect actual on-device
+    state rather than queued kernels. Returns (0.0, 0.0, 0.0) when CUDA is
+    not available.
+    """
+    if not torch.cuda.is_available():
+        return 0.0, 0.0, 0.0
+    torch.cuda.synchronize()
+    alloc = torch.cuda.memory_allocated() / 1e9
+    max_alloc = torch.cuda.max_memory_allocated() / 1e9
+    reserved = torch.cuda.memory_reserved() / 1e9
+    return alloc, max_alloc, reserved
+
+
+def _log_mem(label: str) -> None:
+    """Log a memory snapshot with a descriptive label.
+
+    No-op when PROFILE_MEMORY is False.
+    """
+    if not PROFILE_MEMORY:
+        return
+    alloc, max_alloc, reserved = _mem_snapshot()
+    print(
+        f"[mem] {label:32s}  "
+        f"alloc={alloc:6.2f}GB  "
+        f"max_alloc={max_alloc:6.2f}GB  "
+        f"reserved={reserved:6.2f}GB",
+        flush=True,
+    )
+
+
+def _reset_max_mem() -> None:
+    """Reset the CUDA max-allocated counter so subsequent snapshots reflect
+    the peak since the last reset. No-op when CUDA is unavailable.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+
+def _register_block_memory_hooks(model: torch.nn.Module) -> list:
+    """Register a forward hook on each block that prints memory after the
+    block completes. Returns the list of hook handles so callers can remove
+    them later. No-op (returns []) when PROFILE_MEMORY is False.
+
+    Hook prints are gated by an internal counter so only the first
+    PROFILE_MEMORY_STEPS forward passes through the model emit per-block
+    output. After that the hooks become silent (still registered, but cheap).
+    """
+    if not PROFILE_MEMORY or not torch.cuda.is_available():
+        return []
+
+    handles = []
+    counter = {"forward_passes": 0, "block_idx_in_pass": 0}
+    blocks = getattr(model, "blocks", None)
+    if blocks is None:
+        return []
+    n_blocks = len(blocks)
+
+    def make_hook(block_idx: int):
+        def hook(_module, _inputs, _output):
+            if counter["forward_passes"] >= PROFILE_MEMORY_STEPS:
+                return
+            torch.cuda.synchronize()
+            alloc = torch.cuda.memory_allocated() / 1e9
+            max_alloc = torch.cuda.max_memory_allocated() / 1e9
+            print(
+                f"[mem]   block[{block_idx:02d}/{n_blocks - 1}] done  "
+                f"alloc={alloc:6.2f}GB  max_alloc={max_alloc:6.2f}GB",
+                flush=True,
+            )
+            counter["block_idx_in_pass"] += 1
+            if counter["block_idx_in_pass"] >= n_blocks:
+                counter["forward_passes"] += 1
+                counter["block_idx_in_pass"] = 0
+        return hook
+
+    for i, block in enumerate(blocks):
+        handles.append(block.register_forward_hook(make_hook(i)))
+    return handles
+
 # ---------------------------------------------------------------------------
 # Configuration — edit these for your run
 # ---------------------------------------------------------------------------
@@ -104,6 +198,19 @@ RESUME_FROM = None
 
 # Seed
 SEED = 42
+
+# Diagnostics — toggled on by --profile-memory in the launcher. When True the
+# training loop logs torch.cuda.max_memory_allocated() at key points (model
+# build, first batch load, before/after forward, after backward, after
+# optimizer step) and registers per-block forward hooks that record peak
+# memory after each block in process_chunk. Adds minor overhead from
+# synchronize() calls; leave False for production training.
+PROFILE_MEMORY = False
+
+# When PROFILE_MEMORY is True, only emit memory logs for the first N optimizer
+# steps (after that the picture is steady-state and the logs become noise).
+# Per-block hook output is also limited to the first N forward passes.
+PROFILE_MEMORY_STEPS = 5
 
 # ---------------------------------------------------------------------------
 # Streaming Dataset
@@ -206,6 +313,7 @@ def train():
     num_params = sum(p.numel() for p in model.parameters())
     if accelerator.is_main_process:
         logger.info(f"Parameters: {num_params:,}")
+    _log_mem("after model construction (CPU)")
 
     # Dataset
     try:
@@ -265,6 +373,14 @@ def train():
 
     model, optimizer, dataloader, scheduler = accelerator.prepare(
         model, optimizer, dataloader, scheduler
+    )
+    _log_mem("after accelerator.prepare")
+
+    # Register per-block memory hooks (no-op when PROFILE_MEMORY=False).
+    # Hook handles are kept so they can be removed if needed; for diagnostic
+    # runs we leave them registered for the lifetime of the run.
+    _block_mem_hook_handles = _register_block_memory_hooks(
+        accelerator.unwrap_model(model)
     )
 
     # Hub setup
@@ -335,19 +451,45 @@ def train():
         if global_step >= MAX_STEPS:
             break
 
-        with accelerator.accumulate(model):
-            logits, memory_states = model(batch["input_ids"], states=memory_states)
-            loss = F.cross_entropy(
-                logits.view(-1, VOCAB_SIZE), batch["labels"].view(-1)
-            )
-            accelerator.backward(loss)
+        # Memory profiling for the first few steps. After PROFILE_MEMORY_STEPS
+        # the helpers no-op (gated by global_step) so production runs aren't
+        # spammed.
+        _profile_this_step = PROFILE_MEMORY and global_step < PROFILE_MEMORY_STEPS
+        if _profile_this_step:
+            _reset_max_mem()
+            _log_mem(f"step {global_step:03d}: batch loaded")
 
-            if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+        try:
+            with accelerator.accumulate(model):
+                logits, memory_states = model(batch["input_ids"], states=memory_states)
+                if _profile_this_step:
+                    _log_mem(f"step {global_step:03d}: after forward")
+                loss = F.cross_entropy(
+                    logits.view(-1, VOCAB_SIZE), batch["labels"].view(-1)
+                )
+                accelerator.backward(loss)
+                if _profile_this_step:
+                    _log_mem(f"step {global_step:03d}: after backward")
 
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                if _profile_this_step:
+                    _log_mem(f"step {global_step:03d}: after optimizer step")
+        except torch.cuda.OutOfMemoryError as oom:
+            # Dump full memory diagnostics so we can localize the OOM root
+            # cause from the log alone. The chunk-detach + per-block hook
+            # output above this line will show the cost trajectory leading
+            # up to the failure.
+            print(f"\n[mem] CUDA OOM at step {global_step}", flush=True)
+            print(f"[mem] {oom}", flush=True)
+            if torch.cuda.is_available():
+                summary = torch.cuda.memory_summary(abbreviated=True)
+                print(f"[mem] memory_summary:\n{summary}", flush=True)
+            raise
 
         if memory_states is not None:
             memory_states = [

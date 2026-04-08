@@ -127,6 +127,38 @@ def main():
         help="Resume from a Hub checkpoint, e.g. 'checkpoints/final.pt'",
     )
 
+    # --- Diagnostics ---
+    diag = parser.add_argument_group("Diagnostics")
+    diag.add_argument(
+        "--titans-sha",
+        type=str,
+        default="e9b9885",
+        help=(
+            "Pin the titans package to a specific git commit SHA, branch, or "
+            "tag. The launcher injects this into the script's `titans @ "
+            "git+https://...` dependency line so uv re-resolves and "
+            "reinstalls when the SHA changes (uv caches environments by "
+            "content hash, and an unpinned dependency line hashes the same "
+            "across runs even when origin/main has moved). Pass a short SHA "
+            "to force a fresh install of a specific commit, or 'main' to "
+            "track the branch tip. Default is the latest known good commit."
+        ),
+    )
+    diag.add_argument(
+        "--profile-memory",
+        action="store_true",
+        help=(
+            "Enable detailed CUDA memory profiling in hf_pretrain.py. Logs "
+            "torch.cuda.max_memory_allocated() at key points (model build, "
+            "first batch load, before/after forward, after backward, after "
+            "optimizer step) and registers per-block forward hooks that "
+            "record peak memory after each block in process_chunk. Use for "
+            "diagnostic short runs to localize OOM root causes. Adds minor "
+            "overhead from synchronize() calls; disable for production "
+            "training runs."
+        ),
+    )
+
     # --- Misc ---
     parser.add_argument("--seed", type=int, default=None, help="Override SEED")
 
@@ -141,6 +173,39 @@ def main():
     # Read the training script
     script_path = Path(__file__).parent / "hf_pretrain.py"
     script = script_path.read_text()
+
+    # Inject the titans package SHA pin into the uv script header. The default
+    # dependency line is unpinned ("titans @ git+...Titans-Pytorch.git"), which
+    # causes uv to cache the resolved environment by a hash that does not
+    # change when origin/main moves — meaning successive runs may silently
+    # reuse a stale install. Substituting in a SHA forces uv to recognize a
+    # new dependency hash and reinstall on the first run that uses it.
+    sha_pattern = r'"titans @ git\+https://github\.com/Taderich73/Titans-Pytorch\.git(?:@[^"]+)?"'
+    sha_replacement = (
+        f'"titans @ git+https://github.com/Taderich73/Titans-Pytorch.git@{args.titans_sha}"'
+    )
+    new_script, sub_count = re.subn(sha_pattern, sha_replacement, script)
+    if sub_count == 0:
+        raise RuntimeError(
+            "Could not find titans dependency line in hf_pretrain.py to "
+            "inject SHA pin. Has the dependency string format changed?"
+        )
+    if sub_count > 1:
+        raise RuntimeError(
+            f"Expected exactly one titans dependency line, found {sub_count}."
+        )
+    script = new_script
+    print(f"  titans pin: {args.titans_sha}")
+
+    # Inject memory profiling flag if requested. Toggles a PROFILE_MEMORY
+    # constant in the training script that gates the cuda memory tracking
+    # codepaths. See --profile-memory in the diagnostics arg group.
+    if args.profile_memory:
+        script = script.replace(
+            "PROFILE_MEMORY = False",
+            "PROFILE_MEMORY = True",
+        )
+        print("  Memory profiling: enabled")
 
     # For test mode, override the config constants
     if args.test:
