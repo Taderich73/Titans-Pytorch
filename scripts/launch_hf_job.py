@@ -132,7 +132,7 @@ def main():
     diag.add_argument(
         "--titans-sha",
         type=str,
-        default="e9b9885",
+        default="e309d70",
         help=(
             "Pin the titans package to a specific git commit SHA, branch, or "
             "tag. The launcher injects this into the script's `titans @ "
@@ -141,7 +141,8 @@ def main():
             "content hash, and an unpinned dependency line hashes the same "
             "across runs even when origin/main has moved). Pass a short SHA "
             "to force a fresh install of a specific commit, or 'main' to "
-            "track the branch tip. Default is the latest known good commit."
+            "track the branch tip. Default is the latest known good commit "
+            "(e309d70, tip of the chunk-activation-checkpointing fix)."
         ),
     )
     diag.add_argument(
