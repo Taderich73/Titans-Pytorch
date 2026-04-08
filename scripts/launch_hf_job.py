@@ -158,6 +158,30 @@ def main():
             "training runs."
         ),
     )
+    diag.add_argument(
+        "--chunk-checkpointing",
+        dest="chunk_checkpointing",
+        action="store_true",
+        default=None,
+        help=(
+            "Force USE_CHUNK_CHECKPOINTING = True in the submitted script. "
+            "When omitted, honors whatever is in hf_pretrain.py (currently "
+            "True after the chunk-activation-checkpointing fix). Use the "
+            "--no-chunk-checkpointing flag to force False for A/B "
+            "comparison runs or fast no-recompute testing."
+        ),
+    )
+    diag.add_argument(
+        "--no-chunk-checkpointing",
+        dest="chunk_checkpointing",
+        action="store_false",
+        help=(
+            "Force USE_CHUNK_CHECKPOINTING = False in the submitted script "
+            "(disables torch.utils.checkpoint wrapping in TitansMAC/MAG/MAL "
+            "forward, restoring the pre-fix non-checkpointed path). Use for "
+            "compute-cost A/B comparison or to reproduce the OOM."
+        ),
+    )
 
     # --- Misc ---
     parser.add_argument("--seed", type=int, default=None, help="Override SEED")
@@ -206,6 +230,32 @@ def main():
             "PROFILE_MEMORY = True",
         )
         print("  Memory profiling: enabled")
+
+    # Inject the chunk-activation-checkpointing toggle if either
+    # --chunk-checkpointing or --no-chunk-checkpointing was passed. When
+    # neither flag is passed (args.chunk_checkpointing is None), honor
+    # whatever is in hf_pretrain.py — currently True after the
+    # chunk-activation-checkpointing fix. Uses regex substitution to flip
+    # USE_CHUNK_CHECKPOINTING = True/False in either direction; raises if
+    # the constant is missing so a future rename or removal aborts the
+    # launch instead of silently shipping a wrong configuration.
+    if args.chunk_checkpointing is not None:
+        new_value = "True" if args.chunk_checkpointing else "False"
+        new_script, n = re.subn(
+            r"^USE_CHUNK_CHECKPOINTING\s*=\s*(?:True|False)",
+            f"USE_CHUNK_CHECKPOINTING = {new_value}",
+            script,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if n != 1:
+            raise RuntimeError(
+                "Could not find USE_CHUNK_CHECKPOINTING = True/False in "
+                "hf_pretrain.py to inject --chunk-checkpointing override. "
+                "Has the constant been renamed or removed?"
+            )
+        script = new_script
+        print(f"  Chunk checkpointing: {'enabled' if args.chunk_checkpointing else 'disabled'}")
 
     # For test mode, override the config constants
     if args.test:
@@ -301,6 +351,7 @@ def main():
     print("\nLauncher substitution check (these will be in the submitted script):")
     saw_dep = False
     saw_profile = False
+    saw_chunk_ck = False
     for i, line in enumerate(script.splitlines(), 1):
         stripped = line.strip()
         if "titans @ git" in stripped and "Titans-Pytorch.git" in stripped:
@@ -309,6 +360,9 @@ def main():
         elif stripped.startswith("PROFILE_MEMORY ="):
             print(f"  [profile]  line {i:4d}: {stripped}")
             saw_profile = True
+        elif stripped.startswith("USE_CHUNK_CHECKPOINTING ="):
+            print(f"  [chunk-ck] line {i:4d}: {stripped}")
+            saw_chunk_ck = True
     if not saw_dep:
         raise RuntimeError(
             "Self-check FAILED: titans dependency line not found in "
@@ -320,6 +374,12 @@ def main():
             "Self-check FAILED: PROFILE_MEMORY constant not found in "
             "submitted script. The hf_pretrain.py file may have been "
             "modified upstream. Aborting."
+        )
+    if not saw_chunk_ck:
+        raise RuntimeError(
+            "Self-check FAILED: USE_CHUNK_CHECKPOINTING constant not found "
+            "in submitted script. The hf_pretrain.py file may have been "
+            "modified upstream or the constant was renamed. Aborting."
         )
 
     print(f"\nSubmitting job to HF Jobs...")
