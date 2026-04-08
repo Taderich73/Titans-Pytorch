@@ -139,9 +139,11 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
     silent but still installed). The pass counter is incremented by a
     forward hook on the top-level model so it counts ACTUAL forward
     passes, not block calls or chunks. No-op when PROFILE_MEMORY is
-    False or when CUDA is unavailable.
+    False, when PROFILE_MEMORY_PER_BLOCK is False (the common case —
+    per-block trace is opt-in even under --profile-memory because it's
+    noisy), or when CUDA is unavailable.
     """
-    if not PROFILE_MEMORY or not torch.cuda.is_available():
+    if not PROFILE_MEMORY or not PROFILE_MEMORY_PER_BLOCK or not torch.cuda.is_available():
         return
 
     blocks = getattr(model, "blocks", None)
@@ -268,14 +270,24 @@ SEED = 42
 # Diagnostics — toggled on by --profile-memory in the launcher. When True the
 # training loop logs torch.cuda.max_memory_allocated() at key points (model
 # build, first batch load, before/after forward, after backward, after
-# optimizer step) and registers per-block forward hooks that record peak
-# memory after each block in process_chunk. Adds minor overhead from
-# synchronize() calls; leave False for production training.
+# optimizer step). Adds minor overhead from synchronize() calls; leave False
+# for production training.
 PROFILE_MEMORY = False
+
+# Per-block memory trace — OFF by default even when PROFILE_MEMORY is on,
+# because it emits num_blocks * num_chunks lines per forward pass (e.g.
+# 80 lines per step for the 1.5B config) which drowns the high-level
+# checkpoint output. Keep this False for steady-state monitoring; flip to
+# True via --profile-memory-per-block in the launcher only when diagnosing
+# per-block memory growth (e.g. an O(num_chunks) blowup like the one the
+# chunk-activation-checkpointing fix addressed). Requires PROFILE_MEMORY to
+# also be True; has no effect on its own.
+PROFILE_MEMORY_PER_BLOCK = False
 
 # When PROFILE_MEMORY is True, only emit memory logs for the first N optimizer
 # steps (after that the picture is steady-state and the logs become noise).
-# Per-block hook output is also limited to the first N forward passes.
+# Per-block hook output (when PROFILE_MEMORY_PER_BLOCK is also True) is also
+# limited to the first N forward passes.
 PROFILE_MEMORY_STEPS = 5
 
 # ---------------------------------------------------------------------------

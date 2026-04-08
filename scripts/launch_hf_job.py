@@ -148,14 +148,25 @@ def main():
         "--profile-memory",
         action="store_true",
         help=(
-            "Enable detailed CUDA memory profiling in hf_pretrain.py. Logs "
+            "Enable high-level CUDA memory profiling in hf_pretrain.py. Logs "
             "torch.cuda.max_memory_allocated() at key points (model build, "
             "first batch load, before/after forward, after backward, after "
-            "optimizer step) and registers per-block forward hooks that "
-            "record peak memory after each block in process_chunk. Use for "
-            "diagnostic short runs to localize OOM root causes. Adds minor "
-            "overhead from synchronize() calls; disable for production "
-            "training runs."
+            "optimizer step). Adds minor overhead from synchronize() calls; "
+            "disable for production training runs. Use "
+            "--profile-memory-per-block to also get the per-block trace "
+            "inside each forward pass (much noisier, only useful for "
+            "localizing O(num_chunks) blowups and similar diagnostic work)."
+        ),
+    )
+    diag.add_argument(
+        "--profile-memory-per-block",
+        action="store_true",
+        help=(
+            "Enable the per-block memory trace inside each forward pass "
+            "(emits num_blocks * num_chunks lines per step). OFF by default "
+            "even under --profile-memory because it's noisy. Requires "
+            "--profile-memory to also be passed. Use only when diagnosing "
+            "per-block memory growth."
         ),
     )
     diag.add_argument(
@@ -223,13 +234,54 @@ def main():
 
     # Inject memory profiling flag if requested. Toggles a PROFILE_MEMORY
     # constant in the training script that gates the cuda memory tracking
-    # codepaths. See --profile-memory in the diagnostics arg group.
+    # codepaths. See --profile-memory in the diagnostics arg group. Uses a
+    # regex-anchored MULTILINE substitution (rather than plain str.replace)
+    # so it does not accidentally flip PROFILE_MEMORY_PER_BLOCK = False on
+    # the way past.
     if args.profile_memory:
-        script = script.replace(
-            "PROFILE_MEMORY = False",
+        new_script, n = re.subn(
+            r"^PROFILE_MEMORY\s*=\s*False",
             "PROFILE_MEMORY = True",
+            script,
+            count=1,
+            flags=re.MULTILINE,
         )
+        if n != 1:
+            raise RuntimeError(
+                "Could not find PROFILE_MEMORY = False in hf_pretrain.py to "
+                "inject --profile-memory override. Has the constant been "
+                "renamed or already set to True upstream?"
+            )
+        script = new_script
         print("  Memory profiling: enabled")
+
+    # Inject the per-block memory trace flag if requested. Separate from
+    # --profile-memory because the per-block trace is noisy (num_blocks *
+    # num_chunks lines per step) and only useful for diagnostic work. Requires
+    # --profile-memory to also be passed; we enforce this here rather than
+    # relying on the script because a silent ignore is the wrong failure mode.
+    if args.profile_memory_per_block:
+        if not args.profile_memory:
+            raise RuntimeError(
+                "--profile-memory-per-block requires --profile-memory to "
+                "also be passed. The per-block trace is gated on both "
+                "constants in hf_pretrain.py."
+            )
+        new_script, n = re.subn(
+            r"^PROFILE_MEMORY_PER_BLOCK\s*=\s*False",
+            "PROFILE_MEMORY_PER_BLOCK = True",
+            script,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if n != 1:
+            raise RuntimeError(
+                "Could not find PROFILE_MEMORY_PER_BLOCK = False in "
+                "hf_pretrain.py to inject --profile-memory-per-block override. "
+                "Has the constant been renamed or already set to True upstream?"
+            )
+        script = new_script
+        print("  Per-block memory trace: enabled")
 
     # Inject the chunk-activation-checkpointing toggle if either
     # --chunk-checkpointing or --no-chunk-checkpointing was passed. When
@@ -351,17 +403,21 @@ def main():
     print("\nLauncher substitution check (these will be in the submitted script):")
     saw_dep = False
     saw_profile = False
+    saw_per_block = False
     saw_chunk_ck = False
     for i, line in enumerate(script.splitlines(), 1):
         stripped = line.strip()
         if "titans @ git" in stripped and "Titans-Pytorch.git" in stripped:
-            print(f"  [dep]      line {i:4d}: {stripped}")
+            print(f"  [dep]       line {i:4d}: {stripped}")
             saw_dep = True
+        elif stripped.startswith("PROFILE_MEMORY_PER_BLOCK ="):
+            print(f"  [per-block] line {i:4d}: {stripped}")
+            saw_per_block = True
         elif stripped.startswith("PROFILE_MEMORY ="):
-            print(f"  [profile]  line {i:4d}: {stripped}")
+            print(f"  [profile]   line {i:4d}: {stripped}")
             saw_profile = True
         elif stripped.startswith("USE_CHUNK_CHECKPOINTING ="):
-            print(f"  [chunk-ck] line {i:4d}: {stripped}")
+            print(f"  [chunk-ck]  line {i:4d}: {stripped}")
             saw_chunk_ck = True
     if not saw_dep:
         raise RuntimeError(
@@ -374,6 +430,12 @@ def main():
             "Self-check FAILED: PROFILE_MEMORY constant not found in "
             "submitted script. The hf_pretrain.py file may have been "
             "modified upstream. Aborting."
+        )
+    if not saw_per_block:
+        raise RuntimeError(
+            "Self-check FAILED: PROFILE_MEMORY_PER_BLOCK constant not found "
+            "in submitted script. The hf_pretrain.py file may have been "
+            "modified upstream or the constant was renamed. Aborting."
         )
     if not saw_chunk_ck:
         raise RuntimeError(
