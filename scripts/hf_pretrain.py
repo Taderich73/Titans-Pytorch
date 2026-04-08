@@ -112,46 +112,111 @@ def _reset_max_mem() -> None:
         torch.cuda.reset_peak_memory_stats()
 
 
-def _register_block_memory_hooks(model: torch.nn.Module) -> list:
-    """Register a forward hook on each block that prints memory after the
-    block completes. Returns the list of hook handles so callers can remove
-    them later. No-op (returns []) when PROFILE_MEMORY is False.
+def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
+    """Instrument each block with memory snapshots around its core_forward
+    and around its memory module's forward call.
 
-    Hook prints are gated by an internal counter so only the first
-    PROFILE_MEMORY_STEPS forward passes through the model emit per-block
-    output. After that the hooks become silent (still registered, but cheap).
+    The PyTorch forward_hook system fires on `__call__`, but
+    `process_chunk` in titans.models calls `block.core_forward(...)`
+    directly (a regular method call, not `__call__`), so a standard
+    forward hook on the block never fires. This helper instead
+    monkey-patches each block's `core_forward` attribute with a wrapper
+    that snapshots memory before and after the original call. The
+    `block.memory` submodule IS called via `__call__` from inside
+    core_forward, so a standard register_forward_hook on `block.memory`
+    works for capturing the memory module's contribution specifically.
+
+    Combined output per block per chunk:
+        [mem]   block[NN/19] core_forward start: ...
+        [mem]   block[NN/19] memory done:        ...
+        [mem]   block[NN/19] core_forward done:  ...
+
+    For seq_len > chunk_size each block is called once per chunk per
+    forward, so num_chunks * n_blocks lines fire per forward pass.
+
+    Output is gated by PROFILE_MEMORY_STEPS so only the first few
+    forward passes emit lines (after that the wrappers and hooks are
+    silent but still installed). The pass counter is incremented by a
+    forward hook on the top-level model so it counts ACTUAL forward
+    passes, not block calls or chunks. No-op when PROFILE_MEMORY is
+    False or when CUDA is unavailable.
     """
     if not PROFILE_MEMORY or not torch.cuda.is_available():
-        return []
+        return
 
-    handles = []
-    counter = {"forward_passes": 0, "block_idx_in_pass": 0}
     blocks = getattr(model, "blocks", None)
     if blocks is None:
-        return []
+        return
     n_blocks = len(blocks)
+    counter = {"pass_idx": 0}
 
-    def make_hook(block_idx: int):
-        def hook(_module, _inputs, _output):
-            if counter["forward_passes"] >= PROFILE_MEMORY_STEPS:
-                return
-            torch.cuda.synchronize()
-            alloc = torch.cuda.memory_allocated() / 1e9
-            max_alloc = torch.cuda.max_memory_allocated() / 1e9
-            print(
-                f"[mem]   block[{block_idx:02d}/{n_blocks - 1}] done  "
-                f"alloc={alloc:6.2f}GB  max_alloc={max_alloc:6.2f}GB",
-                flush=True,
-            )
-            counter["block_idx_in_pass"] += 1
-            if counter["block_idx_in_pass"] >= n_blocks:
-                counter["forward_passes"] += 1
-                counter["block_idx_in_pass"] = 0
-        return hook
+    def _snapshot() -> tuple[float, float]:
+        torch.cuda.synchronize()
+        return (
+            torch.cuda.memory_allocated() / 1e9,
+            torch.cuda.max_memory_allocated() / 1e9,
+        )
+
+    def _under_limit() -> bool:
+        return counter["pass_idx"] < PROFILE_MEMORY_STEPS
+
+    # Top-level model post-forward hook: increment pass counter once per
+    # actual call to model(...) regardless of how many chunks/blocks fired
+    # inside. This is the source of truth for how many passes have run.
+    def _bump_pass_counter(_module, _inputs, _output):
+        counter["pass_idx"] += 1
+    model.register_forward_hook(_bump_pass_counter)
 
     for i, block in enumerate(blocks):
-        handles.append(block.register_forward_hook(make_hook(i)))
-    return handles
+        if not hasattr(block, "core_forward"):
+            continue
+
+        original_core_forward = block.core_forward
+        block_idx = i
+
+        def make_core_forward_wrapper(idx: int, original):
+            def wrapped(*args, **kwargs):
+                if not _under_limit():
+                    return original(*args, **kwargs)
+                before_alloc, _ = _snapshot()
+                print(
+                    f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward start: "
+                    f"alloc={before_alloc:6.2f}GB",
+                    flush=True,
+                )
+                result = original(*args, **kwargs)
+                after_alloc, max_alloc = _snapshot()
+                delta = after_alloc - before_alloc
+                print(
+                    f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward done:  "
+                    f"alloc={after_alloc:6.2f}GB  delta={delta:+6.3f}GB  "
+                    f"max={max_alloc:6.2f}GB",
+                    flush=True,
+                )
+                return result
+            return wrapped
+
+        block.core_forward = make_core_forward_wrapper(block_idx, original_core_forward)
+
+        # Forward hook on the memory submodule (called via __call__ inside
+        # core_forward, so a regular forward_hook fires here).
+        memory_module = getattr(block, "memory", None)
+        if memory_module is None:
+            continue
+
+        def make_memory_hook(idx: int):
+            def hook(_module, _inputs, _output):
+                if not _under_limit():
+                    return
+                alloc, max_alloc = _snapshot()
+                print(
+                    f"[mem]   block[{idx:02d}/{n_blocks - 1}] memory done:        "
+                    f"alloc={alloc:6.2f}GB  max={max_alloc:6.2f}GB",
+                    flush=True,
+                )
+            return hook
+
+        memory_module.register_forward_hook(make_memory_hook(block_idx))
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these for your run
@@ -376,12 +441,13 @@ def train():
     )
     _log_mem("after accelerator.prepare")
 
-    # Register per-block memory hooks (no-op when PROFILE_MEMORY=False).
-    # Hook handles are kept so they can be removed if needed; for diagnostic
-    # runs we leave them registered for the lifetime of the run.
-    _block_mem_hook_handles = _register_block_memory_hooks(
-        accelerator.unwrap_model(model)
-    )
+    # Instrument each block with memory snapshots around core_forward and
+    # around the memory module's forward call. No-op when PROFILE_MEMORY is
+    # False or when CUDA is unavailable. Monkey-patches `core_forward` (which
+    # process_chunk calls directly, bypassing PyTorch's standard forward
+    # hook system) and registers a regular forward hook on `block.memory`
+    # (which IS called via __call__ from inside core_forward).
+    _instrument_blocks_for_memory(accelerator.unwrap_model(model))
 
     # Hub setup
     if PUSH_CHECKPOINTS and token and accelerator.is_main_process:
