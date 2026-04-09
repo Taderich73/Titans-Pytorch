@@ -119,6 +119,10 @@ def main():
         choices=["true", "false"],
         help="Override RESET_GLOBAL_STATE_PER_BATCH (default: true)",
     )
+    train.add_argument(
+        "--state-carry-warmup", type=int, default=None,
+        help="Override STATE_CARRY_WARMUP_STEPS (default: 500)",
+    )
 
     # --- Hub / checkpointing ---
     hub = parser.add_argument_group("Hub / checkpointing")
@@ -137,7 +141,7 @@ def main():
     diag.add_argument(
         "--titans-sha",
         type=str,
-        default="51db2fd",
+        default="564ef8c",
         help=(
             "Pin the titans package to a specific git commit SHA, branch, or "
             "tag. The launcher injects this into the script's `titans @ "
@@ -338,6 +342,10 @@ def main():
         val = args.reset_global_state.lower() == "true"
         script = _apply_override(script, "RESET_GLOBAL_STATE_PER_BATCH", val)
         print(f"  --reset-global-state: {val}")
+
+    if args.state_carry_warmup is not None:
+        script = _apply_override(script, "STATE_CARRY_WARMUP_STEPS", args.state_carry_warmup)
+        print(f"  --state-carry-warmup: {args.state_carry_warmup}")
 
     # Apply --no-push flag
     if args.no_push:

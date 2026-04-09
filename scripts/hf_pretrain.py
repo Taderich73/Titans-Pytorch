@@ -254,6 +254,7 @@ PUSH_CHECKPOINTS = True
 RESUME_FROM = None
 
 RESET_GLOBAL_STATE_PER_BATCH = True  # set False to let global state carry across batches
+STATE_CARRY_WARMUP_STEPS = 500  # reset for this many steps, then carry (ignored if reset=True)
 
 # Seed
 SEED = 42
@@ -581,8 +582,11 @@ def train():
             except Exception:
                 pass
 
-        # Optional per-batch global memory state reset
-        if RESET_GLOBAL_STATE_PER_BATCH and memory_states is not None:
+        # Optional per-batch global memory state reset.
+        # When RESET_GLOBAL_STATE_PER_BATCH is False, still reset during warmup
+        # so gates learn reasonable values before state begins carrying.
+        reset_this_batch = RESET_GLOBAL_STATE_PER_BATCH or global_step < STATE_CARRY_WARMUP_STEPS
+        if reset_this_batch and memory_states is not None:
             unwrapped_for_reset = accelerator.unwrap_model(model)
             reset_batch_size = batch["input_ids"].shape[0]
             new_memory_states = []
