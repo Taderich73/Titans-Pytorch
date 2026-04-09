@@ -929,3 +929,29 @@ class TestChunkCheckpointing:
         assert torch.allclose(ref_logits, ck_logits, rtol=1e-5, atol=1e-6), (
             f"max_abs_diff={(ref_logits - ck_logits).abs().max().item():.3e}"
         )
+
+
+class TestHierarchicalMemoryCleanup:
+    """Verify HierarchicalMemory uses NLTM outputs directly (no redundant retrieve)."""
+
+    def test_tnt_forward_output_has_gate_gradients(self):
+        """HierarchicalMemory.forward output should have gradient path to gates."""
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=1, vocab_size=64,
+            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
+            use_tnt=True, local_chunk_sizes=[8], local_shard_length=128,
+        )
+        from titans.tnt_memory import HierarchicalMemory
+        hm = HierarchicalMemory(config)
+        hm.train()
+
+        x = torch.randn(2, 16, 32)
+        output, new_state = hm(x, state=None)
+
+        # Output must have gradient path to gate projections
+        loss = output.sum()
+        loss.backward()
+
+        global_nltm = hm.global_memory.memory
+        assert global_nltm.gate_decay_proj.bias.grad is not None
+        assert global_nltm.gate_decay_proj.bias.grad.abs().max() > 0
