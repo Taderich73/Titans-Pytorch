@@ -22,19 +22,9 @@ Designed to run via: hf jobs uv run scripts/hf_pretrain.py --flavor a10g-large
 
 from __future__ import annotations
 
-import os
-
-# Configure CUDA allocator BEFORE importing torch. PyTorch reads
-# PYTORCH_CUDA_ALLOC_CONF once at first CUDA initialization and caches it,
-# so this must be set in os.environ prior to `import torch`. The
-# expandable_segments allocator reduces fragmentation overhead, which is
-# important when the autograd graph through the data-dependent memory gates
-# pushes peak memory close to the GPU's HBM ceiling. Recovers ~5-10 GB on
-# A100-80GB by avoiding wasted reserved-but-unallocated regions.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
 import json
 import logging
+import os
 import sys
 import tempfile
 import traceback
@@ -230,7 +220,6 @@ NUM_HEADS = 16
 NUM_LAYERS = 20
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
-USE_CHUNK_CHECKPOINTING = True  # bounds peak activation memory to ~O(one chunk)
 NUM_MEMORY_LAYERS = 2
 NUM_PERSISTENT_TOKENS = 16
 ROPE_PROPORTION = 1.0  # Fraction of head_dim pairs to apply RoPE to (0.0-1.0)
@@ -263,6 +252,8 @@ PUSH_CHECKPOINTS = True
 #   RESUME_FROM = "checkpoints/final.pt"         (resumes from final checkpoint)
 #   RESUME_FROM = None                           (train from scratch)
 RESUME_FROM = None
+
+RESET_GLOBAL_STATE_PER_BATCH = True  # set False to let global state carry across batches
 
 # Seed
 SEED = 42
@@ -386,7 +377,6 @@ def train():
         use_mca=True,
         memory_objective="huber",
         adaptive_window=True,
-        use_chunk_checkpointing=USE_CHUNK_CHECKPOINTING,
     )
     model = TitansMAC(config)
     num_params = sum(p.numel() for p in model.parameters())
@@ -541,15 +531,29 @@ def train():
 
         try:
             with accelerator.accumulate(model):
-                logits, memory_states = model(batch["input_ids"], states=memory_states)
-                if _profile_this_step:
-                    _log_mem(f"step {global_step:03d}: after forward")
-                loss = F.cross_entropy(
-                    logits.view(-1, VOCAB_SIZE), batch["labels"].view(-1)
-                )
-                accelerator.backward(loss)
-                if _profile_this_step:
-                    _log_mem(f"step {global_step:03d}: after backward")
+                chunks = batch["input_ids"].split(CHUNK_SIZE, dim=1)
+                label_chunks = batch["labels"].split(CHUNK_SIZE, dim=1)
+                num_chunks = len(chunks)
+                batch_loss = 0.0
+
+                for chunk_ids, chunk_labels in zip(chunks, label_chunks):
+                    logits, memory_states = model(chunk_ids, states=memory_states)
+                    if _profile_this_step:
+                        _log_mem(f"step {global_step:03d}: after forward")
+                    chunk_loss = F.cross_entropy(
+                        logits.view(-1, VOCAB_SIZE), chunk_labels.view(-1)
+                    )
+                    accelerator.backward(chunk_loss / num_chunks)
+                    if _profile_this_step:
+                        _log_mem(f"step {global_step:03d}: after backward")
+                    batch_loss += chunk_loss.item() / num_chunks
+
+                    # Truncated BPTT: detach state at chunk boundary
+                    if memory_states is not None:
+                        memory_states = [
+                            s.detach() if s is not None else None
+                            for s in memory_states
+                        ]
 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
@@ -560,10 +564,6 @@ def train():
                 if _profile_this_step:
                     _log_mem(f"step {global_step:03d}: after optimizer step")
         except torch.cuda.OutOfMemoryError as oom:
-            # Dump full memory diagnostics so we can localize the OOM root
-            # cause from the log alone. The chunk-detach + per-block hook
-            # output above this line will show the cost trajectory leading
-            # up to the failure.
             print(f"\n[mem] CUDA OOM at step {global_step}", flush=True)
             print(f"[mem] {oom}", flush=True)
             if torch.cuda.is_available():
@@ -571,15 +571,18 @@ def train():
                 print(f"[mem] memory_summary:\n{summary}", flush=True)
             raise
 
+        # Capture g_norm BEFORE optional global state reset
+        _pre_reset_g_norm = None
         if memory_states is not None:
-            memory_states = [
-                s.detach() if s is not None else None for s in memory_states
-            ]
-            # Reset global memory state at every batch boundary while keeping
-            # local memory state intact (local_states, qk_projections,
-            # local_step_counters, local_inits). Isolates the cross-batch
-            # global-carry variable from local-memory threading semantics so
-            # the A/B comparison measures only the global-reset effect.
+            try:
+                g_state = getattr(memory_states[0], "global_state", None)
+                if g_state is not None and hasattr(g_state, "weights") and len(g_state.weights) > 0:
+                    _pre_reset_g_norm = g_state.weights[0].detach().float().norm().item()
+            except Exception:
+                pass
+
+        # Optional per-batch global memory state reset
+        if RESET_GLOBAL_STATE_PER_BATCH and memory_states is not None:
             unwrapped_for_reset = accelerator.unwrap_model(model)
             reset_batch_size = batch["input_ids"].shape[0]
             new_memory_states = []
@@ -597,7 +600,7 @@ def train():
                     new_memory_states.append(state)
             memory_states = new_memory_states
 
-        running_loss += loss.item()
+        running_loss += batch_loss
         global_step += 1
         pbar.update(1)
 
@@ -606,28 +609,29 @@ def train():
             lr = optimizer.param_groups[0]["lr"]
             postfix = {"loss": f"{avg_loss:.4f}", "lr": f"{lr:.2e}"}
 
-            # Instrumentation: track global memory norm + decay alpha for layer 0.
-            # Diagnoses global-state decay-to-zero by surfacing how fast the global
-            # weight norm collapses and whether alpha is being learned upward.
-            if memory_states is not None:
-                try:
-                    g_state = getattr(memory_states[0], "global_state", None)
-                    if g_state is not None and len(g_state.weights) > 0:
-                        g_norm = g_state.weights[0].detach().float().norm().item()
-                        postfix["g_norm"] = f"{g_norm:.2e}"
-                    unwrapped_for_log = accelerator.unwrap_model(model)
-                    block0 = unwrapped_for_log.blocks[0]
-                    gate_proj = getattr(
-                        getattr(getattr(block0, "memory", None), "global_memory", None),
-                        "memory",
-                        None,
-                    )
-                    gate_proj = getattr(gate_proj, "gate_decay_proj", None)
-                    if gate_proj is not None:
-                        alpha0 = torch.sigmoid(gate_proj.bias).item()
-                        postfix["alpha"] = f"{alpha0:.4f}"
-                except Exception:
-                    pass
+            # Global memory state norm (captured BEFORE reset above)
+            if _pre_reset_g_norm is not None:
+                postfix["g_norm"] = f"{_pre_reset_g_norm:.2e}"
+
+            # Gate decay instrumentation: raw bias, sigmoid(bias), gradient
+            try:
+                unwrapped_for_log = accelerator.unwrap_model(model)
+                block0 = unwrapped_for_log.blocks[0]
+                gate_proj = getattr(
+                    getattr(getattr(block0, "memory", None), "global_memory", None),
+                    "memory",
+                    None,
+                )
+                gate_proj = getattr(gate_proj, "gate_decay_proj", None)
+                if gate_proj is not None:
+                    raw_bias = gate_proj.bias.item()
+                    alpha0 = torch.sigmoid(gate_proj.bias).item()
+                    postfix["alpha"] = f"{alpha0:.6f}"
+                    postfix["decay_bias"] = f"{raw_bias:.4f}"
+                    if gate_proj.bias.grad is not None:
+                        postfix["gate_grad"] = f"{gate_proj.bias.grad.item():.2e}"
+            except Exception:
+                pass
 
             pbar.set_postfix(**postfix)
             running_loss = 0.0
