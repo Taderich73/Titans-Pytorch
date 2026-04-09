@@ -15,204 +15,6 @@ from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans.persistent import PersistentMemory
 
 
-# ---------------------------------------------------------------------------
-# State (un)flattening for torch.utils.checkpoint
-# ---------------------------------------------------------------------------
-#
-# torch.utils.checkpoint.checkpoint uses pytrees to track tensors across
-# checkpointed regions. Pytree handles list/tuple/dict/namedtuple natively
-# but NOT @dataclass types. TNTMemoryState and MemoryState are dataclasses,
-# so we convert them to nested tuples at the checkpoint boundary and back
-# to dataclasses on entry / return. The conversion is zero-copy: it only
-# rearranges Python references to tensors and never calls .detach() or
-# .clone(), so the autograd graph is preserved exactly.
-#
-# Flattened form for one state:
-#
-#   None -> (None,)   # sentinel for absent state (e.g. first chunk init)
-#
-#   MemoryState(weights, momentum) -> (
-#       "plain",
-#       tuple(weights),
-#       tuple(momentum),
-#   )
-#
-#   TNTMemoryState(global_state, local_states, local_inits, qk_projections,
-#                  local_step_counters) -> (
-#       "tnt",
-#       tuple(global_state.weights),
-#       tuple(global_state.momentum),
-#       tuple(tuple(ls.weights) for ls in local_states),
-#       tuple(tuple(ls.momentum) for ls in local_states),
-#       tuple(tuple(init) for init in local_inits),
-#       tuple(qk_projections),
-#       tuple(local_step_counters),   # plain ints, pytree passes through
-#   )
-#
-# A full state list is a tuple of per-state tuples.
-def _flatten_states_to_tuples(
-    states: list[MemoryState | TNTMemoryState | None],
-) -> tuple:
-    """Convert a list of memory states into a pytree-friendly nested tuple.
-
-    Args:
-        states: One state per block, as returned by process_chunk or held
-            in the chunk-loop carry variable. Entries may be None (typically
-            only on the very first chunk before any state has been built).
-
-    Returns:
-        A nested tuple of the same length as ``states``. Each element is
-        either ``(None,)`` (absent state), a ``("plain", ...)`` tuple for
-        plain MemoryState, or a ``("tnt", ...)`` tuple for TNTMemoryState.
-        All tensors in the input are passed by reference; no copies or
-        detaches are made, so autograd graphs are preserved.
-    """
-    out: list[tuple] = []
-    for s in states:
-        if s is None:
-            out.append((None,))
-        elif isinstance(s, TNTMemoryState):
-            out.append(
-                (
-                    "tnt",
-                    tuple(s.global_state.weights),
-                    tuple(s.global_state.momentum),
-                    tuple(tuple(ls.weights) for ls in s.local_states),
-                    tuple(tuple(ls.momentum) for ls in s.local_states),
-                    tuple(tuple(init) for init in s.local_inits),
-                    tuple(s.qk_projections),
-                    tuple(s.local_step_counters),
-                )
-            )
-        elif isinstance(s, MemoryState):
-            out.append(
-                (
-                    "plain",
-                    tuple(s.weights),
-                    tuple(s.momentum),
-                )
-            )
-        else:
-            raise TypeError(
-                f"_flatten_states_to_tuples: unsupported state type {type(s).__name__}"
-            )
-    return tuple(out)
-
-
-def _unflatten_tuples_to_states(
-    tuples: tuple,
-) -> list[MemoryState | TNTMemoryState | None]:
-    """Inverse of :func:`_flatten_states_to_tuples`.
-
-    Reconstructs the dataclass wrappers around the tensors. The tensors
-    themselves are shared with the input (no copies), so autograd graphs
-    are preserved.
-
-    Args:
-        tuples: The nested tuple produced by ``_flatten_states_to_tuples``.
-
-    Returns:
-        The original ``list[MemoryState | TNTMemoryState | None]`` with
-        dataclass wrappers restored.
-    """
-    out: list[MemoryState | TNTMemoryState | None] = []
-    for entry in tuples:
-        if entry[0] is None:
-            out.append(None)
-        elif entry[0] == "plain":
-            _, weights, momentum = entry
-            out.append(MemoryState(weights=list(weights), momentum=list(momentum)))
-        elif entry[0] == "tnt":
-            (
-                _,
-                g_weights,
-                g_momentum,
-                l_weights,
-                l_momentum,
-                l_inits,
-                qk_projections,
-                counters,
-            ) = entry
-            global_state = MemoryState(
-                weights=list(g_weights), momentum=list(g_momentum)
-            )
-            local_states = [
-                MemoryState(weights=list(w), momentum=list(m))
-                for w, m in zip(l_weights, l_momentum)
-            ]
-            out.append(
-                TNTMemoryState(
-                    global_state=global_state,
-                    local_states=local_states,
-                    local_inits=[list(init) for init in l_inits],
-                    qk_projections=list(qk_projections),
-                    local_step_counters=list(counters),
-                )
-            )
-        else:
-            raise ValueError(
-                f"_unflatten_tuples_to_states: unknown state tag {entry[0]!r}"
-            )
-    return out
-
-
-def _run_process_chunk_checkpointed(
-    *,
-    chunk: torch.Tensor,
-    state_tuples: tuple,
-    blocks: nn.ModuleList,
-    config: TitansConfig,
-    step_count: int,
-) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
-    """Run :func:`process_chunk` under ``torch.utils.checkpoint.checkpoint``.
-
-    Activation checkpointing re-runs forward during backward so that
-    per-chunk memory-update activations can be discarded after the live
-    forward. This is the canonical memory-vs-compute trade and bounds
-    peak activation memory to ~O(one_chunk) regardless of num_chunks.
-
-    Args:
-        chunk: The slice of the full embedded sequence for this chunk.
-            Shape ``(B, chunk_size, dim)``. Must have an autograd graph
-            (it is a view of the embedding output).
-        state_tuples: The per-block memory state flattened via
-            :func:`_flatten_states_to_tuples`. A pytree of nested tuples
-            of tensors; torch.utils.checkpoint's saved-tensor hook will
-            use these as the boundary input tensors for the recompute.
-        blocks: The block list of the enclosing model. Closure-captured,
-            not a tensor arg, so it is NOT tracked by autograd but is
-            stable between forward and recompute.
-        config: The enclosing model's config. Closure-captured; contains
-            only Python scalars and references, and is not mutated during
-            forward.
-        step_count: The enclosing model's ``self._step_count`` captured
-            BEFORE the chunk loop. Passed explicitly (not via closure on
-            ``model``) to avoid the off-by-one caused by the
-            ``self._step_count += 1`` at the end of ``forward`` — during
-            the recompute backward, ``model._step_count`` would otherwise
-            read the NEXT step's value.
-
-    Returns:
-        ``(chunk_out, new_states)`` with ``new_states`` as a
-        ``list[MemoryState | TNTMemoryState]`` (dataclass wrappers
-        restored on the caller side).
-    """
-    import torch.utils.checkpoint
-
-    def _wrapped(chunk_arg, tuples_arg):
-        states = _unflatten_tuples_to_states(tuples_arg)
-        out, new_states = process_chunk(blocks, chunk_arg, states, config, step_count)
-        return out, _flatten_states_to_tuples(new_states)
-
-    chunk_out, new_state_tuples = torch.utils.checkpoint.checkpoint(
-        _wrapped,
-        chunk,
-        state_tuples,
-        use_reentrant=False,
-    )
-    return chunk_out, _unflatten_tuples_to_states(new_state_tuples)
-
-
 def compile_model(model: nn.Module, **kwargs) -> nn.Module:
     """Apply torch.compile() to the model for optimized execution.
 
@@ -509,54 +311,32 @@ class TitansMAC(nn.Module):
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
     ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
+        """Process a single chunk. Returns (logits, new_states).
+
+        Args:
+            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
+            states: Per-block memory states from a previous chunk, or None.
+
+        Raises:
+            ValueError: If seq_len > chunk_size. Callers must chunk externally.
+        """
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
+
+        if seq_len > chunk_size:
+            raise ValueError(
+                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
+                f"Multi-chunk input is no longer supported in forward(). "
+                f"Split input_ids into chunks and call forward() per chunk."
+            )
 
         if states is None:
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-
-        if seq_len <= chunk_size:
-            x, new_states = process_chunk(
-                self.blocks, x, states, self.config, self._step_count
-            )
-        else:
-            outputs = []
-            new_states = list(states)
-            num_chunks = (seq_len + chunk_size - 1) // chunk_size
-            # Capture step_count BEFORE any chunk runs so the checkpoint
-            # recompute path (during backward) sees the same value as the
-            # live forward. Otherwise self._step_count += 1 at end of forward
-            # would leak the NEXT step's value into recompute via closure.
-            step_count_snapshot = self._step_count
-            for i in range(num_chunks):
-                chunk_start = i * chunk_size
-                chunk_end = min(chunk_start + chunk_size, seq_len)
-                chunk = x[:, chunk_start:chunk_end]
-                if self.config.use_chunk_checkpointing:
-                    chunk, new_states = _run_process_chunk_checkpointed(
-                        chunk=chunk,
-                        state_tuples=_flatten_states_to_tuples(new_states),
-                        blocks=self.blocks,
-                        config=self.config,
-                        step_count=step_count_snapshot,
-                    )
-                else:
-                    chunk, new_states = process_chunk(
-                        self.blocks, chunk, new_states, self.config, step_count_snapshot
-                    )
-                outputs.append(chunk)
-                # Detach state thread between chunks to bound peak memory.
-                # Under use_chunk_checkpointing=True this is largely redundant
-                # because the checkpoint boundary already drops the per-chunk
-                # recurrent activations; under use_chunk_checkpointing=False
-                # it keeps the state-threading path from accumulating grad
-                # edges. Retained in both modes for safety and documentation.
-                new_states = [
-                    s.detach() if s is not None else None for s in new_states
-                ]
-            x = torch.cat(outputs, dim=1)
+        x, new_states = process_chunk(
+            self.blocks, x, states, self.config, self._step_count
+        )
 
         x = self.norm(x)
         logits = self.head(x)
@@ -708,46 +488,32 @@ class TitansMAG(nn.Module):
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
     ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
+        """Process a single chunk. Returns (logits, new_states).
+
+        Args:
+            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
+            states: Per-block memory states from a previous chunk, or None.
+
+        Raises:
+            ValueError: If seq_len > chunk_size. Callers must chunk externally.
+        """
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
+
+        if seq_len > chunk_size:
+            raise ValueError(
+                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
+                f"Multi-chunk input is no longer supported in forward(). "
+                f"Split input_ids into chunks and call forward() per chunk."
+            )
 
         if states is None:
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-
-        if seq_len <= chunk_size:
-            x, new_states = process_chunk(
-                self.blocks, x, states, self.config, self._step_count
-            )
-        else:
-            outputs = []
-            new_states = list(states)
-            num_chunks = (seq_len + chunk_size - 1) // chunk_size
-            step_count_snapshot = self._step_count
-            for i in range(num_chunks):
-                chunk_start = i * chunk_size
-                chunk_end = min(chunk_start + chunk_size, seq_len)
-                chunk = x[:, chunk_start:chunk_end]
-                if self.config.use_chunk_checkpointing:
-                    chunk, new_states = _run_process_chunk_checkpointed(
-                        chunk=chunk,
-                        state_tuples=_flatten_states_to_tuples(new_states),
-                        blocks=self.blocks,
-                        config=self.config,
-                        step_count=step_count_snapshot,
-                    )
-                else:
-                    chunk, new_states = process_chunk(
-                        self.blocks, chunk, new_states, self.config, step_count_snapshot
-                    )
-                outputs.append(chunk)
-                # Retained chunk-boundary detach — see TitansMAC.forward for
-                # rationale.
-                new_states = [
-                    s.detach() if s is not None else None for s in new_states
-                ]
-            x = torch.cat(outputs, dim=1)
+        x, new_states = process_chunk(
+            self.blocks, x, states, self.config, self._step_count
+        )
 
         x = self.norm(x)
         logits = self.head(x)
@@ -896,46 +662,32 @@ class TitansMAL(nn.Module):
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
     ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
+        """Process a single chunk. Returns (logits, new_states).
+
+        Args:
+            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
+            states: Per-block memory states from a previous chunk, or None.
+
+        Raises:
+            ValueError: If seq_len > chunk_size. Callers must chunk externally.
+        """
         batch_size, seq_len = input_ids.shape
         chunk_size = self.config.chunk_size
+
+        if seq_len > chunk_size:
+            raise ValueError(
+                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
+                f"Multi-chunk input is no longer supported in forward(). "
+                f"Split input_ids into chunks and call forward() per chunk."
+            )
 
         if states is None:
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-
-        if seq_len <= chunk_size:
-            x, new_states = process_chunk(
-                self.blocks, x, states, self.config, self._step_count
-            )
-        else:
-            outputs = []
-            new_states = list(states)
-            num_chunks = (seq_len + chunk_size - 1) // chunk_size
-            step_count_snapshot = self._step_count
-            for i in range(num_chunks):
-                chunk_start = i * chunk_size
-                chunk_end = min(chunk_start + chunk_size, seq_len)
-                chunk = x[:, chunk_start:chunk_end]
-                if self.config.use_chunk_checkpointing:
-                    chunk, new_states = _run_process_chunk_checkpointed(
-                        chunk=chunk,
-                        state_tuples=_flatten_states_to_tuples(new_states),
-                        blocks=self.blocks,
-                        config=self.config,
-                        step_count=step_count_snapshot,
-                    )
-                else:
-                    chunk, new_states = process_chunk(
-                        self.blocks, chunk, new_states, self.config, step_count_snapshot
-                    )
-                outputs.append(chunk)
-                # Retained chunk-boundary detach — see TitansMAC.forward for
-                # rationale.
-                new_states = [
-                    s.detach() if s is not None else None for s in new_states
-                ]
-            x = torch.cat(outputs, dim=1)
+        x, new_states = process_chunk(
+            self.blocks, x, states, self.config, self._step_count
+        )
 
         x = self.norm(x)
         logits = self.head(x)

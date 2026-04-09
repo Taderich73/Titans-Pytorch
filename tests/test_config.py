@@ -77,29 +77,6 @@ class TestTitansConfig:
         assert config.use_attn_res is True
 
 
-def test_use_chunk_checkpointing_defaults_false():
-    """Activation checkpointing on process_chunk must be opt-in.
-
-    Default False preserves existing numeric behavior of every test in
-    the suite (no recompute, no extra RNG state restoration, bitwise
-    identical to pre-flag state). Production training runs opt in
-    explicitly via scripts/hf_pretrain.py.
-    """
-    config = TitansConfig()
-    assert config.use_chunk_checkpointing is False
-    assert config.to_dict()["use_chunk_checkpointing"] is False
-
-
-def test_use_chunk_checkpointing_roundtrip():
-    """The flag survives to_dict / constructor round-trip."""
-    config = TitansConfig(use_chunk_checkpointing=True)
-    assert config.use_chunk_checkpointing is True
-    d = config.to_dict()
-    assert d["use_chunk_checkpointing"] is True
-    restored = TitansConfig(**{k: v for k, v in d.items() if k in TitansConfig.__dataclass_fields__})
-    assert restored.use_chunk_checkpointing is True
-
-
 class TestRopeProportionConfig:
     def test_default_rope_proportion(self):
         config = TitansConfig()
