@@ -371,8 +371,6 @@ class NeuralLongTermMemory(nn.Module):
             torch.sum(k_f32 * k_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
         )).to(k.dtype)
 
-        retrieved = self.memory.forward_with_weights(q, state.weights)
-
         # Data-dependent gates
         x_mean = torch.mean(x, dim=1, keepdim=True)
         alpha = torch.sigmoid(self.gate_decay_proj(x_mean))
@@ -405,17 +403,20 @@ class NeuralLongTermMemory(nn.Module):
             ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
+        # Retrieve from the UPDATED state (Titans Eq. 3-4: o_t = f(W_t, q_t)).
+        # This puts alpha, theta, eta in the output's computation graph so gate
+        # projections receive gradients from the LM loss.
+        retrieved = self.memory.forward_with_weights(q, new_state.weights)
+
         output = self.proj_out(retrieved)
 
         if return_state:
-            # Detach only when explicitly requested (legacy behavior that
-            # freezes data-dependent gates), or when state quantization is on
-            # (quantization is a non-differentiable operation and would break
-            # autograd regardless). When neither applies, return new_state with
-            # its autograd graph intact so gate projections (alpha, theta, eta,
-            # delta) receive gradients via state -> retrieve -> proj_out ->
-            # loss. Cross-batch gradient flow is still prevented by the
-            # training loop detaching state at each batch boundary.
+            # Detach controls whether the RETURNED state has its autograd graph.
+            # After the retrieval reorder, output already depends on new_state
+            # (via forward_with_weights), so gates receive gradients within the
+            # current chunk regardless of this flag. The flag now only controls
+            # whether cross-chunk gradient flow is possible through the returned
+            # state. Kept for config serialization compatibility.
             must_detach = (
                 self.config.detach_memory_state_in_forward
                 or self.config.quantize_memory_state
