@@ -541,7 +541,7 @@ def train():
                     if _profile_this_step:
                         _log_mem(f"step {global_step:03d}: after forward")
                     chunk_loss = F.cross_entropy(
-                        logits.view(-1, VOCAB_SIZE), chunk_labels.view(-1)
+                        logits.reshape(-1, VOCAB_SIZE), chunk_labels.reshape(-1)
                     )
                     accelerator.backward(chunk_loss / num_chunks)
                     if _profile_this_step:
