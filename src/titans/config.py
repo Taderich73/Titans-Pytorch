@@ -86,7 +86,7 @@ class TitansConfig:
     mca_gate_bias_init: float = -3.0
 
     # Gate initialization
-    gate_decay_bias_init: float = -6.0
+    gate_decay_bias_init: float = -2.0
 
     # Gradient flow through the data-dependent gates (alpha, theta, eta, delta).
     # When False (default, new behavior): the new memory state is returned with
