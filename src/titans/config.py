@@ -86,7 +86,7 @@ class TitansConfig:
     mca_gate_bias_init: float = -3.0
 
     # Gate initialization
-    gate_decay_bias_init: float = -6.0
+    gate_decay_bias_init: float = -2.0
 
     # Gradient flow through the data-dependent gates (alpha, theta, eta, delta).
     # When False (default, new behavior): the new memory state is returned with
@@ -100,18 +100,6 @@ class TitansConfig:
     # as a flag so checkpoints from broken runs can be reloaded with matching
     # semantics if needed.
     detach_memory_state_in_forward: bool = False
-
-    # Chunk activation checkpointing. When True, TitansMAC/MAG/MAL.forward
-    # wraps each process_chunk call in torch.utils.checkpoint.checkpoint
-    # (use_reentrant=False) in the multi-chunk branch (seq_len > chunk_size).
-    # Per-chunk activations are discarded after forward and recomputed during
-    # backward, bounding peak memory to ~O(one_chunk_graph) instead of
-    # O(num_chunks * per_chunk_graph). Costs ~33% more wall-clock per step.
-    # Required for large TNT configs where HierarchicalMemory.forward retrieves
-    # from new_state, making every block's memory-update graph alive through
-    # the whole forward pass. Default False so the test suite and single-chunk
-    # runs are bitwise unchanged.
-    use_chunk_checkpointing: bool = False
 
     # AttnRes numerical stability
     attnres_logit_clip: float = 30.0
@@ -237,7 +225,6 @@ class TitansConfig:
             "mca_gate_bias_init": self.mca_gate_bias_init,
             "gate_decay_bias_init": self.gate_decay_bias_init,
             "detach_memory_state_in_forward": self.detach_memory_state_in_forward,
-            "use_chunk_checkpointing": self.use_chunk_checkpointing,
             "attnres_logit_clip": self.attnres_logit_clip,
             "mca_auto_dump": self.mca_auto_dump,
             "mca_dump_trigger": self.mca_dump_trigger,

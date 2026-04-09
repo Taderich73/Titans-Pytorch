@@ -163,15 +163,16 @@ class HierarchicalMemory(nn.Module):
             else 1.0
         )
 
-        # 1. Update global memory
-        _, new_global_state = self.global_memory(
+        # 1. Update global memory and capture its output
+        global_out, new_global_state = self.global_memory(
             x, state=state.global_state, lr_scale=global_lr_scale
         )
 
-        # 2. Update each local memory
+        # 2. Update each local memory and collect outputs
         new_local_states = []
         new_qk_projections = []
         new_step_counters = []
+        local_outs = []
 
         for i, local_mem in enumerate(self.local_memories):
             local_state, counter = local_mem.maybe_reset(
@@ -194,6 +195,7 @@ class HierarchicalMemory(nn.Module):
                 local_out, new_local_state = local_mem(
                     x, state=local_state, lr_scale=local_lr_scale,
                 )
+            local_outs.append(local_out)
             new_local_states.append(new_local_state)
 
             if needs_keys:
@@ -212,8 +214,11 @@ class HierarchicalMemory(nn.Module):
             local_step_counters=new_step_counters,
         )
 
-        # 3. Retrieve
-        output = self.retrieve(x, new_state)
+        # 3. Combine NLTM outputs directly — no redundant retrieve pass needed
+        combined = global_out
+        for local_out in local_outs:
+            combined = combined + local_out
+        output = self.proj_out(combined)
         return output, new_state
 
     def retrieve(self, queries: torch.Tensor, state: TNTMemoryState) -> torch.Tensor:

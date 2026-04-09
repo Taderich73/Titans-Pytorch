@@ -237,6 +237,73 @@ class TestNeuralLongTermMemory:
                 f"{name}.weight.grad is all zero (expected nonzero)"
             )
 
+class TestNLTMRetrievalOrder:
+    """Verify NeuralLongTermMemory retrieves from the UPDATED state (Eq. 3-4)."""
+
+    def test_output_depends_on_gate_decay(self):
+        """NLTM output must change when gate_decay_proj bias changes.
+
+        If retrieval uses the old (input) state, the output is independent of
+        alpha and this test fails. If retrieval uses new_state (as Eq. 3-4
+        requires), the output depends on alpha via new_state.weights.
+        """
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=1, vocab_size=64,
+            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
+        )
+        mem = NeuralLongTermMemory(config)
+        mem.eval()
+
+        x = torch.randn(1, 16, 32)
+        state = mem.init_state(1)
+
+        # Forward with original bias
+        out1, _ = mem(x, state=state, return_state=True)
+
+        # Change gate_decay_proj bias and forward again with same input + state
+        with torch.no_grad():
+            mem.gate_decay_proj.bias.fill_(5.0)  # very different from init
+        out2, _ = mem(x, state=state, return_state=True)
+
+        # If retrieval uses updated state, outputs must differ
+        assert not torch.allclose(out1, out2, atol=1e-6), (
+            "NLTM output is independent of gate_decay_proj — retrieval likely "
+            "uses old state instead of updated state (violates Eq. 3-4)"
+        )
+
+    def test_gate_projections_receive_gradients_through_output(self):
+        """Gate projections must have nonzero gradients from loss through output.
+
+        This tests the direct gradient path: loss -> output -> proj_out ->
+        retrieved -> forward_with_weights(new_state.weights) -> alpha ->
+        gate_decay_proj.bias.
+        """
+        config = TitansConfig(
+            dim=32, num_heads=4, num_layers=1, vocab_size=64,
+            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
+            memory_objective="huber", huber_delta_init=-10.0,
+        )
+        mem = NeuralLongTermMemory(config)
+        mem.train()
+
+        x = torch.randn(2, 16, 32)
+        state = mem.init_state(2)
+
+        output, new_state = mem(x, state=state, return_state=True)
+        loss = output.sum()
+        loss.backward()
+
+        gate_names = ["gate_decay_proj", "gate_lr_proj", "gate_momentum_proj",
+                      "gate_delta_proj"]
+        for name in gate_names:
+            proj = getattr(mem, name, None)
+            if proj is None:
+                continue
+            assert proj.bias.grad is not None, f"{name}.bias.grad is None"
+            assert proj.bias.grad.abs().max() > 0, f"{name}.bias.grad is zero"
+
+
+class TestNeuralLongTermMemoryLegacy:
     def test_legacy_detach_flag_freezes_gates(self, device):
         """Legacy flag preserves pre-fix broken behavior for backward compat.
 
