@@ -137,7 +137,7 @@ def main():
     diag.add_argument(
         "--titans-sha",
         type=str,
-        default="e309d70",
+        default="51db2fd",
         help=(
             "Pin the titans package to a specific git commit SHA, branch, or "
             "tag. The launcher injects this into the script's `titans @ "
