@@ -134,9 +134,11 @@ class TestTitansMAC:
         )
         loss.backward()
 
-        # gate_momentum_proj may have zero grad on first chunk (zero initial momentum).
+        # gate_momentum_proj may have zero grad on first chunk (zero initial
+        # momentum). gate_decay_proj may also have zero grad under delta
+        # memory parameterization when delta=0 (first chunk, states=None),
+        # because d(decay_S)/d(alpha) * delta_0 = 0.
         gate_names_nonzero = (
-            "gate_decay_proj",
             "gate_lr_proj",
             "gate_delta_proj",
         )

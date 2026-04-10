@@ -447,7 +447,8 @@ class NeuralLongTermMemory(nn.Module):
         # Retrieve from the UPDATED state (Titans Eq. 3-4: o_t = f(W_t, q_t)).
         # This puts alpha, theta, eta in the output's computation graph so gate
         # projections receive gradients from the LM loss.
-        retrieved = self.memory.forward_with_weights(q, new_state.weights)
+        effective = self._get_effective_weights(new_state.weights, detach_base=False)
+        retrieved = self.memory.forward_with_weights(q, effective)
 
         output = self.proj_out(retrieved)
 
@@ -576,5 +577,6 @@ class NeuralLongTermMemory(nn.Module):
             torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
         )).to(q.dtype)
 
-        retrieved = self.memory.forward_with_weights(q, state.weights)
+        effective = self._get_effective_weights(state.weights, detach_base=False)
+        retrieved = self.memory.forward_with_weights(q, effective)
         return self.proj_out(retrieved)
