@@ -98,6 +98,13 @@ class TitansConfig:
     # enough for sigmoid to have meaningful gradient.
     per_chunk_decay: bool = True
 
+    # Delta memory parameterization.  When True (default), the memory state
+    # stores corrections (deltas) from the base MLP weights instead of
+    # absolute weights.  Decay drives delta toward zero, so retrieval
+    # degrades to f(base) instead of f(0).  Inner-loop gradients use
+    # base.detach() + delta; retrieval uses live base + delta.
+    delta_memory_param: bool = True
+
     # Gradient flow through the data-dependent gates (alpha, theta, eta, delta).
     # When False (default, new behavior): the new memory state is returned with
     # its autograd graph intact, letting gate projections receive gradients from
@@ -235,6 +242,7 @@ class TitansConfig:
             "mca_gate_bias_init": self.mca_gate_bias_init,
             "gate_decay_bias_init": self.gate_decay_bias_init,
             "per_chunk_decay": self.per_chunk_decay,
+            "delta_memory_param": self.delta_memory_param,
             "detach_memory_state_in_forward": self.detach_memory_state_in_forward,
             "attnres_logit_clip": self.attnres_logit_clip,
             "mca_auto_dump": self.mca_auto_dump,
