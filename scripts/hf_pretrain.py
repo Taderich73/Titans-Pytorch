@@ -31,6 +31,12 @@ import traceback
 from dataclasses import replace
 from pathlib import Path
 
+# Force unbuffered stdout/stderr so HF Jobs logs stream in real-time.
+# PYTHONUNBUFFERED must be set before interpreter start; this is the
+# in-process equivalent.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import numpy as np
 import torch
 import torch.nn.functional as F
