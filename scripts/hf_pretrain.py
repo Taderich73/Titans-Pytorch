@@ -578,13 +578,23 @@ def train():
                 print(f"[mem] memory_summary:\n{summary}", flush=True)
             raise
 
-        # Capture g_norm BEFORE optional global state reset
+        # Capture delta/weight norms BEFORE optional global state reset
         _pre_reset_g_norm = None
+        _base_norm = None
         if memory_states is not None:
             try:
                 g_state = getattr(memory_states[0], "global_state", None)
                 if g_state is not None and hasattr(g_state, "weights") and len(g_state.weights) > 0:
                     _pre_reset_g_norm = g_state.weights[0].detach().float().norm().item()
+                # Base weight norm (for delta param context)
+                unwrapped_norm = accelerator.unwrap_model(model)
+                block0_mem = getattr(
+                    getattr(getattr(unwrapped_norm.blocks[0], "memory", None),
+                            "global_memory", None),
+                    "memory", None,
+                )
+                if block0_mem is not None and hasattr(block0_mem, "layers"):
+                    _base_norm = block0_mem.layers[0].weight.detach().float().norm().item()
             except Exception:
                 pass
 
@@ -622,6 +632,8 @@ def train():
             # Global memory state norm (captured BEFORE reset above)
             if _pre_reset_g_norm is not None:
                 postfix["g_norm"] = f"{_pre_reset_g_norm:.2e}"
+                if _base_norm is not None:
+                    postfix["base_norm"] = f"{_base_norm:.2e}"
 
             # Gate decay instrumentation: raw bias, sigmoid(bias), gradient
             try:
