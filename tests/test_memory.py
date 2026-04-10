@@ -1,6 +1,7 @@
 """Tests for Neural Long-term Memory module."""
 
 import torch
+import torch.nn.functional as F
 
 from titans.config import TitansConfig
 from titans.memory import MemoryMLP, MemoryState, NeuralLongTermMemory
@@ -339,6 +340,137 @@ class TestPerChunkDecay:
         output, state = mem(x)
         assert output.shape == x.shape
         assert state is not None
+
+
+class TestDeltaMemoryParam:
+    """Verify delta memory parameterization behavior."""
+
+    def test_init_state_zeros(self, device):
+        """With delta_memory_param=True, init state should be all zeros."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            delta_memory_param=True,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        state = mem.init_state(batch_size=2)
+        for w in state.weights:
+            assert w.abs().max() == 0.0, "Delta init should be zeros"
+        for m in state.momentum:
+            assert m.abs().max() == 0.0, "Momentum init should be zeros"
+
+    def test_retrieval_equals_base_at_init(self, device):
+        """At init (delta=0), retrieval should match base MLP forward."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            delta_memory_param=True,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        state = mem.init_state(batch_size=2)
+        queries = torch.randn(2, 8, config.dim, device=device)
+
+        # Retrieval with delta=0 should equal base MLP
+        retrieved = mem.retrieve(queries, state)
+
+        # Direct base MLP forward for comparison
+        q = mem.proj_q(queries)
+        q = F.silu(q)
+        q_f32 = q.float()
+        q_norm = (q_f32 / torch.sqrt(
+            torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + 1e-8
+        )).to(q.dtype)
+        base_out = mem.memory(q_norm)  # Standard MLP forward
+        expected = mem.proj_out(base_out)
+
+        torch.testing.assert_close(retrieved, expected, atol=1e-5, rtol=1e-5)
+
+    def test_decay_degrades_to_base_not_zero(self, device):
+        """After heavy decay, retrieval should approach base, not collapse."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            delta_memory_param=True,
+            gate_decay_bias_init=2.0,  # High decay: sigmoid(2) ≈ 0.88
+            per_chunk_decay=False,     # Raw alpha for aggressive decay test
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device)
+
+        # Run many forward passes with state carry to decay delta
+        state = mem.init_state(batch_size=2)
+        for _ in range(20):
+            _, state = mem(x, state=state)
+            state = state.detach()
+
+        # Delta should be near zero after heavy decay
+        delta_norm = state.weights[0].norm().item()
+
+        # But retrieval should still produce nonzero output (from base)
+        retrieved = mem.retrieve(x, state)
+        output_norm = retrieved.norm().item()
+
+        assert output_norm > 1.0, (
+            f"Retrieval collapsed to near-zero ({output_norm:.4f}) — "
+            f"delta param not working (delta_norm={delta_norm:.2e})"
+        )
+
+    def test_gate_gradients_with_delta_param(self, device):
+        """Gate projections must receive gradients under delta param."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            delta_memory_param=True,
+            per_chunk_decay=True,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device)
+        _, new_state = mem(x)
+        retrieved = mem.retrieve(x, new_state)
+        loss = retrieved.sum()
+        loss.backward()
+
+        for name in ("gate_decay_proj", "gate_lr_proj", "gate_momentum_proj"):
+            proj = getattr(mem, name)
+            assert proj.bias.grad is not None, f"{name}.bias.grad is None"
+            assert proj.bias.grad.abs().max() > 0, f"{name}.bias.grad is zero"
+
+    def test_legacy_absolute_weights(self, device):
+        """delta_memory_param=False preserves absolute weight behavior."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            delta_memory_param=False,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        state = mem.init_state(batch_size=2)
+
+        # Legacy: init state should be nonzero (cloned MLP weights)
+        assert state.weights[0].abs().max() > 0, (
+            "Legacy init should clone MLP weights, not zeros"
+        )
+
+    def test_deep_memory_delta_param(self, device):
+        """Delta param works with multi-layer memory (deep path)."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=2,
+            delta_memory_param=True,
+            per_chunk_decay=True,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device)
+        state = mem.init_state(batch_size=2)
+
+        # Forward should work and produce nonzero output
+        output, new_state = mem(x, state=state)
+        assert output.norm().item() > 0, "Output is zero with deep delta param"
+
+        # Delta should be nonzero after forward
+        for i, w in enumerate(new_state.weights):
+            assert w.abs().max() > 0, f"Delta[{i}] is still zero after forward"
 
 
 class TestNLTMRetrievalOrder:
