@@ -240,7 +240,8 @@ class NeuralLongTermMemory(nn.Module):
         weight: torch.Tensor,
         delta: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
-        predictions = F.linear(keys, weight)
+        pred_W = self._get_effective_weights([weight], detach_base=True)[0]
+        predictions = F.linear(keys, pred_W)
         err_clip = self.config.memory_error_clip
         raw_error = torch.clamp(predictions - values, -err_clip, err_clip)
 
@@ -267,6 +268,7 @@ class NeuralLongTermMemory(nn.Module):
         delta: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
         num_layers = len(weights)
+        effective = self._get_effective_weights(weights, detach_base=True)
         batch_size, seq_len = keys.shape[0], keys.shape[1]
         batch_seq = batch_size * seq_len
 
@@ -275,7 +277,7 @@ class NeuralLongTermMemory(nn.Module):
         h = keys
 
         for i in range(num_layers):
-            h_pre = F.linear(h, weights[i])
+            h_pre = F.linear(h, effective[i])
             pre_activations.append(h_pre)
             if i < num_layers - 1:
                 h = self.memory.activation(h_pre)
@@ -306,7 +308,7 @@ class NeuralLongTermMemory(nn.Module):
             grads[i] = torch.clamp(grad_w, -grad_clip, grad_clip)
 
             if i > 0:
-                delta_bp = F.linear(delta_bp, weights[i].T)
+                delta_bp = F.linear(delta_bp, effective[i].T)
                 x = pre_activations[i - 1]
                 delta_bp = delta_bp * self._activation_derivative(x)
 
@@ -498,7 +500,9 @@ class NeuralLongTermMemory(nn.Module):
         decay = 1.0 - alpha
         S_f = float(S)
 
-        preds = F.linear(keys, W_0)
+        # Predict from effective weights (base + delta when delta_memory_param)
+        pred_W = self._get_effective_weights([W_0], detach_base=True)[0]
+        preds = F.linear(keys, pred_W)
         errors = torch.clamp(preds - values, -err_clip, err_clip)
 
         if self.memory_objective == "huber":
