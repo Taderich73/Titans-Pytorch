@@ -86,7 +86,17 @@ class TitansConfig:
     mca_gate_bias_init: float = -3.0
 
     # Gate initialization
-    gate_decay_bias_init: float = -4.0
+    gate_decay_bias_init: float = -2.0
+
+    # Per-chunk decay reparameterization.  When True (default), the sigmoid
+    # output of gate_decay_proj is interpreted as the fraction of memory state
+    # to decay *per chunk* rather than per token.  For the parallel (1-layer)
+    # update the per-chunk alpha is converted to per-token via:
+    #     token_alpha = 1 - (1 - chunk_alpha)^(1/S)
+    # so that (1 - token_alpha)^S = 1 - chunk_alpha by construction.  This
+    # avoids the (1-alpha)^S compounding that erases memory when alpha is large
+    # enough for sigmoid to have meaningful gradient.
+    per_chunk_decay: bool = True
 
     # Gradient flow through the data-dependent gates (alpha, theta, eta, delta).
     # When False (default, new behavior): the new memory state is returned with
@@ -224,6 +234,7 @@ class TitansConfig:
             "mca_gate_type": self.mca_gate_type,
             "mca_gate_bias_init": self.mca_gate_bias_init,
             "gate_decay_bias_init": self.gate_decay_bias_init,
+            "per_chunk_decay": self.per_chunk_decay,
             "detach_memory_state_in_forward": self.detach_memory_state_in_forward,
             "attnres_logit_clip": self.attnres_logit_clip,
             "mca_auto_dump": self.mca_auto_dump,

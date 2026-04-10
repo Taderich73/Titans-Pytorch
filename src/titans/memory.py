@@ -391,6 +391,13 @@ class NeuralLongTermMemory(nn.Module):
         theta = theta * lr_scale
 
         if len(state.weights) == 1:
+            if self.config.per_chunk_decay:
+                # Sigmoid output = per-chunk decay fraction.  Convert to the
+                # per-token alpha the parallel formula needs so that
+                # (1 - token_alpha)^S = 1 - chunk_alpha.
+                chunk_alpha = alpha
+                seq_len = float(x.shape[1])
+                alpha = 1.0 - torch.pow(1.0 - chunk_alpha, 1.0 / seq_len)
             new_state = self._parallel_memory_update_linear(
                 k, v, state, alpha, theta, eta
             )

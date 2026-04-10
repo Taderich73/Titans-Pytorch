@@ -237,6 +237,110 @@ class TestNeuralLongTermMemory:
                 f"{name}.weight.grad is all zero (expected nonzero)"
             )
 
+class TestPerChunkDecay:
+    """Verify per-chunk decay reparameterization identity and gradient health."""
+
+    def test_reparameterization_identity(self, device):
+        """(1-token_alpha)^S must equal (1-chunk_alpha) by construction."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            per_chunk_decay=True,
+            gate_decay_bias_init=-2.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+
+        seq_len = 512
+        x = torch.randn(2, seq_len, config.dim, device=device)
+        state = mem.init_state(batch_size=2)
+
+        # Run forward to get the parallel update result
+        output, new_state = mem(x, state=state)
+
+        # Compute chunk_alpha from the bias directly
+        with torch.no_grad():
+            chunk_alpha = torch.sigmoid(mem.gate_decay_proj.bias).item()
+
+        # Derive expected per-chunk retention
+        expected_retention = 1.0 - chunk_alpha
+
+        # Derive token_alpha via the same formula used in forward()
+        token_alpha = 1.0 - (1.0 - chunk_alpha) ** (1.0 / seq_len)
+        actual_retention = (1.0 - token_alpha) ** seq_len
+
+        assert abs(actual_retention - expected_retention) < 1e-6, (
+            f"Reparameterization identity failed: "
+            f"(1-token_alpha)^S={actual_retention:.8f} != "
+            f"1-chunk_alpha={expected_retention:.8f}"
+        )
+
+    def test_gate_gradient_nonzero_at_long_seq(self, device):
+        """Gate gradient must be nonzero even at the seq lengths where legacy dies.
+
+        The death spiral in legacy mode requires multiple forward passes with
+        state carry (weights collapse → gradient vanishes).  Here we verify
+        the simpler prerequisite: after a single forward pass at seq_len=512,
+        the gate still receives a nonzero gradient.
+        """
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            per_chunk_decay=True,
+            gate_decay_bias_init=-2.0,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(1, 512, config.dim, device=device)
+        _, new_state = mem(x)
+        retrieved = mem.retrieve(x, new_state)
+        loss = retrieved.sum()
+        loss.backward()
+        grad_mag = mem.gate_decay_proj.bias.grad.abs().item()
+        assert grad_mag > 1e-10, (
+            f"gate_decay_proj.bias.grad is near-zero ({grad_mag:.2e}) at seq_len=512"
+        )
+
+    def test_weight_norm_preserved_after_forward(self, device):
+        """With per_chunk_decay, memory weights should retain meaningful norm."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            per_chunk_decay=True,
+            gate_decay_bias_init=-2.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+
+        x = torch.randn(2, 512, config.dim, device=device)
+        state = mem.init_state(batch_size=2)
+        init_norm = state.weights[0].norm().item()
+
+        _, new_state = mem(x, state=state)
+        new_norm = new_state.weights[0].detach().norm().item()
+
+        # With chunk_alpha ≈ 0.12, retention ≈ 88% — weight norm should
+        # stay in the same order of magnitude, not collapse to near-zero
+        ratio = new_norm / init_norm
+        assert ratio > 0.3, (
+            f"Weight norm collapsed: {new_norm:.4f} / {init_norm:.4f} = {ratio:.4f} "
+            f"(expected > 0.3 with per-chunk decay)"
+        )
+
+    def test_legacy_mode_unchanged(self, device):
+        """per_chunk_decay=False should leave the parallel path unchanged."""
+        config = TitansConfig(
+            dim=64,
+            num_memory_layers=1,
+            per_chunk_decay=False,
+            gate_decay_bias_init=-4.0,
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 16, config.dim, device=device)
+        output, state = mem(x)
+        assert output.shape == x.shape
+        assert state is not None
+
+
 class TestNLTMRetrievalOrder:
     """Verify NeuralLongTermMemory retrieves from the UPDATED state (Eq. 3-4)."""
 

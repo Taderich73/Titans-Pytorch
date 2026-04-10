@@ -632,6 +632,10 @@ def train():
                     alpha0 = torch.sigmoid(gate_proj.bias).item()
                     postfix["alpha"] = f"{alpha0:.6f}"
                     postfix["decay_bias"] = f"{raw_bias:.4f}"
+                    # Show per-token alpha when per_chunk_decay is active
+                    if config.per_chunk_decay:
+                        alpha_tok = 1.0 - (1.0 - alpha0) ** (1.0 / CHUNK_SIZE)
+                        postfix["alpha_tok"] = f"{alpha_tok:.2e}"
                     if gate_proj.bias.grad is not None:
                         postfix["gate_grad"] = f"{gate_proj.bias.grad.item():.2e}"
             except Exception:
