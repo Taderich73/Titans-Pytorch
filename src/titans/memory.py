@@ -144,6 +144,10 @@ class MemoryMLP(nn.Module):
     def get_weights(self) -> list[torch.Tensor]:
         return [layer.weight.data.clone() for layer in self.layers]
 
+    def get_base_weights(self) -> list[torch.Tensor]:
+        """Return live weight parameter references (with autograd graph)."""
+        return [layer.weight for layer in self.layers]
+
 
 class NeuralLongTermMemory(nn.Module):
     """Neural Long-term Memory Module (PyTorch Implementation).
@@ -324,9 +328,37 @@ class NeuralLongTermMemory(nn.Module):
             raise ValueError(f"No derivative for activation: {self.config.activation}")
 
     def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
-        weights = [w.detach().clone() for w in self.memory.get_weights()]
+        if self.config.delta_memory_param:
+            # Deltas start at zero — no corrections from base initially
+            base_weights = self.memory.get_weights()  # for shape/device only
+            weights = [torch.zeros_like(w) for w in base_weights]
+        else:
+            weights = [w.detach().clone() for w in self.memory.get_weights()]
         momentum = [torch.zeros_like(w) for w in weights]
         return MemoryState(weights=weights, momentum=momentum)
+
+    def _get_effective_weights(
+        self, deltas: list[torch.Tensor], detach_base: bool = False,
+    ) -> list[torch.Tensor]:
+        """Compose effective weights from base + delta.
+
+        Args:
+            deltas: State weight tensors (deltas when delta_memory_param=True,
+                absolute weights when False).
+            detach_base: If True, detach base weights to prevent outer-loop
+                gradients from flowing through the inner-loop gradient
+                computation. Use True for inner-loop predictions, False
+                for retrieval (where outer-loop gradient to base is desired).
+
+        Returns:
+            Effective weight tensors for use in predictions/retrieval.
+        """
+        if not self.config.delta_memory_param:
+            return deltas
+        bases = self.memory.get_base_weights()
+        if detach_base:
+            return [b.detach() + d for b, d in zip(bases, deltas)]
+        return [b + d for b, d in zip(bases, deltas)]
 
     def forward(
         self,
