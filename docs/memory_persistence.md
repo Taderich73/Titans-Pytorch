@@ -5,56 +5,88 @@ The Titans architecture's memory module updates its weights during inference (te
 ## API
 
 ### `save_memory_states(states, path)`
-Serialize all layer memory states to a single `.npz` file.
+Serialize all layer memory states to a single `.npz` file. Handles both `MemoryState` and `TNTMemoryState` transparently.
 
 ```python
-from titans_mlx.memory import save_memory_states
+from titans.memory_dump import save_memory_states
 
 # After running inference
 save_memory_states(states, "my_memory.npz")
 ```
 
-### `load_memory_states(path)`
-Deserialize memory states from a `.npz` file. Validates structure and raises `ValueError` on shape/key mismatches.
+### `load_memory_states(path, device=None, *, reset_for_inference=True)`
+Deserialize memory states from a `.npz` file. Validates structure and raises `ValueError` on shape/key mismatches. Logs a warning for any loaded tensor whose Frobenius norm is near-zero (indicating decay collapse).
 
 ```python
-from titans_mlx.memory import load_memory_states
+from titans.memory_dump import load_memory_states
 
 states = load_memory_states("my_memory.npz")
 logits, states = model(input_ids, states=states)
 ```
 
+When `reset_for_inference=True` (the default), TNT local step counters and Q-K projections are zeroed to prevent local memories from being silently wiped on the first forward pass.
+
 ## CLI Usage
 
 ```bash
 # Save memory on exit
-uv run python scripts/inference.py --checkpoint model.safetensors --interactive --save-memory session.npz
+uv run python scripts/inference.py --checkpoint model.pt --memory-dump session.npz --prompt "Hello"
 
 # Resume from saved memory
-uv run python scripts/inference.py --checkpoint model.safetensors --interactive --load-memory session.npz
-
-# Both (load at start, auto-save on quit)
-uv run python scripts/inference.py --checkpoint model.safetensors --interactive \
-    --load-memory session.npz --save-memory session.npz
+uv run python scripts/inference.py --checkpoint model.pt --memory-dump session.npz --prompt "Continue"
 ```
 
-## Interactive Commands
+## MemoryDumpManager
 
-During interactive mode:
+For more advanced workflows, `MemoryDumpManager` wraps the low-level save/load with timestamped dump directories, per-layer inspection, state diffing, merging, and forking.
 
-| Command | Description |
-|---|---|
-| `save` | Save memory state to `memory_state.npz` |
-| `save path/to/file.npz` | Save to a specific path |
-| `load` | Load memory state from `memory_state.npz` |
-| `load path/to/file.npz` | Load from a specific path |
-| `reset` | Clear memory to fresh init (not loaded state) |
-| `quit` | Exit (auto-saves if `--save-memory` is set) |
+```python
+from titans.memory_dump import MemoryDumpManager
+
+manager = MemoryDumpManager("./memory_dumps", keep_last_n=5)
+
+# Save with a tag
+path = manager.save(states, tag="step_1000")
+
+# Load the most recent dump
+loaded = manager.load_latest()
+
+# Inspect per-layer norms
+info = manager.inspect(states)
+
+# Diff two state sets
+delta = manager.diff(states_a, states_b)
+
+# Merge multiple state sets
+merged = manager.merge([states_a, states_b], strategy="weighted_mean")
+
+# Deep-copy without disk I/O
+forked = manager.fork(states)
+```
+
+### Merge Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `weighted_mean` | Weighted average of tensors (uniform weights if none given) |
+| `max_norm` | Per-sublayer, keep the tensor with the highest Frobenius norm |
+| `recency` | Linearly increasing weights so more recent states dominate |
 
 ## File Format
 
 The `.npz` file contains:
-- `num_layers` — number of model layers (for validation)
-- `num_memory_layers_{i}` — MLP depth per layer (for validation)
-- `layer_{i}_weight_{j}` — weight matrix for layer i, memory sub-layer j
-- `layer_{i}_momentum_{j}` — momentum matrix for layer i, memory sub-layer j
+- `num_layers` -- number of model layers
+- `layer_{i}_type` -- 0 = plain `MemoryState`, 1 = `TNTMemoryState`
+
+For plain `MemoryState`:
+- `layer_{i}_num_memory_layers` -- MLP depth
+- `layer_{i}_weight_{j}` -- weight matrix for layer i, memory sub-layer j
+- `layer_{i}_momentum_{j}` -- momentum matrix for layer i, memory sub-layer j
+
+For `TNTMemoryState` (type=1), additional keys:
+- `layer_{i}_global_*` -- global memory weights/momentum
+- `layer_{i}_num_locals` -- number of local memories
+- `layer_{i}_local_{k}_*` -- per-local-memory weights/momentum
+- `layer_{i}_local_init_{k}_*` -- local init tensors
+- `layer_{i}_qk_{k}` -- Q-K projection tensors
+- `layer_{i}_step_counters` -- local step counters

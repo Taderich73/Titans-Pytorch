@@ -3,9 +3,9 @@
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-101%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-157%20passed-brightgreen.svg)](tests/)
 
-A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, and **Adaptive Window Sizing** as composable, independent features.
+A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Proportional RoPE (p-RoPE)** as composable, independent features.
 
 Titans introduce a **Neural Long-term Memory** module that learns to memorize historical context at test time using gradient descent with momentum and weight decay. **TNT** adds a hierarchical memory system — one global memory for long-range context and N local memories at different resolutions. **AttnRes** replaces fixed residual connections with learned depth-wise softmax attention, mitigating PreNorm dilution. **MCA** adds cross-attention to the memory's weight rows, giving the model a second read interface into learned associations. **Yaad** (from the Miras framework) replaces the standard L2 attentional bias with a Huber loss that is robust to outlier tokens. **Adaptive Window Sizing** lets each layer learn its own effective sliding window size via soft masking, balancing local context richness against compute cost.
 
@@ -631,11 +631,12 @@ titans-pytorch/
 |   +-- rlvr.py              # RLVR (GRPO / REINFORCE with verifiable rewards)
 |   +-- inference.py         # Text generation with memory persistence
 |   +-- diagnose_gradients.py # Per-layer gradient and memory state diagnostics
+|   +-- convert_checkpoint.py # Convert between .pt and .safetensors formats
 |   +-- pretokenize.py       # Pre-tokenize datasets to disk for faster training
 |   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
-|   +-- launch_hf_job.py     # HF Jobs launcher
+|   +-- hf_launch_job.py     # HF Jobs launcher
 |
-+-- tests/                   # 101 tests
++-- tests/                   # 157 tests
 ```
 
 ### Running Tests
