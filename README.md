@@ -3,7 +3,7 @@
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-157%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-187%20passed-brightgreen.svg)](tests/)
 
 A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Proportional RoPE (p-RoPE)** as composable, independent features.
 
@@ -33,6 +33,7 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 - [Yaad: Huber Attentional Bias](#yaad-huber-attentional-bias)
 - [Adaptive Window Sizing](#adaptive-window-sizing)
 - [Proportional RoPE (p-RoPE)](#proportional-rope-p-rope)
+- [HuggingFace Integration](#huggingface-integration)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pretraining](#pretraining)
@@ -302,6 +303,44 @@ model = TitansMAC(config)
 
 ---
 
+## HuggingFace Integration
+
+Titans v0.5.0 adds full HuggingFace transformers compatibility for the MAC architecture: `from_pretrained()` / `save_pretrained()`, a custom chunked `generate()`, and a `Trainer` subclass with per-chunk truncated BPTT.
+
+```python
+from titans.hf import TitansMACForCausalLM
+
+# Load from Hub (no trust_remote_code needed)
+model = TitansMACForCausalLM.from_pretrained("your-org/titans-mac-1.5B")
+
+# Generate with memory state management
+output = model.generate(input_ids, max_new_tokens=200, temperature=0.8)
+```
+
+Training with HF Trainer:
+
+```python
+from titans.hf import TitansMACForCausalLM, TitansTrainer
+from transformers import TrainingArguments
+
+trainer = TitansTrainer(
+    model=model,
+    args=TrainingArguments(output_dir="./out", max_steps=10000),
+    train_dataset=dataset,
+)
+trainer.train()
+```
+
+Convert existing checkpoints to HF format:
+
+```bash
+python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt --tokenizer gpt2 --output-dir ./hf_model
+```
+
+See [docs/huggingface_integration.md](docs/huggingface_integration.md) for full documentation including `TitansChunkMixin` for TRL, chat templates, and Hub upload.
+
+---
+
 ## Installation
 
 ```bash
@@ -312,8 +351,17 @@ uv sync
 # With training dependencies
 uv sync --extra train
 
+# With HuggingFace integration
+uv sync --extra hf
+
 # With all extras (development)
 uv sync --all-extras
+```
+
+Or via pip:
+
+```bash
+pip install titans[hf]
 ```
 
 Requires Python 3.12+ and PyTorch >= 2.2.0. Supports CPU and CUDA GPUs.
@@ -467,6 +515,17 @@ uv run python scripts/inference.py \
 
 Inference auto-detects `.pt` or `.safetensors` checkpoints. Memory states can be saved and loaded via `save_memory_states()` / `load_memory_states()` for inference-time continual learning across sessions.
 
+### HuggingFace Model Loading
+
+If your model has been converted to HF format (see [HuggingFace Integration](#huggingface-integration)):
+
+```python
+from titans.hf import TitansMACForCausalLM
+
+model = TitansMACForCausalLM.from_pretrained("your-org/titans-mac-1.5B")
+output = model.generate(input_ids, max_new_tokens=200)
+```
+
 ### Checkpoint Conversion
 
 Convert existing checkpoints between formats:
@@ -480,6 +539,13 @@ uv run python scripts/convert_checkpoint.py checkpoints/final.safetensors
 
 # Weights only (skip optimizer/scheduler metadata)
 uv run python scripts/convert_checkpoint.py checkpoints/final.pt --weights-only
+
+# Convert to HuggingFace format (config.json + model.safetensors + generation_config)
+uv run python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt --output-dir ./hf_model
+
+# Convert to HF format with tokenizer and push to Hub
+uv run python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt \
+    --tokenizer gpt2 --push-to-hub your-org/titans-mac --output-dir ./hf_model
 ```
 
 ---
@@ -598,6 +664,14 @@ from titans import (
     quantize_tensor,
     quantize_memory_state,
 )
+
+# HuggingFace Integration (requires: pip install titans[hf])
+from titans.hf import (
+    TitansMACConfig,
+    TitansMACForCausalLM,
+    TitansTrainer,
+    TitansChunkMixin,
+)
 ```
 
 ---
@@ -622,6 +696,10 @@ titans-pytorch/
 |   +-- memory_dump.py       # save/load memory states (.npz)
 |   +-- lora.py              # LoRA adapters: wrap, save, load, merge
 |   +-- quantize_state.py    # Memory state quantization (4-bit / 8-bit)
+|   +-- hf/                  # HuggingFace transformers integration
+|       +-- configuration.py # TitansMACConfig (PretrainedConfig)
+|       +-- modeling.py      # TitansMACForCausalLM (PreTrainedModel)
+|       +-- trainer.py       # TitansTrainer, TitansChunkMixin
 |
 +-- scripts/
 |   +-- pretrain.py          # Pretraining with HuggingFace Accelerate
@@ -632,11 +710,12 @@ titans-pytorch/
 |   +-- inference.py         # Text generation with memory persistence
 |   +-- diagnose_gradients.py # Per-layer gradient and memory state diagnostics
 |   +-- convert_checkpoint.py # Convert between .pt and .safetensors formats
+|   +-- convert_to_hf.py     # Convert native checkpoints to HuggingFace format
 |   +-- pretokenize.py       # Pre-tokenize datasets to disk for faster training
 |   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
 |   +-- hf_launch_job.py     # HF Jobs launcher
 |
-+-- tests/                   # 157 tests
++-- tests/                   # 187 tests
 ```
 
 ### Running Tests
