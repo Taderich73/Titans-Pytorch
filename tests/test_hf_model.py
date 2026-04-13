@@ -165,3 +165,17 @@ class TestGenerate:
                 input_ids, max_new_tokens=5, memory_states=states,
             )
         assert generated.shape == (1, 13)
+
+
+class TestAutoRegistration:
+    """Auto-registration with transformers AutoModel."""
+
+    def test_auto_config_registered(self):
+        from transformers import AutoConfig
+        config = AutoConfig.for_model("titans-mac")
+        assert isinstance(config, TitansMACConfig)
+
+    def test_auto_model_registered(self, small_hf_config):
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_config(small_hf_config)
+        assert isinstance(model, TitansMACForCausalLM)
