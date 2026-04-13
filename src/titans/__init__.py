@@ -60,7 +60,7 @@ from titans.lora import (
     count_lora_parameters,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Config
