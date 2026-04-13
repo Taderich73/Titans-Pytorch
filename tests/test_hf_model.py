@@ -120,3 +120,48 @@ class TestSaveLoad:
                 loaded_logits = loaded(input_ids).logits
 
         assert torch.allclose(original_logits, loaded_logits, atol=1e-6)
+
+
+class TestGenerate:
+    """Custom chunked generation with memory state management."""
+
+    def test_generate_produces_tokens(self, small_hf_config):
+        model = TitansMACForCausalLM(small_hf_config)
+        model.eval()
+        input_ids = torch.randint(0, 256, (1, 8))
+        with torch.no_grad():
+            generated = model.generate(input_ids, max_new_tokens=10)
+        assert generated.shape == (1, 18)  # 8 prompt + 10 generated
+        assert (generated[:, :8] == input_ids).all()  # prompt preserved
+
+    def test_generate_greedy(self, small_hf_config):
+        model = TitansMACForCausalLM(small_hf_config)
+        model.eval()
+        input_ids = torch.randint(0, 256, (1, 8))
+        with torch.no_grad():
+            gen1 = model.generate(input_ids, max_new_tokens=5, do_sample=False)
+            gen2 = model.generate(input_ids, max_new_tokens=5, do_sample=False)
+        assert (gen1 == gen2).all()  # deterministic
+
+    def test_generate_multi_chunk_prefill(self, small_hf_config):
+        """Prompt longer than chunk_size is handled via chunked prefill."""
+        model = TitansMACForCausalLM(small_hf_config)
+        model.eval()
+        # chunk_size=32, prompt=48 -> requires 2 chunks for prefill
+        input_ids = torch.randint(0, 256, (1, 48))
+        with torch.no_grad():
+            generated = model.generate(input_ids, max_new_tokens=5)
+        assert generated.shape == (1, 53)
+
+    def test_generate_with_memory_states(self, small_hf_config):
+        """Can pass initial memory states to generate."""
+        model = TitansMACForCausalLM(small_hf_config)
+        model.eval()
+        input_ids = torch.randint(0, 256, (1, 8))
+        with torch.no_grad():
+            out = model(input_ids)
+            states = out.past_key_values
+            generated = model.generate(
+                input_ids, max_new_tokens=5, memory_states=states,
+            )
+        assert generated.shape == (1, 13)

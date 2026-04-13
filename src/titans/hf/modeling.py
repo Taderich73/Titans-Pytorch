@@ -94,3 +94,107 @@ class TitansMACForCausalLM(PreTrainedModel):
             logits=logits,
             past_key_values=new_states,
         )
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.LongTensor,
+        max_new_tokens: int = 100,
+        temperature: float = 0.8,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        memory_states: list | None = None,
+        do_sample: bool = True,
+        **kwargs,
+    ) -> torch.LongTensor:
+        """Titans-specific chunked generation with memory state management.
+
+        Processes the prompt in chunk_size chunks (prefill), then decodes
+        token-by-token with a buffer that commits memory updates when full.
+
+        Args:
+            input_ids: Prompt token IDs, shape ``(B, prompt_len)``.
+            max_new_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            top_k: Top-k filtering (0 to disable).
+            top_p: Nucleus sampling threshold (1.0 to disable).
+            memory_states: Initial memory states for all blocks.
+            do_sample: If False, use greedy decoding.
+
+        Returns:
+            Tensor of shape ``(B, prompt_len + num_generated)`` containing
+            the prompt followed by generated tokens.
+        """
+        chunk_size = self.model.config.chunk_size
+        generated = input_ids
+        states = memory_states
+
+        # Prefill: chunk the prompt since model.forward() requires
+        # seq_len <= chunk_size
+        prompt_chunks = generated.split(chunk_size, dim=1)
+        for chunk in prompt_chunks:
+            logits, states = self.model(chunk, states=states)
+            if states is not None:
+                states = [s.detach() for s in states]
+
+        committed_states = [s.detach() for s in states] if states else None
+        buffer_start = generated.shape[1]
+
+        for _ in range(max_new_tokens):
+            next_logits = logits[:, -1, :] / temperature
+
+            if top_k > 0:
+                v, _ = torch.topk(
+                    next_logits, min(top_k, next_logits.size(-1))
+                )
+                next_logits[next_logits < v[:, [-1]]] = float("-inf")
+
+            if top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(
+                    next_logits, descending=True
+                )
+                cumulative_probs = torch.cumsum(
+                    F.softmax(sorted_logits, dim=-1), dim=-1
+                )
+                remove_mask = (
+                    cumulative_probs - F.softmax(sorted_logits, dim=-1)
+                    >= top_p
+                )
+                sorted_logits[remove_mask] = float("-inf")
+                next_logits = sorted_logits.scatter(
+                    1, sorted_indices, sorted_logits
+                )
+
+            if do_sample:
+                probs = torch.softmax(next_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = next_logits.argmax(dim=-1, keepdim=True)
+
+            generated = torch.cat([generated, next_token], dim=1)
+
+            buffer = generated[:, buffer_start:]
+            buffer_len = buffer.shape[1]
+
+            if buffer_len >= chunk_size:
+                chunk = buffer[:, :chunk_size]
+                logits, states = self.model(
+                    chunk, states=committed_states
+                )
+                states = [s.detach() for s in states]
+                committed_states = [s.detach() for s in states]
+                buffer_start += chunk_size
+
+                if buffer_len > chunk_size:
+                    remainder = buffer[:, chunk_size:]
+                    logits, states = self.model(
+                        remainder, states=committed_states
+                    )
+                    states = [s.detach() for s in states]
+            else:
+                logits, states = self.model(
+                    buffer, states=committed_states
+                )
+                states = [s.detach() for s in states]
+
+        return generated
