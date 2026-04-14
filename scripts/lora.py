@@ -601,7 +601,7 @@ def train(config: LoRATrainingConfig) -> None:
                 break
 
             with accelerator.accumulate(model):
-                logits, memory_states = model(
+                logits, memory_states, _ = model(
                     batch["input_ids"], states=memory_states
                 )
 

@@ -215,7 +215,7 @@ def diagnose(
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
 
         model.zero_grad()
-        logits, states = model(input_ids)
+        logits, states, _ = model(input_ids)
 
         # Cross-entropy loss: logits is (B, T, V)
         loss = F.cross_entropy(

@@ -689,7 +689,7 @@ def evaluate(
             if i >= max_batches:
                 break
 
-            logits, memory_states = model(batch["input_ids"], states=memory_states)
+            logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
             logits_flat = logits.view(-1, vocab_size)
             labels_flat = batch["labels"].view(-1)
             mask_flat = batch["loss_mask"].view(-1).float()
@@ -980,7 +980,7 @@ def train(config: SFTConfig) -> None:
                 break
 
             with accelerator.accumulate(model):
-                logits, memory_states = model(batch["input_ids"], states=memory_states)
+                logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
 
                 logits_flat = logits.view(-1, config.vocab_size)
                 labels_flat = batch["labels"].view(-1)
