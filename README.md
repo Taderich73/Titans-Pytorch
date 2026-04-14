@@ -760,7 +760,7 @@ titans-pytorch/
 |       +-- trainer.py       # TitansTrainer, TitansChunkMixin
 |
 +-- scripts/
-|   +-- pretrain.py          # Pretraining with HuggingFace Accelerate
+|   +-- pretrain.py          # Pretraining (streaming FineWeb-Edu, HF Jobs)
 |   +-- sft.py               # Supervised fine-tuning (chat datasets)
 |   +-- lora.py              # LoRA fine-tuning
 |   +-- dpo.py               # DPO / SimPO preference optimization
@@ -770,8 +770,7 @@ titans-pytorch/
 |   +-- convert_checkpoint.py # Convert between .pt and .safetensors formats
 |   +-- convert_to_hf.py     # Convert native checkpoints to HuggingFace format
 |   +-- pretokenize.py       # Pre-tokenize datasets to disk for faster training
-|   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
-|   +-- hf_launch_job.py     # HF Jobs launcher
+|   +-- launch_pretraining_job.py # HF Jobs launcher
 |
 +-- tests/                   # 304 tests
 ```

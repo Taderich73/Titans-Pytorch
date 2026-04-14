@@ -4,16 +4,16 @@ Launch a Titans pretraining job on HuggingFace Jobs.
 
 Usage:
     # Small test run (A10G, 100 steps, ~$1)
-    uv run python scripts/launch_hf_job.py --test
+    uv run python scripts/launch_pretraining_job.py --test
 
     # Full training run (A100, 10K steps)
-    uv run python scripts/launch_hf_job.py --flavor a100-large --timeout 8h
+    uv run python scripts/launch_pretraining_job.py --flavor a100-large --timeout 8h
 
     # Resume a previous run and extend to 50K steps
-    uv run python scripts/launch_hf_job.py --resume checkpoints/final.pt --max-steps 50000
+    uv run python scripts/launch_pretraining_job.py --resume checkpoints/final.pt --max-steps 50000
 
     # Custom model with proportional RoPE
-    uv run python scripts/launch_hf_job.py --dim 512 --num-layers 12 --rope-proportion 0.25
+    uv run python scripts/launch_pretraining_job.py --dim 512 --num-layers 12 --rope-proportion 0.25
 """
 
 from __future__ import annotations
@@ -129,24 +129,24 @@ def main():
     feat = parser.add_argument_group("Model features")
     feat.add_argument(
         "--use-tnt", type=str, default=None, choices=["true", "false"],
-        help="Enable/disable TNT (Test-time Neural Turing). Default: true in hf_pretrain.py",
+        help="Enable/disable TNT (Test-time Neural Turing). Default: true in pretrain.py",
     )
     feat.add_argument(
         "--use-attn-res", type=str, default=None, choices=["true", "false"],
-        help="Enable/disable attention residual. Default: true in hf_pretrain.py",
+        help="Enable/disable attention residual. Default: true in pretrain.py",
     )
     feat.add_argument(
         "--use-mca", type=str, default=None, choices=["true", "false"],
-        help="Enable/disable MCA (Multi-scale Contextual Attention). Default: true in hf_pretrain.py",
+        help="Enable/disable MCA (Multi-scale Contextual Attention). Default: true in pretrain.py",
     )
     feat.add_argument(
         "--adaptive-window", type=str, default=None, choices=["true", "false"],
-        help="Enable/disable adaptive windowing. Default: true in hf_pretrain.py",
+        help="Enable/disable adaptive windowing. Default: true in pretrain.py",
     )
     feat.add_argument(
         "--memory-objective", type=str, default=None,
         choices=["huber", "l2", "l1"],
-        help="Memory objective loss function. Default: huber in hf_pretrain.py",
+        help="Memory objective loss function. Default: huber in pretrain.py",
     )
 
     # --- Hub / checkpointing ---
@@ -183,7 +183,7 @@ def main():
         "--profile-memory",
         action="store_true",
         help=(
-            "Enable high-level CUDA memory profiling in hf_pretrain.py. Logs "
+            "Enable high-level CUDA memory profiling in pretrain.py. Logs "
             "torch.cuda.max_memory_allocated() at key points (model build, "
             "first batch load, before/after forward, after backward, after "
             "optimizer step). Adds minor overhead from synchronize() calls; "
@@ -216,7 +216,7 @@ def main():
         )
 
     # Read the training script
-    script_path = Path(__file__).parent / "hf_pretrain.py"
+    script_path = Path(__file__).parent / "pretrain.py"
     script = script_path.read_text()
 
     # Inject the titans package SHA pin into the uv script header. The default
@@ -232,7 +232,7 @@ def main():
     new_script, sub_count = re.subn(sha_pattern, sha_replacement, script)
     if sub_count == 0:
         raise RuntimeError(
-            "Could not find titans dependency line in hf_pretrain.py to "
+            "Could not find titans dependency line in pretrain.py to "
             "inject SHA pin. Has the dependency string format changed?"
         )
     if sub_count > 1:
@@ -258,7 +258,7 @@ def main():
         )
         if n != 1:
             raise RuntimeError(
-                "Could not find PROFILE_MEMORY = False in hf_pretrain.py to "
+                "Could not find PROFILE_MEMORY = False in pretrain.py to "
                 "inject --profile-memory override. Has the constant been "
                 "renamed or already set to True upstream?"
             )
@@ -275,7 +275,7 @@ def main():
             raise RuntimeError(
                 "--profile-memory-per-block requires --profile-memory to "
                 "also be passed. The per-block trace is gated on both "
-                "constants in hf_pretrain.py."
+                "constants in pretrain.py."
             )
         new_script, n = re.subn(
             r"^PROFILE_MEMORY_PER_BLOCK\s*=\s*False",
@@ -287,7 +287,7 @@ def main():
         if n != 1:
             raise RuntimeError(
                 "Could not find PROFILE_MEMORY_PER_BLOCK = False in "
-                "hf_pretrain.py to inject --profile-memory-per-block override. "
+                "pretrain.py to inject --profile-memory-per-block override. "
                 "Has the constant been renamed or already set to True upstream?"
             )
         script = new_script
@@ -320,7 +320,7 @@ def main():
         print(f"FULL RUN: {flavor}")
 
     # Apply CLI overrides — each maps an argparse flag to a script constant.
-    # Only non-None values are applied (so defaults in hf_pretrain.py are kept).
+    # Only non-None values are applied (so defaults in pretrain.py are kept).
     overrides: list[tuple[str, str, object | None]] = [
         # Model
         ("DIM", "--dim", args.dim),
@@ -451,13 +451,13 @@ def main():
     if not saw_profile:
         raise RuntimeError(
             "Self-check FAILED: PROFILE_MEMORY constant not found in "
-            "submitted script. The hf_pretrain.py file may have been "
+            "submitted script. The pretrain.py file may have been "
             "modified upstream. Aborting."
         )
     if not saw_per_block:
         raise RuntimeError(
             "Self-check FAILED: PROFILE_MEMORY_PER_BLOCK constant not found "
-            "in submitted script. The hf_pretrain.py file may have been "
+            "in submitted script. The pretrain.py file may have been "
             "modified upstream or the constant was renamed. Aborting."
         )
 
