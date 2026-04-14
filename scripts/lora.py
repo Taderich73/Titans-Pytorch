@@ -47,7 +47,8 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
-from titans.checkpoint import save_checkpoint
+from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.memory_dump import save_memory_states
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -581,11 +582,47 @@ def train(config: LoRATrainingConfig) -> None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     global_step = 0
+    start_epoch = 0
     memory_states = None
     vocab_size = config.vocab_size
 
+    # ------------------------------------------------------------------
+    # Resume from LoRA checkpoint
+    # ------------------------------------------------------------------
+    if config.resume is not None:
+        resume_path = Path(config.resume)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
+        checkpoint = load_checkpoint(resume_path, weights_only=False)
+        unwrapped = accelerator.unwrap_model(model)
+        unwrapped.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        global_step = checkpoint.get("step", 0)
+        start_epoch = checkpoint.get("epoch", 0)
+
+        # Load memory states if available
+        mem_path = resume_path.parent / f"memory_step_{global_step}.npz"
+        if not mem_path.exists():
+            mem_path = resume_path.parent / "memory_final.npz"
+        try:
+            from titans.memory_dump import load_memory_states
+
+            memory_states = load_memory_states(mem_path, device=accelerator.device)
+            if accelerator.is_main_process:
+                logger.info(f"Loaded memory states from {mem_path}")
+        except Exception as e:
+            if accelerator.is_main_process:
+                logger.info(f"No memory states found ({e}), starting fresh")
+
+        if accelerator.is_main_process:
+            logger.info(
+                f"Resumed from {resume_path} at step {global_step}, epoch {start_epoch}"
+            )
+        del checkpoint
+
     # --- 8. Training loop ---
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
         model.train()
         epoch_loss = 0.0
         num_batches = 0
