@@ -722,6 +722,30 @@ def train(config: LoRATrainingConfig) -> None:
                         f"{global_step}"
                     )
 
+                # Full checkpoint for resume support
+                ckpt_stem = checkpoint_dir / f"step_{global_step}"
+                save_checkpoint(
+                    unwrapped.state_dict(),
+                    ckpt_stem,
+                    format=config.save_format,
+                    metadata={
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "config": vars(config),
+                        "step": global_step,
+                        "epoch": epoch,
+                    },
+                )
+                logger.info(
+                    f"Checkpoint: saved full model at step {global_step}"
+                )
+
+                # Memory states
+                if memory_states is not None:
+                    mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
+                    save_memory_states(memory_states, mem_path)
+                    logger.info(f"Saved memory states: step {global_step}")
+
         if accelerator.is_main_process:
             avg_loss = epoch_loss / max(num_batches, 1)
             logger.info(f"Epoch {epoch + 1} complete — avg loss: {avg_loss:.4f}")
@@ -775,6 +799,11 @@ def train(config: LoRATrainingConfig) -> None:
                 format=config.save_format,
             )
             logger.info(f"Saved merged model to {merge_files[0]}")
+
+        # Memory states
+        if memory_states is not None:
+            mem_path = checkpoint_dir / "memory_final.npz"
+            save_memory_states(memory_states, mem_path)
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
