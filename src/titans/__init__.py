@@ -59,6 +59,25 @@ from titans.lora import (
     merge_lora_weights,
     count_lora_parameters,
 )
+from titans.checkpoint_types import (
+    CheckpointEntry,
+    GateSnapshot,
+    MemoryCheckpointConfig,
+    SignalFrame,
+    TransitionRecord,
+)
+from titans.checkpoint_signals import (
+    build_signal_frame,
+    compute_momentum_norms,
+    compute_momentum_shift,
+    compute_weight_delta,
+    compute_weight_norms,
+)
+from titans.novelty_detector import (
+    StatisticalNoveltyDetector,
+    TriggerDecision,
+)
+from titans.memory_checkpointer import MemoryCheckpointer
 
 __version__ = "0.5.0"
 
@@ -115,4 +134,18 @@ __all__ = [
     "load_adapters",
     "merge_lora_weights",
     "count_lora_parameters",
+    # Auto-Checkpointing
+    "GateSnapshot",
+    "SignalFrame",
+    "CheckpointEntry",
+    "TransitionRecord",
+    "MemoryCheckpointConfig",
+    "MemoryCheckpointer",
+    "StatisticalNoveltyDetector",
+    "TriggerDecision",
+    "build_signal_frame",
+    "compute_weight_delta",
+    "compute_momentum_shift",
+    "compute_weight_norms",
+    "compute_momentum_norms",
 ]

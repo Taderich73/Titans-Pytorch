@@ -280,7 +280,7 @@ def train(config: TrainingConfig) -> None:
                 break
 
             with accelerator.accumulate(model):
-                logits, memory_states = model(batch["input_ids"], states=memory_states)
+                logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
 
                 loss = F.cross_entropy(
                     logits.view(-1, config.vocab_size),

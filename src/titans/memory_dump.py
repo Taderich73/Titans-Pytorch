@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from titans.checkpoint_types import CheckpointEntry, GateSnapshot
 from titans.memory import MemoryState, TNTMemoryState
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,172 @@ def _warn_on_degenerate_states(
             "--memory-state to use the model's learned init weights instead.",
             source, len(bad), preview, more,
         )
+
+
+# ---------------------------------------------------------------------------
+# CheckpointEntry serialization
+# ---------------------------------------------------------------------------
+
+
+def save_checkpoint_entry(entry: CheckpointEntry, path: Path) -> None:
+    """Serialize a CheckpointEntry to a .npz file.
+
+    The memory state portion uses the same key format as
+    :func:`save_memory_states` so that :func:`load_memory_states` can still
+    read the resulting file (backward compatibility). Gate and metadata keys
+    use ``gates_`` and ``meta_`` namespace prefixes respectively.
+
+    Args:
+        entry: The CheckpointEntry to serialise.
+        path: Destination path. A ``.npz`` extension is added if absent.
+    """
+    arrays: dict[str, np.ndarray] = {}
+
+    # --- State portion (mirrors save_memory_states for a single state) ---
+    state = entry.state
+    arrays["num_layers"] = np.array([1])
+    if isinstance(state, TNTMemoryState):
+        arrays["layer_0_type"] = np.array([1])  # 1 = TNT
+        _save_memory_state(arrays, "layer_0_global", state.global_state)
+        arrays["layer_0_num_locals"] = np.array([len(state.local_states)])
+        for k, local_s in enumerate(state.local_states):
+            _save_memory_state(arrays, f"layer_0_local_{k}", local_s)
+        for k, inits in enumerate(state.local_inits):
+            arrays[f"layer_0_local_init_{k}_count"] = np.array([len(inits)])
+            for j, t in enumerate(inits):
+                arrays[f"layer_0_local_init_{k}_{j}"] = t.detach().cpu().numpy()
+        arrays["layer_0_num_qk"] = np.array([len(state.qk_projections)])
+        for k, qk in enumerate(state.qk_projections):
+            arrays[f"layer_0_qk_{k}"] = qk.detach().cpu().numpy()
+        arrays["layer_0_step_counters"] = np.array(
+            state.local_step_counters, dtype=np.int64
+        )
+    else:
+        arrays["layer_0_type"] = np.array([0])  # 0 = plain MemoryState
+        _save_memory_state(arrays, "layer_0", state)
+
+    # --- Gate portion ---
+    if entry.gates is not None:
+        gates = entry.gates
+        arrays["gates_has_data"] = np.array([1], dtype=np.uint8)
+        num_gate_layers = len(gates.alpha)
+        arrays["gates_num_layers"] = np.array([num_gate_layers])
+        for k in range(num_gate_layers):
+            arrays[f"gates_layer_{k}_alpha_0"] = gates.alpha[k].detach().cpu().numpy()
+            arrays[f"gates_layer_{k}_theta_0"] = gates.theta[k].detach().cpu().numpy()
+            arrays[f"gates_layer_{k}_eta_0"] = gates.eta[k].detach().cpu().numpy()
+        arrays["gates_has_delta"] = np.array(
+            [1 if gates.delta is not None else 0], dtype=np.uint8
+        )
+        if gates.delta is not None:
+            for k in range(num_gate_layers):
+                arrays[f"gates_layer_{k}_delta_0"] = (
+                    gates.delta[k].detach().cpu().numpy()
+                )
+        arrays["gates_input_activation_norm"] = np.array(
+            [gates.input_activation_norm], dtype=np.float32
+        )
+        arrays["gates_chunk_index"] = np.array([gates.chunk_index], dtype=np.int64)
+    else:
+        arrays["gates_has_data"] = np.array([0], dtype=np.uint8)
+
+    # --- Metadata portion ---
+    arrays["meta_trigger_phase"] = np.frombuffer(
+        entry.trigger_phase.encode("utf-8"), dtype=np.uint8
+    )
+    arrays["meta_config_hash"] = np.frombuffer(
+        entry.config_hash.encode("utf-8"), dtype=np.uint8
+    )
+    arrays["meta_weight_norms"] = np.array(entry.weight_norms, dtype=np.float32)
+    arrays["meta_momentum_norms"] = np.array(entry.momentum_norms, dtype=np.float32)
+
+    np.savez(Path(path), **arrays)
+
+
+def load_checkpoint_entry(
+    path: Path,
+    device: torch.device | None = None,
+) -> CheckpointEntry:
+    """Deserialize a CheckpointEntry from a .npz file.
+
+    Uses :func:`load_memory_states` for the state portion and then reads the
+    ``gates_`` and ``meta_`` namespaced keys.
+
+    Args:
+        path: Path to the .npz file produced by :func:`save_checkpoint_entry`.
+        device: Torch device for loaded tensors. Defaults to CPU.
+
+    Returns:
+        The reconstructed :class:`~titans.checkpoint_types.CheckpointEntry`.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    states = load_memory_states(path, device=device, reset_for_inference=False)
+    if len(states) != 1:
+        raise ValueError(
+            f"Expected exactly 1 state in checkpoint entry, got {len(states)}"
+        )
+    state = states[0]
+
+    path = Path(path)
+    if not path.exists():
+        path = path.with_suffix(".npz")
+    data = np.load(str(path))
+
+    # --- Gate portion ---
+    gates: GateSnapshot | None = None
+    has_data = int(data["gates_has_data"][0]) if "gates_has_data" in data else 0
+    if has_data:
+        num_gate_layers = int(data["gates_num_layers"][0])
+        alpha = [
+            torch.from_numpy(data[f"gates_layer_{k}_alpha_0"].copy()).to(device)
+            for k in range(num_gate_layers)
+        ]
+        theta = [
+            torch.from_numpy(data[f"gates_layer_{k}_theta_0"].copy()).to(device)
+            for k in range(num_gate_layers)
+        ]
+        eta = [
+            torch.from_numpy(data[f"gates_layer_{k}_eta_0"].copy()).to(device)
+            for k in range(num_gate_layers)
+        ]
+        has_delta = int(data["gates_has_delta"][0])
+        delta: list[torch.Tensor] | None = None
+        if has_delta:
+            delta = [
+                torch.from_numpy(data[f"gates_layer_{k}_delta_0"].copy()).to(device)
+                for k in range(num_gate_layers)
+            ]
+        input_activation_norm = float(data["gates_input_activation_norm"][0])
+        chunk_index = int(data["gates_chunk_index"][0])
+        gates = GateSnapshot(
+            alpha=alpha,
+            theta=theta,
+            eta=eta,
+            delta=delta,
+            input_activation_norm=input_activation_norm,
+            chunk_index=chunk_index,
+        )
+
+    # --- Metadata portion ---
+    trigger_phase = bytes(data["meta_trigger_phase"]).decode("utf-8")
+    config_hash = bytes(data["meta_config_hash"]).decode("utf-8")
+    weight_norms = data["meta_weight_norms"].tolist()
+    momentum_norms = data["meta_momentum_norms"].tolist()
+
+    return CheckpointEntry(
+        state=state,
+        gates=gates,
+        metadata={},
+        trigger_phase=trigger_phase,
+        weight_norms=weight_norms,
+        momentum_norms=momentum_norms,
+        config_hash=config_hash,
+    )
 
 
 # ---------------------------------------------------------------------------

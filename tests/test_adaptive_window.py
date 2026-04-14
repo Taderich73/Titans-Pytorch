@@ -94,5 +94,5 @@ class TestAdaptiveWindowIntegration:
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)

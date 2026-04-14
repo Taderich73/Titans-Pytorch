@@ -3,6 +3,7 @@
 import torch
 import torch.nn.functional as F
 
+from titans.checkpoint_types import GateSnapshot
 from titans.config import TitansConfig
 from titans.memory import MemoryMLP, MemoryState, NeuralLongTermMemory
 
@@ -59,7 +60,7 @@ class TestNeuralLongTermMemory:
     def test_forward_shape(self, default_config, device):
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device)
-        output, new_state = mem(x)
+        output, new_state, _ = mem(x)
         assert output.shape == x.shape
         assert new_state is not None
 
@@ -67,14 +68,14 @@ class TestNeuralLongTermMemory:
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device)
         state = mem.init_state(batch_size=2)
-        _, new_state = mem(x, state=state)
+        _, new_state, _ = mem(x, state=state)
         assert not torch.allclose(state.weights[0], new_state.weights[0])
 
     def test_linear_memory_forward(self, linear_memory_config, device):
         """Single-layer memory uses parallel update path."""
         mem = NeuralLongTermMemory(linear_memory_config).to(device)
         x = torch.randn(2, 8, linear_memory_config.dim, device=device)
-        output, new_state = mem(x)
+        output, new_state, _ = mem(x)
         assert output.shape == x.shape
         assert len(new_state.weights) == 1
 
@@ -82,7 +83,7 @@ class TestNeuralLongTermMemory:
         """Forward without explicit state should auto-initialize."""
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device)
-        output, state = mem(x, state=None)
+        output, state, _ = mem(x, state=None)
         assert output.shape == x.shape
         assert state is not None
 
@@ -98,7 +99,7 @@ class TestNeuralLongTermMemory:
         """
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device)
-        _, state = mem(x)
+        _, state, _ = mem(x)
         assert default_config.detach_memory_state_in_forward is False
         for w in state.weights:
             assert w.requires_grad
@@ -122,7 +123,7 @@ class TestNeuralLongTermMemory:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, config.dim, device=device)
-        _, state = mem(x)
+        _, state, _ = mem(x)
         for w in state.weights:
             assert not w.requires_grad
         for m in state.momentum:
@@ -132,14 +133,14 @@ class TestNeuralLongTermMemory:
         config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, use_conv=True)
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
-        output, state = mem(x)
+        output, state, _ = mem(x)
         assert output.shape == x.shape
 
     def test_without_conv(self, device):
         config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, use_conv=False)
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
-        output, state = mem(x)
+        output, state, _ = mem(x)
         assert output.shape == x.shape
 
     def test_huber_objective(self, device):
@@ -148,8 +149,43 @@ class TestNeuralLongTermMemory:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
-        output, state = mem(x)
+        output, state, _ = mem(x)
         assert output.shape == x.shape
+
+    def test_gate_snapshot_none_when_auto_checkpoint_false(self, device):
+        """gate_snapshot is None when auto_checkpoint=False (default)."""
+        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=False)
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, 64, device=device)
+        _, _, gate_snapshot = mem(x)
+        assert gate_snapshot is None
+
+    def test_gate_snapshot_populated_when_auto_checkpoint_true(self, device):
+        """gate_snapshot is a GateSnapshot when auto_checkpoint=True."""
+        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=True)
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, 64, device=device)
+        _, _, gate_snapshot = mem(x)
+        assert isinstance(gate_snapshot, GateSnapshot)
+        assert len(gate_snapshot.alpha) == 1
+        assert len(gate_snapshot.theta) == 1
+        assert len(gate_snapshot.eta) == 1
+        assert gate_snapshot.delta is None
+        assert isinstance(gate_snapshot.input_activation_norm, float)
+        assert gate_snapshot.chunk_index == 0
+
+    def test_gate_snapshot_has_delta_with_huber(self, device):
+        """gate_snapshot.delta is populated when memory_objective='huber'."""
+        config = TitansConfig(
+            dim=64, num_heads=4, num_memory_layers=1,
+            auto_checkpoint=True, memory_objective="huber",
+        )
+        mem = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, 64, device=device)
+        _, _, gate_snapshot = mem(x)
+        assert isinstance(gate_snapshot, GateSnapshot)
+        assert gate_snapshot.delta is not None
+        assert len(gate_snapshot.delta) == 1
 
     def test_retrieve(self, default_config, device):
         mem = NeuralLongTermMemory(default_config).to(device)
@@ -170,7 +206,7 @@ class TestNeuralLongTermMemory:
         """
         mem = NeuralLongTermMemory(default_config).to(device)
         x = torch.randn(2, 8, default_config.dim, device=device, requires_grad=True)
-        output, _ = mem(x)
+        output, _, _ = mem(x)
         loss = output.sum()
         loss.backward()
         assert x.grad is not None
@@ -214,7 +250,7 @@ class TestNeuralLongTermMemory:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 16, config.dim, device=device, requires_grad=True)
-        _, new_state = mem(x)
+        _, new_state, _ = mem(x)
 
         # Simulate HierarchicalMemory.forward: retrieve via the NEW state so
         # the gates (which only affect new_state) have a path to the loss.
@@ -256,7 +292,7 @@ class TestPerChunkDecay:
         state = mem.init_state(batch_size=2)
 
         # Run forward to get the parallel update result
-        output, new_state = mem(x, state=state)
+        output, new_state, _ = mem(x, state=state)
 
         # Compute chunk_alpha from the bias directly
         with torch.no_grad():
@@ -293,7 +329,7 @@ class TestPerChunkDecay:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(1, 512, config.dim, device=device)
-        _, new_state = mem(x)
+        _, new_state, _ = mem(x)
         retrieved = mem.retrieve(x, new_state)
         loss = retrieved.sum()
         loss.backward()
@@ -317,7 +353,7 @@ class TestPerChunkDecay:
         state = mem.init_state(batch_size=2)
         init_norm = state.weights[0].norm().item()
 
-        _, new_state = mem(x, state=state)
+        _, new_state, _ = mem(x, state=state)
         new_norm = new_state.weights[0].detach().norm().item()
 
         # With chunk_alpha ≈ 0.12, retention ≈ 88% — weight norm should
@@ -338,7 +374,7 @@ class TestPerChunkDecay:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 16, config.dim, device=device)
-        output, state = mem(x)
+        output, state, _ = mem(x)
         assert output.shape == x.shape
         assert state is not None
 
@@ -401,7 +437,7 @@ class TestDeltaMemoryParam:
         # Run many forward passes with state carry to decay delta
         state = mem.init_state(batch_size=2)
         for _ in range(20):
-            _, state = mem(x, state=state)
+            _, state, _ = mem(x, state=state)
             state = state.detach()
 
         # Delta should be near zero after heavy decay
@@ -428,7 +464,7 @@ class TestDeltaMemoryParam:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 16, config.dim, device=device)
-        _, new_state = mem(x)
+        _, new_state, _ = mem(x)
         retrieved = mem.retrieve(x, new_state)
         loss = retrieved.sum()
         loss.backward()
@@ -466,7 +502,7 @@ class TestDeltaMemoryParam:
         state = mem.init_state(batch_size=2)
 
         # Forward should work and produce nonzero output
-        output, new_state = mem(x, state=state)
+        output, new_state, _ = mem(x, state=state)
         assert output.norm().item() > 0, "Output is zero with deep delta param"
 
         # Delta should be nonzero after forward
@@ -495,12 +531,12 @@ class TestNLTMRetrievalOrder:
         state = mem.init_state(1)
 
         # Forward with original bias
-        out1, _ = mem(x, state=state, return_state=True)
+        out1, _, _ = mem(x, state=state, return_state=True)
 
         # Change gate_decay_proj bias and forward again with same input + state
         with torch.no_grad():
             mem.gate_decay_proj.bias.fill_(5.0)  # very different from init
-        out2, _ = mem(x, state=state, return_state=True)
+        out2, _, _ = mem(x, state=state, return_state=True)
 
         # If retrieval uses updated state, outputs must differ
         assert not torch.allclose(out1, out2, atol=1e-6), (
@@ -526,7 +562,7 @@ class TestNLTMRetrievalOrder:
         x = torch.randn(2, 16, 32)
         state = mem.init_state(2)
 
-        output, new_state = mem(x, state=state, return_state=True)
+        output, new_state, _ = mem(x, state=state, return_state=True)
         loss = output.sum()
         loss.backward()
 
@@ -558,7 +594,7 @@ class TestNeuralLongTermMemoryLegacy:
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 16, config.dim, device=device, requires_grad=True)
-        _, new_state = mem(x)
+        _, new_state, _ = mem(x)
 
         # Downstream retrieve on the (now-detached) new_state can't reach the
         # gates, so even this more forgiving path has no gradient signal.

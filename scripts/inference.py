@@ -66,6 +66,7 @@ def generate(
     temperature: float = 0.8,
     top_k: int = 50,
     memory_states: list | None = None,
+    checkpointer=None,
 ) -> tuple[torch.Tensor, list]:
     """Generate tokens autoregressively, mirroring training chunking.
 
@@ -80,13 +81,26 @@ def generate(
        full buffer (up to chunk_size) so attention has local context. When the
        buffer reaches chunk_size, commit the memory update and start a new
        buffer. This avoids redundant memory updates on already-processed tokens.
+
+    Args:
+        model: Titans MAC model in eval mode.
+        input_ids: Prompt token IDs, shape (1, prompt_len).
+        max_new_tokens: Maximum tokens to generate.
+        temperature: Sampling temperature.
+        top_k: Top-k filtering (0 to disable).
+        memory_states: Optional initial memory states.
+        checkpointer: Optional MemoryCheckpointer instance for novelty-triggered
+            state checkpointing.
+
+    Returns:
+        Tuple of (generated_ids, final_states).
     """
     chunk_size = model.config.chunk_size
     generated = input_ids
     states = memory_states
 
     # Prefill: process full prompt, updating memory per-chunk (handled by model)
-    logits, states = model(generated, states=states)
+    logits, states, gate_snapshots = model(generated, states=states)
     if states is not None:
         states = [s.detach() for s in states]
 
@@ -95,6 +109,7 @@ def generate(
     # doesn't compound memory updates
     committed_states = [s.detach() for s in states] if states else None
     buffer_start = generated.shape[1]  # where the decode buffer begins
+    chunk_idx = 0
 
     for _ in range(max_new_tokens):
         next_logits = logits[:, -1, :] / temperature
@@ -114,22 +129,31 @@ def generate(
         if buffer_len >= chunk_size:
             # Full chunk ready — process and commit memory update
             chunk = buffer[:, :chunk_size]
-            logits, states = model(chunk, states=committed_states)
+            logits, states, gate_snapshots = model(chunk, states=committed_states)
             states = [s.detach() for s in states]
             committed_states = [s.detach() for s in states]
             buffer_start += chunk_size
+
+            if checkpointer is not None:
+                checkpointer.on_chunk_commit(
+                    committed_states, gate_snapshots, chunk_index=chunk_idx
+                )
+            chunk_idx += 1
 
             # If there are leftover tokens after the chunk boundary,
             # re-process them for the next logits
             if buffer_len > chunk_size:
                 remainder = buffer[:, chunk_size:]
-                logits, states = model(remainder, states=committed_states)
+                logits, states, gate_snapshots = model(remainder, states=committed_states)
                 states = [s.detach() for s in states]
         else:
             # Partial buffer — re-feed from committed state so memory
             # only sees these tokens once when the chunk completes
-            logits, states = model(buffer, states=committed_states)
+            logits, states, gate_snapshots = model(buffer, states=committed_states)
             states = [s.detach() for s in states]
+
+    if checkpointer is not None:
+        checkpointer.flush()
 
     return generated, states
 
@@ -152,6 +176,14 @@ def main() -> None:
         default=None,
         help="Save memory state after inference",
     )
+    parser.add_argument(
+        "--auto-checkpoint", action="store_true", default=False,
+        help="Enable novelty-triggered memory state checkpointing",
+    )
+    parser.add_argument(
+        "--signal-log", action="store_true", default=False,
+        help="Enable signal log (WAL) for post-hoc analysis (requires --auto-checkpoint)",
+    )
 
     args = parser.parse_args()
 
@@ -164,6 +196,21 @@ def main() -> None:
 
     model, config = load_model(args.checkpoint, device)
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")
+
+    if args.signal_log and not args.auto_checkpoint:
+        logger.warning("--signal-log has no effect without --auto-checkpoint. Ignoring.")
+
+    checkpointer = None
+    if args.auto_checkpoint:
+        import hashlib
+        import json as json_mod
+        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.memory_checkpointer import MemoryCheckpointer
+        ckpt_config = MemoryCheckpointConfig(signal_log_enabled=args.signal_log)
+        config_hash = hashlib.sha256(
+            json_mod.dumps(config.to_dict(), sort_keys=True).encode()
+        ).hexdigest()[:12]
+        checkpointer = MemoryCheckpointer(ckpt_config, config_hash=config_hash)
 
     if not HAS_TRANSFORMERS:
         raise ImportError("transformers required for tokenization")
@@ -183,6 +230,7 @@ def main() -> None:
         temperature=args.temperature,
         top_k=args.top_k,
         memory_states=memory_states,
+        checkpointer=checkpointer,
     )
 
     output_text = tokenizer.decode(generated[0], skip_special_tokens=True)

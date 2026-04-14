@@ -107,15 +107,16 @@ def process_chunk(
     states: list[MemoryState | TNTMemoryState],
     config: TitansConfig,
     _step_count: int = 0,
-) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
+) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
     """Process a single chunk through all blocks."""
     new_states = []
+    gate_snapshots = []
 
     if not config.use_attn_res:
         # Standard residual path
         x = chunk
         for i, block in enumerate(blocks):
-            core_out, new_state = block.core_forward(x, state=states[i])
+            core_out, new_state, gate_snapshot = block.core_forward(x, state=states[i])
             x = x + core_out
 
             if hasattr(block, "has_mca") and block.has_mca:
@@ -125,7 +126,8 @@ def process_chunk(
             ffn_out = block.ffn_forward(x)
             x = x + ffn_out
             new_states.append(new_state)
-        return x, new_states
+            gate_snapshots.append(gate_snapshot)
+        return x, new_states, gate_snapshots
 
     # AttnRes path — replaces residual connections per AttnRes paper
     S = config.attnres_sub_layer_block_size
@@ -145,10 +147,11 @@ def process_chunk(
         if not warmup:
             memory_gate = block.attn_res_gate(attn_weights)
 
-        core_out, new_state = block.core_forward(
+        core_out, new_state, gate_snapshot = block.core_forward(
             h, state=states[i], memory_gate=memory_gate
         )
         new_states.append(new_state)
+        gate_snapshots.append(gate_snapshot)
 
         if partial_block is None:
             partial_block = core_out
@@ -188,7 +191,7 @@ def process_chunk(
             completed_blocks.append(partial_block)
             partial_block = None
 
-    return completed_blocks[-1], new_states
+    return completed_blocks[-1], new_states, gate_snapshots
 
 
 class MACBlock(nn.Module):
@@ -239,7 +242,7 @@ class MACBlock(nn.Module):
         h: torch.Tensor,
         state: MemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
+    ) -> tuple[torch.Tensor, MemoryState, object]:
         batch_size = h.shape[0]
 
         if state is None:
@@ -257,14 +260,14 @@ class MACBlock(nn.Module):
 
         y_t = h + attn_out
 
-        mem_out, new_state = self.memory(y_t, state=state, memory_gate=memory_gate)
+        mem_out, new_state, gate_snapshot = self.memory(y_t, state=state, memory_gate=memory_gate)
 
         gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
             self.gate_norm_mem(mem_out)
         )
 
         core_out = attn_out + gated
-        return core_out, new_state
+        return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
         normed = self.norm2(h)
@@ -278,7 +281,7 @@ class MACBlock(nn.Module):
         x: torch.Tensor,
         state: MemoryState | None = None,
     ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state = self.core_forward(x, state=state)
+        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
         x = x + core_out
         ffn_out = self.ffn_forward(x)
         x = x + ffn_out
@@ -310,8 +313,8 @@ class TitansMAC(nn.Module):
         self,
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
-        """Process a single chunk. Returns (logits, new_states).
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
+        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
 
         Args:
             input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
@@ -334,14 +337,14 @@ class TitansMAC(nn.Module):
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-        x, new_states = process_chunk(
+        x, new_states, gate_snapshots = process_chunk(
             self.blocks, x, states, self.config, self._step_count
         )
 
         x = self.norm(x)
         logits = self.head(x)
         self._step_count += 1
-        return logits, new_states
+        return logits, new_states, gate_snapshots
 
 
 class MAGBlock(nn.Module):
@@ -401,7 +404,7 @@ class MAGBlock(nn.Module):
         h: torch.Tensor,
         state: MemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
+    ) -> tuple[torch.Tensor, MemoryState, object]:
         batch_size = h.shape[0]
 
         if state is None:
@@ -426,7 +429,7 @@ class MAGBlock(nn.Module):
             mem_input = torch.cat([persistent, normed], dim=1)
         else:
             mem_input = normed
-        mem_out_full, new_state = self.memory(
+        mem_out_full, new_state, gate_snapshot = self.memory(
             mem_input, state=state, memory_gate=memory_gate
         )
         # Slice off persistent prefix
@@ -441,7 +444,7 @@ class MAGBlock(nn.Module):
         )
 
         core_out = attn_out + gated
-        return core_out, new_state
+        return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
         normed = self.norm2(h)
@@ -455,7 +458,7 @@ class MAGBlock(nn.Module):
         x: torch.Tensor,
         state: MemoryState | None = None,
     ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state = self.core_forward(x, state=state)
+        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
         x = x + core_out
         ffn_out = self.ffn_forward(x)
         x = x + ffn_out
@@ -487,8 +490,8 @@ class TitansMAG(nn.Module):
         self,
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
-        """Process a single chunk. Returns (logits, new_states).
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
+        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
 
         Args:
             input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
@@ -511,14 +514,14 @@ class TitansMAG(nn.Module):
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-        x, new_states = process_chunk(
+        x, new_states, gate_snapshots = process_chunk(
             self.blocks, x, states, self.config, self._step_count
         )
 
         x = self.norm(x)
         logits = self.head(x)
         self._step_count += 1
-        return logits, new_states
+        return logits, new_states, gate_snapshots
 
 
 class MALBlock(nn.Module):
@@ -577,7 +580,7 @@ class MALBlock(nn.Module):
         h: torch.Tensor,
         state: MemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
+    ) -> tuple[torch.Tensor, MemoryState, object]:
         batch_size = h.shape[0]
 
         if state is None:
@@ -591,7 +594,7 @@ class MALBlock(nn.Module):
             mem_input = torch.cat([persistent, normed], dim=1)
         else:
             mem_input = normed
-        mem_out_full, new_state = self.memory(
+        mem_out_full, new_state, gate_snapshot = self.memory(
             mem_input, state=state, memory_gate=memory_gate
         )
         if persistent is not None:
@@ -615,7 +618,7 @@ class MALBlock(nn.Module):
             attn_out = self.dropout(attn_out)
 
         core_out = mem_out + attn_out
-        return core_out, new_state
+        return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
         normed = self.norm3(h)
@@ -629,7 +632,7 @@ class MALBlock(nn.Module):
         x: torch.Tensor,
         state: MemoryState | None = None,
     ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state = self.core_forward(x, state=state)
+        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
         x = x + core_out
         ffn_out = self.ffn_forward(x)
         x = x + ffn_out
@@ -661,8 +664,8 @@ class TitansMAL(nn.Module):
         self,
         input_ids: torch.Tensor,
         states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState]]:
-        """Process a single chunk. Returns (logits, new_states).
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
+        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
 
         Args:
             input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
@@ -685,14 +688,14 @@ class TitansMAL(nn.Module):
             states = [None] * len(self.blocks)
 
         x = self.embed(input_ids)
-        x, new_states = process_chunk(
+        x, new_states, gate_snapshots = process_chunk(
             self.blocks, x, states, self.config, self._step_count
         )
 
         x = self.norm(x)
         logits = self.head(x)
         self._step_count += 1
-        return logits, new_states
+        return logits, new_states, gate_snapshots
 
 
 class LMMBlock(nn.Module):
@@ -717,7 +720,7 @@ class LMMBlock(nn.Module):
         state: MemoryState | None = None,
     ) -> tuple[torch.Tensor, MemoryState]:
         normed = self.norm1(x)
-        mem_out, new_state = self.memory(normed, state=state)
+        mem_out, new_state, _gate_snapshot = self.memory(normed, state=state)
         if self.dropout is not None:
             mem_out = self.dropout(mem_out)
         x = x + mem_out
@@ -759,7 +762,7 @@ class TitansLMM(nn.Module):
         self,
         input_ids: torch.Tensor,
         states: list[MemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState]]:
+    ) -> tuple[torch.Tensor, list[MemoryState], list]:
         if states is None:
             states = [None] * len(self.blocks)
 
@@ -772,4 +775,4 @@ class TitansLMM(nn.Module):
 
         x = self.norm(x)
         logits = self.head(x)
-        return logits, new_states
+        return logits, new_states, []

@@ -87,7 +87,7 @@ class TestEndToEndConversion:
 
         input_ids = torch.randint(0, 256, (1, 16))
         with torch.no_grad():
-            native_logits, _ = native_model(input_ids)
+            native_logits, _, _ = native_model(input_ids)
 
         from convert_to_hf import convert_checkpoint
 

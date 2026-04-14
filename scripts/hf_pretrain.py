@@ -544,7 +544,7 @@ def train():
                 batch_loss = 0.0
 
                 for chunk_ids, chunk_labels in zip(chunks, label_chunks):
-                    logits, memory_states = model(chunk_ids, states=memory_states)
+                    logits, memory_states, _ = model(chunk_ids, states=memory_states)
                     if _profile_this_step:
                         _log_mem(f"step {global_step:03d}: after forward")
                     chunk_loss = F.cross_entropy(

@@ -424,7 +424,7 @@ def compute_log_probs(
           Shape: (B,).
         - ``lengths``: Number of response tokens per example. Shape: (B,).
     """
-    logits, _ = model(input_ids)
+    logits, _, _ = model(input_ids)
     logits = logits.float()  # ensure fp32 for numerical stability
 
     # log-softmax over vocabulary

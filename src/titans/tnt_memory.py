@@ -30,7 +30,8 @@ class GlobalMemory(nn.Module):
         self, x: torch.Tensor, state: MemoryState | None = None,
         lr_scale: float | torch.Tensor = 1.0,
     ) -> tuple[torch.Tensor, MemoryState]:
-        return self.memory(x, state=state, lr_scale=lr_scale)
+        output, new_state, _gate_snapshot = self.memory(x, state=state, lr_scale=lr_scale)
+        return output, new_state
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
         return self.memory.retrieve(queries, state)
@@ -98,7 +99,15 @@ class LocalMemory(nn.Module):
     ) -> tuple[torch.Tensor, MemoryState] | tuple[torch.Tensor, MemoryState, torch.Tensor]:
         if state is None:
             state = self.init_state(x.shape[0])
-        return self.memory(x, state=state, lr_scale=lr_scale, return_keys=return_keys)
+        if return_keys:
+            output, new_state, _gate_snapshot, keys = self.memory(
+                x, state=state, lr_scale=lr_scale, return_keys=True
+            )
+            return output, new_state, keys
+        output, new_state, _gate_snapshot = self.memory(
+            x, state=state, lr_scale=lr_scale, return_keys=False
+        )
+        return output, new_state
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
         return self.memory.retrieve(queries, state)
@@ -145,7 +154,7 @@ class HierarchicalMemory(nn.Module):
     def forward(
         self, x: torch.Tensor, state: TNTMemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, TNTMemoryState]:
+    ) -> tuple[torch.Tensor, TNTMemoryState, None]:
         batch_size = x.shape[0]
         seq_len = x.shape[1]
 
@@ -219,7 +228,10 @@ class HierarchicalMemory(nn.Module):
         for local_out in local_outs:
             combined = combined + local_out
         output = self.proj_out(combined)
-        return output, new_state
+        # HierarchicalMemory doesn't produce GateSnapshot directly (its
+        # sub-memories' snapshots are handled internally). Return None as
+        # the third element to match the NeuralLongTermMemory 3-tuple contract.
+        return output, new_state, None
 
     def retrieve(self, queries: torch.Tensor, state: TNTMemoryState) -> torch.Tensor:
         """Hierarchical retrieval per Eq. 15."""

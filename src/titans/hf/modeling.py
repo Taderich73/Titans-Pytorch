@@ -78,7 +78,7 @@ class TitansMACForCausalLM(PreTrainedModel):
             CausalLMOutputWithPast with logits, optional loss, and
             memory states as ``past_key_values``.
         """
-        logits, new_states = self.model(input_ids, states=memory_states)
+        logits, new_states, _gate_snapshots = self.model(input_ids, states=memory_states)
 
         loss = None
         if labels is not None:
@@ -133,7 +133,7 @@ class TitansMACForCausalLM(PreTrainedModel):
         # seq_len <= chunk_size
         prompt_chunks = generated.split(chunk_size, dim=1)
         for chunk in prompt_chunks:
-            logits, states = self.model(chunk, states=states)
+            logits, states, _ = self.model(chunk, states=states)
             if states is not None:
                 states = [s.detach() for s in states]
 
@@ -178,7 +178,7 @@ class TitansMACForCausalLM(PreTrainedModel):
 
             if buffer_len >= chunk_size:
                 chunk = buffer[:, :chunk_size]
-                logits, states = self.model(
+                logits, states, _ = self.model(
                     chunk, states=committed_states
                 )
                 states = [s.detach() for s in states]
@@ -187,12 +187,12 @@ class TitansMACForCausalLM(PreTrainedModel):
 
                 if buffer_len > chunk_size:
                     remainder = buffer[:, chunk_size:]
-                    logits, states = self.model(
+                    logits, states, _ = self.model(
                         remainder, states=committed_states
                     )
                     states = [s.detach() for s in states]
             else:
-                logits, states = self.model(
+                logits, states, _ = self.model(
                     buffer, states=committed_states
                 )
                 states = [s.detach() for s in states]

@@ -289,7 +289,7 @@ def compute_token_log_probs(
         Per-token log-probs of shape (B, T-1) corresponding to predicting
         each next token from the previous one.
     """
-    logits, _ = model(input_ids)
+    logits, _, _ = model(input_ids)
     logits = logits.float()  # fp32 for numerical stability
     # Shift: logits[:, :-1] predicts input_ids[:, 1:]
     log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (B, T-1, V)
@@ -376,7 +376,7 @@ def generate_rollouts(
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         for _ in range(max_new_tokens):
-            logits, _ = model(tokens)
+            logits, _, _ = model(tokens)
             next_logits = logits[:, -1, :].float() / max(temperature, 1e-8)
             # Multinomial sampling
             probs = F.softmax(next_logits, dim=-1)
