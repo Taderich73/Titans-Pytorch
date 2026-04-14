@@ -124,6 +124,30 @@ def main():
         help="Override STATE_CARRY_WARMUP_STEPS (default: 500)",
     )
 
+    # --- Model features ---
+    feat = parser.add_argument_group("Model features")
+    feat.add_argument(
+        "--use-tnt", type=str, default=None, choices=["true", "false"],
+        help="Enable/disable TNT (Test-time Neural Turing). Default: true in hf_pretrain.py",
+    )
+    feat.add_argument(
+        "--use-attn-res", type=str, default=None, choices=["true", "false"],
+        help="Enable/disable attention residual. Default: true in hf_pretrain.py",
+    )
+    feat.add_argument(
+        "--use-mca", type=str, default=None, choices=["true", "false"],
+        help="Enable/disable MCA (Multi-scale Contextual Attention). Default: true in hf_pretrain.py",
+    )
+    feat.add_argument(
+        "--adaptive-window", type=str, default=None, choices=["true", "false"],
+        help="Enable/disable adaptive windowing. Default: true in hf_pretrain.py",
+    )
+    feat.add_argument(
+        "--memory-objective", type=str, default=None,
+        choices=["huber", "l2", "l1"],
+        help="Memory objective loss function. Default: huber in hf_pretrain.py",
+    )
+
     # --- Hub / checkpointing ---
     hub = parser.add_argument_group("Hub / checkpointing")
     hub.add_argument("--hub-repo", type=str, default=None, help="Override HUB_REPO")
@@ -337,6 +361,39 @@ def main():
         if value is not None:
             script = _apply_override(script, const, value)
             print(f"  {flag}: {value}")
+
+    # Apply model feature overrides (these are kwargs, not top-level constants)
+    _kwarg_bool_overrides: list[tuple[str, str, str | None]] = [
+        ("use_tnt", "--use-tnt", args.use_tnt),
+        ("use_attn_res", "--use-attn-res", args.use_attn_res),
+        ("use_mca", "--use-mca", args.use_mca),
+        ("adaptive_window", "--adaptive-window", args.adaptive_window),
+    ]
+    for kwarg, flag, value in _kwarg_bool_overrides:
+        if value is not None:
+            py_val = "True" if value.lower() == "true" else "False"
+            # Replace whichever boolean value is currently present
+            for current in ["True", "False"]:
+                old_str = f"{kwarg}={current}"
+                if old_str in script:
+                    script = script.replace(old_str, f"{kwarg}={py_val}")
+                    if current != py_val:
+                        print(f"  {flag}: {py_val}")
+                    else:
+                        print(f"  {flag}: {py_val} (already set)")
+                    break
+            else:
+                print(f"  WARNING: {flag}: could not find {kwarg}= in script")
+
+    if args.memory_objective is not None:
+        for candidate in ["huber", "l2", "l1"]:
+            old = f'memory_objective="{candidate}"'
+            if old in script:
+                script = script.replace(old, f'memory_objective="{args.memory_objective}"')
+                print(f"  --memory-objective: {args.memory_objective}")
+                break
+        else:
+            print("  WARNING: --memory-objective: could not find memory_objective= in script")
 
     if args.reset_global_state is not None:
         val = args.reset_global_state.lower() == "true"
