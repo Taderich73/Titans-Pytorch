@@ -70,6 +70,7 @@ def main():
     model.add_argument("--num-layers", type=int, default=None, help="Override NUM_LAYERS")
     model.add_argument("--vocab-size", type=int, default=None, help="Override VOCAB_SIZE")
     model.add_argument("--chunk-size", type=int, default=None, help="Override CHUNK_SIZE")
+    model.add_argument("--window-size", type=int, default=None, help="Override WINDOW_SIZE")
     model.add_argument(
         "--num-memory-layers", type=int, default=None,
         help="Override NUM_MEMORY_LAYERS",
@@ -165,7 +166,7 @@ def main():
     diag.add_argument(
         "--titans-sha",
         type=str,
-        default="0377b60",
+        default="79fb937",
         help=(
             "Pin the titans package to a specific git commit SHA, branch, or "
             "tag. The launcher injects this into the script's `titans @ "
@@ -327,6 +328,7 @@ def main():
         ("NUM_LAYERS", "--num-layers", args.num_layers),
         ("VOCAB_SIZE", "--vocab-size", args.vocab_size),
         ("CHUNK_SIZE", "--chunk-size", args.chunk_size),
+        ("WINDOW_SIZE", "--window-size", args.window_size),
         ("NUM_MEMORY_LAYERS", "--num-memory-layers", args.num_memory_layers),
         ("NUM_PERSISTENT_TOKENS", "--num-persistent-tokens", args.num_persistent_tokens),
         ("ROPE_PROPORTION", "--rope-proportion", args.rope_proportion),

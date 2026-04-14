@@ -226,6 +226,7 @@ NUM_HEADS = 16
 NUM_LAYERS = 20
 VOCAB_SIZE = 50257
 CHUNK_SIZE = 512
+WINDOW_SIZE = 512
 NUM_MEMORY_LAYERS = 2
 NUM_PERSISTENT_TOKENS = 16
 ROPE_PROPORTION = 1.0  # Fraction of head_dim pairs to apply RoPE to (0.0-1.0)
@@ -376,6 +377,7 @@ def train():
         num_layers=NUM_LAYERS,
         vocab_size=VOCAB_SIZE,
         chunk_size=CHUNK_SIZE,
+        window_size=WINDOW_SIZE,
         num_memory_layers=NUM_MEMORY_LAYERS,
         num_persistent_tokens=NUM_PERSISTENT_TOKENS,
         rope_proportion=ROPE_PROPORTION,
