@@ -50,6 +50,7 @@ from tqdm import tqdm
 
 from titans import TitansConfig, TitansMAC, TitansMAG, TitansMAL, TitansLMM
 from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.memory_dump import save_memory_states
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -941,6 +942,7 @@ def train(config: SFTConfig) -> None:
     # ------------------------------------------------------------------
     global_step = 0
     start_epoch = 0
+    memory_states = None
 
     if config.resume is not None:
         resume_path = Path(config.resume)
@@ -958,10 +960,25 @@ def train(config: SFTConfig) -> None:
                 f"Resumed from {resume_path} at step {global_step}, epoch {start_epoch}"
             )
 
+        # Load memory states if available
+        mem_path = resume_path.parent / f"memory_step_{global_step}.npz"
+        if not mem_path.exists():
+            mem_path = resume_path.parent / "memory_final.npz"
+        try:
+            from titans.memory_dump import load_memory_states
+
+            memory_states = load_memory_states(mem_path, device=accelerator.device)
+            if accelerator.is_main_process:
+                logger.info(f"Loaded memory states from {mem_path}")
+        except Exception as e:
+            if accelerator.is_main_process:
+                logger.info(f"No memory states found ({e}), starting fresh")
+
+        del checkpoint
+
     # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
-    memory_states = None
     model.train()
 
     for epoch in range(start_epoch, config.epochs):
@@ -1076,6 +1093,10 @@ def train(config: SFTConfig) -> None:
                         },
                     )
                     logger.info(f"Saved checkpoint: step {global_step}")
+                    if memory_states is not None:
+                        mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
+                        save_memory_states(memory_states, mem_path)
+                        logger.info(f"Saved memory states: step {global_step}")
 
         # End-of-epoch summary
         if accelerator.is_main_process:
@@ -1104,6 +1125,9 @@ def train(config: SFTConfig) -> None:
             },
         )
         logger.info(f"SFT training complete. Final checkpoint: {paths[0]}")
+        if memory_states is not None:
+            mem_path = checkpoint_dir / "memory_final.npz"
+            save_memory_states(memory_states, mem_path)
 
     if config.wandb and HAS_WANDB:
         accelerator.end_training()
