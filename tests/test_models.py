@@ -44,7 +44,7 @@ class TestTitansMAC:
     def test_forward_shape(self, default_config, device):
         model = TitansMAC(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, default_config.vocab_size)
         assert len(states) == default_config.num_layers
 
@@ -60,8 +60,8 @@ class TestTitansMAC:
         """Memory state from first call can be passed to second."""
         model = TitansMAC(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        _, states1 = model(x)
-        logits2, states2 = model(x, states=states1)
+        _, states1, _ = model(x)
+        logits2, states2, _ = model(x, states=states1)
         assert logits2.shape == (2, 16, default_config.vocab_size)
         assert not torch.allclose(states1[0].weights[0], states2[0].weights[0])
 
@@ -74,7 +74,7 @@ class TestTitansMAC:
         model = TitansMAC(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
         labels = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, _ = model(x)
+        logits, _, _ = model(x)
         loss = torch.nn.functional.cross_entropy(
             logits.view(-1, default_config.vocab_size), labels.view(-1)
         )
@@ -128,7 +128,7 @@ class TestTitansMAC:
         model.train()
 
         ids = torch.randint(0, config.vocab_size, (2, 32), device=device)
-        logits, _ = model(ids, states=None)
+        logits, _, _ = model(ids, states=None)
         loss = torch.nn.functional.cross_entropy(
             logits.reshape(-1, config.vocab_size), ids.reshape(-1)
         )
@@ -219,7 +219,7 @@ class TestTitansMAC:
         states = None
 
         for chunk in chunks:
-            logits, states = model(chunk, states=states)
+            logits, states, _ = model(chunk, states=states)
             loss = torch.nn.functional.cross_entropy(
                 logits.reshape(-1, config.vocab_size), chunk.reshape(-1)
             )
@@ -270,7 +270,7 @@ class TestTitansMAG:
     def test_forward_shape(self, default_config, device):
         model = TitansMAG(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, default_config.vocab_size)
         assert len(states) == default_config.num_layers
 
@@ -284,8 +284,8 @@ class TestTitansMAG:
     def test_state_carryover(self, default_config, device):
         model = TitansMAG(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        _, states1 = model(x)
-        logits2, states2 = model(x, states=states1)
+        _, states1, _ = model(x)
+        logits2, states2, _ = model(x, states=states1)
         assert logits2.shape == (2, 16, default_config.vocab_size)
         assert not torch.allclose(states1[0].weights[0], states2[0].weights[0])
 
@@ -297,7 +297,7 @@ class TestTitansMAG:
         model = TitansMAG(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
         labels = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, _ = model(x)
+        logits, _, _ = model(x)
         loss = torch.nn.functional.cross_entropy(
             logits.view(-1, default_config.vocab_size), labels.view(-1)
         )
@@ -309,7 +309,7 @@ class TestTitansMAL:
     def test_forward_shape(self, default_config, device):
         model = TitansMAL(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, default_config.vocab_size)
         assert len(states) == default_config.num_layers
 
@@ -323,8 +323,8 @@ class TestTitansMAL:
     def test_state_carryover(self, default_config, device):
         model = TitansMAL(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        _, states1 = model(x)
-        logits2, states2 = model(x, states=states1)
+        _, states1, _ = model(x)
+        logits2, states2, _ = model(x, states=states1)
         assert logits2.shape == (2, 16, default_config.vocab_size)
         assert not torch.allclose(states1[0].weights[0], states2[0].weights[0])
 
@@ -336,7 +336,7 @@ class TestTitansMAL:
         model = TitansMAL(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
         labels = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, _ = model(x)
+        logits, _, _ = model(x)
         loss = torch.nn.functional.cross_entropy(
             logits.view(-1, default_config.vocab_size), labels.view(-1)
         )
@@ -348,15 +348,15 @@ class TestTitansLMM:
     def test_forward_shape(self, default_config, device):
         model = TitansLMM(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, default_config.vocab_size)
         assert len(states) == default_config.num_layers
 
     def test_state_carryover(self, default_config, device):
         model = TitansLMM(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        _, states1 = model(x)
-        logits2, states2 = model(x, states=states1)
+        _, states1, _ = model(x)
+        logits2, states2, _ = model(x, states=states1)
         assert logits2.shape == (2, 16, default_config.vocab_size)
         assert not torch.allclose(states1[0].weights[0], states2[0].weights[0])
 
@@ -368,7 +368,7 @@ class TestTitansLMM:
         model = TitansLMM(default_config).to(device)
         x = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
         labels = torch.randint(0, default_config.vocab_size, (2, 16), device=device)
-        logits, _ = model(x)
+        logits, _, _ = model(x)
         loss = torch.nn.functional.cross_entropy(
             logits.view(-1, default_config.vocab_size), labels.view(-1)
         )
@@ -391,19 +391,19 @@ class TestTNTIntegration:
     def test_mac_with_tnt(self, tnt_config, device):
         model = TitansMAC(tnt_config).to(device)
         x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, tnt_config.vocab_size)
 
     def test_mag_with_tnt(self, tnt_config, device):
         model = TitansMAG(tnt_config).to(device)
         x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, tnt_config.vocab_size)
 
     def test_mal_with_tnt(self, tnt_config, device):
         model = TitansMAL(tnt_config).to(device)
         x = torch.randint(0, tnt_config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, tnt_config.vocab_size)
 
 
@@ -417,7 +417,7 @@ class TestMCAIntegration:
         )
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
     def test_mag_with_mca(self, device):
@@ -429,7 +429,7 @@ class TestMCAIntegration:
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
 
@@ -443,7 +443,7 @@ class TestAttnResIntegration:
         )
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
     def test_mag_with_attn_res(self, device):
@@ -455,7 +455,7 @@ class TestAttnResIntegration:
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
     def test_mal_with_attn_res(self, device):
@@ -467,7 +467,7 @@ class TestAttnResIntegration:
         )
         model = TitansMAL(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, states = model(x)
+        logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
 
     def test_attn_res_backward(self, device):
@@ -480,7 +480,7 @@ class TestAttnResIntegration:
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
         labels = torch.randint(0, config.vocab_size, (2, 16), device=device)
-        logits, _ = model(x)
+        logits, _, _ = model(x)
         loss = torch.nn.functional.cross_entropy(
             logits.view(-1, config.vocab_size), labels.view(-1)
         )
@@ -502,7 +502,7 @@ class TestSingleChunkForward:
         model.train()
 
         ids = torch.randint(0, 256, (2, 32))
-        logits, states = model(ids, states=None)
+        logits, states, _ = model(ids, states=None)
 
         assert logits.shape == (2, 32, 256)
         assert len(states) == 2
@@ -538,7 +538,7 @@ class TestSingleChunkForward:
         total_loss = 0.0
 
         for chunk in chunks:
-            logits, states = model(chunk, states=states)
+            logits, states, _ = model(chunk, states=states)
             loss = F.cross_entropy(logits.reshape(-1, 256), chunk.reshape(-1))
             (loss / len(chunks)).backward()
             total_loss += loss.item()
@@ -566,7 +566,7 @@ class TestHierarchicalMemoryCleanup:
         hm.train()
 
         x = torch.randn(2, 16, 32)
-        output, new_state = hm(x, state=None)
+        output, new_state, _ = hm(x, state=None)
 
         # Output must have gradient path to gate projections
         loss = output.sum()

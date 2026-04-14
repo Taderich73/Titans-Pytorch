@@ -370,10 +370,7 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | torch.Tensor = 1.0,
         memory_gate: torch.Tensor | None = None,
         return_keys: bool = False,
-    ) -> (
-        tuple[torch.Tensor, MemoryState | None]
-        | tuple[torch.Tensor, MemoryState | None, torch.Tensor]
-    ):
+    ) -> tuple:
         batch_size = x.shape[0]
 
         if state is None:
@@ -418,6 +415,22 @@ class NeuralLongTermMemory(nn.Module):
             delta_val = torch.sigmoid(self.gate_delta_proj(x_mean))
             delta_val = torch.mean(delta_val) * self.config.memory_error_clip
             self._current_delta = delta_val
+
+        gate_snapshot = None
+        if self.config.auto_checkpoint:
+            from titans.checkpoint_types import GateSnapshot
+            gate_snapshot = GateSnapshot(
+                alpha=[alpha.detach()],
+                theta=[theta.detach()],
+                eta=[eta.detach()],
+                delta=(
+                    [delta_val.detach()]
+                    if self.memory_objective == "huber"
+                    else None
+                ),
+                input_activation_norm=float(x_mean.detach().float().norm().item()),
+                chunk_index=0,  # Set by caller
+            )
 
         if memory_gate is not None:
             lr_scale = memory_gate
@@ -475,12 +488,12 @@ class NeuralLongTermMemory(nn.Module):
                     momentum_bits=self.config.memory_state_momentum_bits,
                 )
             if return_keys:
-                return output, returned_state, k
-            return output, returned_state
+                return output, returned_state, gate_snapshot, k
+            return output, returned_state, gate_snapshot
 
         if return_keys:
-            return output, None, k
-        return output, None
+            return output, None, gate_snapshot, k
+        return output, None, gate_snapshot
 
     def _parallel_memory_update_linear(
         self,

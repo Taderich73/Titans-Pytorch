@@ -78,7 +78,7 @@ class TestHierarchicalMemory:
     def test_forward_shape(self, tnt_config, device):
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device)
-        output, new_state = mem(x)
+        output, new_state, _ = mem(x)
         assert output.shape == (2, 8, tnt_config.dim)
         assert new_state.local_step_counters == [8, 8]
 
@@ -86,7 +86,7 @@ class TestHierarchicalMemory:
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device)
         state = mem.init_state(2)
-        _, new_state = mem(x, state=state)
+        _, new_state, _ = mem(x, state=state)
         assert not torch.allclose(
             state.global_state.weights[0], new_state.global_state.weights[0],
         )
@@ -101,7 +101,7 @@ class TestHierarchicalMemory:
     def test_backward(self, tnt_config, device):
         mem = HierarchicalMemory(tnt_config).to(device)
         x = torch.randn(2, 8, tnt_config.dim, device=device, requires_grad=True)
-        output, _ = mem(x)
+        output, _, _ = mem(x)
         output.sum().backward()
         assert x.grad is not None
 
@@ -147,11 +147,11 @@ class TestLocalMemoryReset:
         seq_len = 16
         x = torch.randn(batch_size, seq_len, config.dim, device=device)
 
-        out1, state1 = hm(x)
+        out1, state1, _ = hm(x)
         # After first call: counter = seq_len = 16, which is divisible by shard_length=8
         assert state1.local_step_counters[0] == seq_len
 
-        out2, state2 = hm(x, state=state1)
+        out2, state2, _ = hm(x, state=state1)
         # Reset path runs at start of second call (16 % 8 == 0), then counter
         # increments by seq_len, so the new value should be exactly seq_len.
         assert state2.local_step_counters[0] == seq_len, (
