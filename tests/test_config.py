@@ -103,3 +103,33 @@ class TestRopeProportionConfig:
     def test_rope_proportion_invalid_negative(self):
         with pytest.raises(ValueError, match="rope_proportion"):
             TitansConfig(rope_proportion=-0.1)
+
+
+class TestAutoCheckpointConfig:
+    def test_default_off(self):
+        config = TitansConfig()
+        assert config.auto_checkpoint is False
+
+    def test_round_trip(self):
+        config = TitansConfig(auto_checkpoint=True)
+        d = config.to_dict()
+        assert d["auto_checkpoint"] is True
+        config2 = TitansConfig.from_dict(d)
+        assert config2.auto_checkpoint is True
+
+    def test_checkpoint_config_in_dict(self):
+        from titans.checkpoint_types import MemoryCheckpointConfig
+        config = TitansConfig(
+            auto_checkpoint=True,
+            checkpoint_config=MemoryCheckpointConfig(sigma_threshold=3.0),
+        )
+        d = config.to_dict()
+        assert d["checkpoint_config"]["sigma_threshold"] == 3.0
+        config2 = TitansConfig.from_dict(d)
+        assert config2.checkpoint_config.sigma_threshold == 3.0
+
+    def test_from_dict_ignores_unknown_keys(self):
+        d = TitansConfig().to_dict()
+        d["some_future_field"] = "value"
+        config = TitansConfig.from_dict(d)  # should not raise
+        assert config.dim == 512

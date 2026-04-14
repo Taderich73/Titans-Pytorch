@@ -132,6 +132,10 @@ class TitansConfig:
     activation: str = "silu"
     init_std: float = 0.02
 
+    # Auto-checkpointing (disabled by default — zero overhead when False)
+    auto_checkpoint: bool = False
+    checkpoint_config: dict | None = None  # MemoryCheckpointConfig as dict or instance
+
     @property
     def head_dim(self) -> int:
         return self.dim // self.num_heads
@@ -252,11 +256,22 @@ class TitansConfig:
             "dropout": self.dropout,
             "activation": self.activation,
             "init_std": self.init_std,
+            "auto_checkpoint": self.auto_checkpoint,
+            "checkpoint_config": (
+                self.checkpoint_config.to_dict()
+                if hasattr(self.checkpoint_config, "to_dict")
+                else self.checkpoint_config
+            ),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> TitansConfig:
-        return cls(**d)
+        d = dict(d)  # Don't mutate the input
+        known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        if known.get("checkpoint_config") is not None and isinstance(known["checkpoint_config"], dict):
+            from titans.checkpoint_types import MemoryCheckpointConfig
+            known["checkpoint_config"] = MemoryCheckpointConfig.from_dict(known["checkpoint_config"])
+        return cls(**known)
 
     @classmethod
     def tnt_stage1(cls, **kwargs) -> TitansConfig:
