@@ -3,7 +3,7 @@
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-187%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-304%20passed-brightgreen.svg)](tests/)
 
 A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Proportional RoPE (p-RoPE)** as composable, independent features.
 
@@ -33,6 +33,7 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 - [Yaad: Huber Attentional Bias](#yaad-huber-attentional-bias)
 - [Adaptive Window Sizing](#adaptive-window-sizing)
 - [Proportional RoPE (p-RoPE)](#proportional-rope-p-rope)
+- [Memory Auto-Checkpointing](#memory-auto-checkpointing)
 - [HuggingFace Integration](#huggingface-integration)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -303,6 +304,34 @@ model = TitansMAC(config)
 
 ---
 
+## Memory Auto-Checkpointing
+
+Automatic, novelty-triggered checkpointing of memory state during inference. When the memory undergoes a phase transition (grokking — sudden generalization after extended processing), the system captures before/during/after snapshots for both crash resilience and research.
+
+The detection system monitors prediction error, weight deltas, and momentum shifts using a sliding-window z-score with a signal cascade. Bidirectional: spikes detect novel input, rate-of-change drops detect the grokking moment itself. Per-layer independent evaluation means a single layer transitioning triggers a capture.
+
+```bash
+# Enable during inference
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/final.pt \
+    --prompt "The theory of everything" \
+    --max-new-tokens 2000 \
+    --auto-checkpoint
+
+# With signal log for post-hoc analysis
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/final.pt \
+    --prompt "The theory of everything" \
+    --max-new-tokens 2000 \
+    --auto-checkpoint --signal-log
+```
+
+Each captured transition includes the memory state (weights + momentum), the data-dependent gate values (decay, learning rate, momentum, Huber delta), and a compressed signal timeline. Gate trajectories reveal *why* a transition happened — did the decay gate drop (memory retaining more)? Did the learning rate spike?
+
+Disabled by default (`auto_checkpoint=False`). Zero overhead when off. See [docs/memory_auto_checkpointing.md](docs/memory_auto_checkpointing.md) for full documentation including configuration, disk layout, TNT awareness, and the NoveltyDetector protocol.
+
+---
+
 ## HuggingFace Integration
 
 Titans v0.5.0 adds full HuggingFace transformers compatibility for the MAC architecture: `from_pretrained()` / `save_pretrained()`, a custom chunked `generate()`, and a `Trainer` subclass with per-chunk truncated BPTT.
@@ -511,9 +540,16 @@ uv run python scripts/inference.py \
     --checkpoint checkpoints/best_model.pt \
     --memory-dump memory_states.npz \
     --prompt "Continue the story"
+
+# With auto-checkpointing (novelty-triggered state preservation)
+uv run python scripts/inference.py \
+    --checkpoint checkpoints/best_model.pt \
+    --prompt "The history of mathematics" \
+    --max-new-tokens 2000 \
+    --auto-checkpoint --signal-log
 ```
 
-Inference auto-detects `.pt` or `.safetensors` checkpoints. Memory states can be saved and loaded via `save_memory_states()` / `load_memory_states()` for inference-time continual learning across sessions.
+Inference auto-detects `.pt` or `.safetensors` checkpoints. Memory states can be saved and loaded via `save_memory_states()` / `load_memory_states()` for inference-time continual learning across sessions. Use `--auto-checkpoint` to enable novelty-triggered checkpointing that captures phase transitions (grokking) — see [Memory Auto-Checkpointing](#memory-auto-checkpointing).
 
 ### HuggingFace Model Loading
 
@@ -597,7 +633,10 @@ uv run python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt \
 | `adaptive_window_temperature` | 10.0 | Sigmoid sharpness at boundary |
 | `adaptive_window_lambda` | 0.01 | Efficiency regularization weight |
 | **Proportional RoPE** |
-| `rope_proportion` | 1.0 | Fraction of head_dim pairs to rotate (0.0–1.0) |
+| `rope_proportion` | 1.0 | Fraction of head_dim pairs to rotate (0.0-1.0) |
+| **Auto-Checkpointing** |
+| `auto_checkpoint` | False | Enable novelty-triggered memory checkpointing |
+| `checkpoint_config` | None | `MemoryCheckpointConfig` for tuning (see docs) |
 
 ---
 
@@ -663,6 +702,21 @@ from titans import (
     QuantizedMemoryState,
     quantize_tensor,
     quantize_memory_state,
+
+    # Auto-Checkpointing
+    GateSnapshot,
+    SignalFrame,
+    CheckpointEntry,
+    TransitionRecord,
+    MemoryCheckpointConfig,
+    MemoryCheckpointer,
+    StatisticalNoveltyDetector,
+    TriggerDecision,
+    build_signal_frame,
+    compute_weight_delta,
+    compute_momentum_shift,
+    compute_weight_norms,
+    compute_momentum_norms,
 )
 
 # HuggingFace Integration (requires: pip install titans[hf])
@@ -694,6 +748,10 @@ titans-pytorch/
 |   +-- mca.py               # MemoryCrossAttention
 |   +-- adaptive_window.py   # AdaptiveWindowPredictor, compute_window_regularization
 |   +-- memory_dump.py       # save/load memory states (.npz)
+|   +-- checkpoint_types.py  # Auto-checkpointing data structures
+|   +-- checkpoint_signals.py # Signal extraction for novelty detection
+|   +-- novelty_detector.py  # NoveltyDetector protocol + statistical impl
+|   +-- memory_checkpointer.py # State machine, ring buffer, transition capture
 |   +-- lora.py              # LoRA adapters: wrap, save, load, merge
 |   +-- quantize_state.py    # Memory state quantization (4-bit / 8-bit)
 |   +-- hf/                  # HuggingFace transformers integration
@@ -715,7 +773,7 @@ titans-pytorch/
 |   +-- hf_pretrain.py       # HuggingFace Jobs training (1B config)
 |   +-- hf_launch_job.py     # HF Jobs launcher
 |
-+-- tests/                   # 187 tests
++-- tests/                   # 304 tests
 ```
 
 ### Running Tests
