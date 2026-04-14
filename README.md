@@ -1,9 +1,8 @@
 # Titans for PyTorch
 
-
-[![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-304%20passed-brightgreen.svg)](tests/)
+![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)
+![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
+![Tests](https://img.shields.io/badge/tests-304%20passed-brightgreen.svg)
 
 A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Proportional RoPE (p-RoPE)** as composable, independent features.
 
@@ -11,15 +10,17 @@ Titans introduce a **Neural Long-term Memory** module that learns to memorize hi
 
 TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work with any block type (MAC, MAG, MAL) and compose freely:
 
-| Flags | Memory | Residuals | Memory Read | Attentional Bias | Window |
-|-------|--------|-----------|-------------|------------------|--------|
-| (default) | Single NeuralLongTermMemory | Standard | MLP only | L2 | Fixed |
-| `use_tnt=True` | Hierarchical (global + local) | Standard | MLP only | L2 | Fixed |
-| `use_attn_res=True` | Single NeuralLongTermMemory | AttnRes | MLP only | L2 | Fixed |
-| `use_mca=True` | Single NeuralLongTermMemory | Standard | MLP + Cross-Attention | L2 | Fixed |
-| `memory_objective="huber"` | Single NeuralLongTermMemory | Standard | MLP only | Huber (Yaad) | Fixed |
-| `adaptive_window=True` | Single NeuralLongTermMemory | Standard | MLP only | L2 | Learned |
-| `use_tnt=True, use_attn_res=True` | Hierarchical (global + local) | AttnRes | MLP only | L2 | Fixed |
+
+| Flags                             | Memory                        | Residuals | Memory Read           | Attentional Bias | Window  |
+| --------------------------------- | ----------------------------- | --------- | --------------------- | ---------------- | ------- |
+| (default)                         | Single NeuralLongTermMemory   | Standard  | MLP only              | L2               | Fixed   |
+| `use_tnt=True`                    | Hierarchical (global + local) | Standard  | MLP only              | L2               | Fixed   |
+| `use_attn_res=True`               | Single NeuralLongTermMemory   | AttnRes   | MLP only              | L2               | Fixed   |
+| `use_mca=True`                    | Single NeuralLongTermMemory   | Standard  | MLP + Cross-Attention | L2               | Fixed   |
+| `memory_objective="huber"`        | Single NeuralLongTermMemory   | Standard  | MLP only              | Huber (Yaad)     | Fixed   |
+| `adaptive_window=True`            | Single NeuralLongTermMemory   | Standard  | MLP only              | L2               | Learned |
+| `use_tnt=True, use_attn_res=True` | Hierarchical (global + local) | AttnRes   | MLP only              | L2               | Fixed   |
+
 
 ---
 
@@ -70,26 +71,31 @@ TNT, AttnRes, MCA, Yaad, and Adaptive Window are **independent flags** that work
 
 Titans are designed around a memory perspective inspired by human cognition:
 
-| Memory Type | Module | Behavior at Test Time | Characteristics |
-|-------------|--------|----------------------|-----------------|
-| **Short-term** | Attention (limited window) | In-context learning (fixed weights) | Precise, limited capacity |
-| **Long-term** | Neural Memory (LMM) | **Still learning** (weight updates via gradient descent) | Fading, unlimited capacity |
-| **Persistent** | Learnable tokens | Fixed (task knowledge) | Stable, task-specific |
+
+| Memory Type    | Module                     | Behavior at Test Time                                    | Characteristics            |
+| -------------- | -------------------------- | -------------------------------------------------------- | -------------------------- |
+| **Short-term** | Attention (limited window) | In-context learning (fixed weights)                      | Precise, limited capacity  |
+| **Long-term**  | Neural Memory (LMM)        | **Still learning** (weight updates via gradient descent) | Fading, unlimited capacity |
+| **Persistent** | Learnable tokens           | Fixed (task knowledge)                                   | Stable, task-specific      |
+
 
 ### Variants
 
-| Aspect | MAC | MAG | MAL | LMM |
-|--------|-----|-----|-----|-----|
-| **Architecture** | Memory -> Attention -> Memory | Attention x Memory | Memory -> Attention | Memory only |
-| **Attention Type** | Segmented (full causal per chunk) | Sliding Window | Sliding Window | None |
-| **Long-context** | Best | Good | Baseline | Good |
-| **Training Speed** | Medium | Fast | Fastest | Fast |
+
+| Aspect             | MAC                               | MAG                | MAL                 | LMM         |
+| ------------------ | --------------------------------- | ------------------ | ------------------- | ----------- |
+| **Architecture**   | Memory -> Attention -> Memory     | Attention x Memory | Memory -> Attention | Memory only |
+| **Attention Type** | Segmented (full causal per chunk) | Sliding Window     | Sliding Window      | None        |
+| **Long-context**   | Best                              | Good               | Baseline            | Good        |
+| **Training Speed** | Medium                            | Fast               | Fastest             | Fast        |
+
 
 All three variants (MAC, MAG, MAL) support `use_tnt`, `use_attn_res`, and `use_mca` independently. `adaptive_window` applies to MAG and MAL (sliding window variants). LMM is a standalone memory-only model.
 
 ### Neural Long-term Memory
 
 **Associative Memory Loss** — configurable attentional bias (Eq. 12):
+
 ```
 L2 (default):  l(M; x_t) = ||M(k_t) - v_t||^2
 Huber (Yaad):  l(M; x_t) = { L2  if |error| <= delta_t
@@ -97,6 +103,7 @@ Huber (Yaad):  l(M; x_t) = { L2  if |error| <= delta_t
 ```
 
 **Memory Update with Forgetting** (Eq. 13-14):
+
 ```
 M_t = (1 - alpha_t) * M_{t-1} + S_t
 S_t = eta_t * S_{t-1} - theta_t * grad(l(M_{t-1}; x_t))
@@ -108,9 +115,9 @@ Where alpha_t (decay), eta_t (momentum), theta_t (learning rate) are all data-de
 
 Each block exposes sub-layers for composability:
 
-- **`core_forward(h, state, memory_gate)`** — attention + memory update + gating
-- **`mca_forward(h, mem_state)`** — cross-attention to memory weight rows (at MCA insertion layers)
-- **`ffn_forward(h)`** — feed-forward network
+- `**core_forward(h, state, memory_gate)**` — attention + memory update + gating
+- `**mca_forward(h, mem_state)**` — cross-attention to memory weight rows (at MCA insertion layers)
+- `**ffn_forward(h)**` — feed-forward network
 
 The orchestrator (`process_chunk`) decides how to connect them — standard residuals or AttnRes. Blocks are agnostic to which is used.
 
@@ -136,6 +143,7 @@ Input x
 ```
 
 **Retrieval** (TNT Eq. 15):
+
 ```
 o_t = f(V, q_t) + sum_i f(W^(i), M_t^(i) * q_t)
 ```
@@ -157,10 +165,12 @@ model = TitansMAC(config)
 
 ### Two-Stage Training
 
-| Stage | Purpose | Local Chunk Sizes | Compute |
-|-------|---------|-------------------|---------|
+
+| Stage                      | Purpose    | Local Chunk Sizes        | Compute  |
+| -------------------------- | ---------- | ------------------------ | -------- |
 | **Stage 1** (pre-training) | Throughput | Moderate (C_L = {8, 16}) | Baseline |
-| **Stage 2** (fine-tuning) | Quality | Smaller (C_L' = {4, 8}) | +5% |
+| **Stage 2** (fine-tuning)  | Quality    | Smaller (C_L' = {4, 8})  | +5%      |
+
 
 ```python
 stage1 = TitansConfig.tnt_stage1(dim=512, num_heads=8, num_layers=12, vocab_size=32000)
@@ -179,6 +189,7 @@ AttnRes:   h_l = sum(alpha_{i->l} * v_i)     (learned softmax weights)
 ```
 
 Key properties:
+
 - **Two AttnRes calls per block** (before core, before FFN), each with its own pseudo-query
 - **Embedding as standalone source** (b_0) — always available for attention
 - **Block boundaries** at sub-layer granularity for coarse-grained depth grouping
@@ -205,13 +216,16 @@ model = TitansMAC(config)
 
 MCA adds cross-attention to NeuralLongTermMemory's weight matrix rows at configurable insertion layers. This gives the model a second read interface into the same memory that's already being written to by the surprise-driven update mechanism.
 
-| | MLP Retrieval (existing) | Cross-Attention (MCA) |
-|---|---|---|
-| Operation | `output = MLP(query)` | `softmax(Q @ K^T) @ V` |
-| Nature | Nonlinear function of query | Linear blend of memory directions |
-| What it captures | Precise key-value lookup | Soft discovery of relevant associations |
+
+| &nbsp;           | MLP Retrieval (existing)    | Cross-Attention (MCA)                   |
+| ---------------- | --------------------------- | --------------------------------------- |
+| Operation        | `output = MLP(query)`       | `softmax(Q @ K^T) @ V`                  |
+| Nature           | Nonlinear function of query | Linear blend of memory directions       |
+| What it captures | Precise key-value lookup    | Soft discovery of relevant associations |
+
 
 Key properties:
+
 - **Reads from existing memory** — no new state, no separate memory bank
 - **Gated** — sigmoid gate initialized near-zero (-3.0 bias), so MCA has no effect until the gate learns to open
 - **Configurable insertion** — defaults to midpoint layer, supports explicit multi-layer placement
@@ -267,11 +281,13 @@ Standard sliding window attention uses a fixed window for all layers and all con
 
 Each layer gets a lightweight predictor (single linear projection) that outputs a "falloff center" per query position. A temperature-controlled sigmoid converts query-key distances into soft mask weights — positions within the falloff center attend normally, positions beyond decay smoothly. An efficiency regularization term penalizes large windows during training, encouraging the model to use smaller windows where local context suffices.
 
-| Component | Role |
-|-----------|------|
-| `AdaptiveWindowPredictor` | Per-layer linear -> sigmoid -> soft mask |
-| Soft masking | Differentiable alternative to hard window cutoff |
+
+| Component                 | Role                                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `AdaptiveWindowPredictor` | Per-layer linear -> sigmoid -> soft mask                    |
+| Soft masking              | Differentiable alternative to hard window cutoff            |
 | Efficiency regularization | `lambda * mean(falloff_centers / max_window)` added to loss |
+
 
 Supported for **MAG** and **MAL** blocks (both use sliding window attention).
 
@@ -283,11 +299,13 @@ Standard RoPE applies rotary position embeddings to all dimension pairs. Researc
 
 Inspired by [Gemma 4 E2B/E4B](https://huggingface.co/google/gemma-4-E2B), which uses p-RoPE to maximize parameter efficiency in on-device deployments.
 
-| `rope_proportion` | Positional dims | Semantic dims | Use case |
-|---|---|---|---|
-| `1.0` (default) | 100% | 0% | Standard RoPE (backward-compatible) |
-| `0.25` | 25% | 75% | Gemma 4 default; recommended starting point |
-| `0.0` | 0% | 100% | No rotation (equivalent to `use_rope=False`) |
+
+| `rope_proportion` | Positional dims | Semantic dims | Use case                                     |
+| ----------------- | --------------- | ------------- | -------------------------------------------- |
+| `1.0` (default)   | 100%            | 0%            | Standard RoPE (backward-compatible)          |
+| `0.25`            | 25%             | 75%           | Gemma 4 default; recommended starting point  |
+| `0.0`             | 0%              | 100%          | No rotation (equivalent to `use_rope=False`) |
+
 
 ```python
 from titans import TitansConfig, TitansMAC
@@ -439,20 +457,20 @@ model_lmm = TitansLMM(config)
 
 ```bash
 # Train with HuggingFace Accelerate
-uv run python scripts/pretrain.py --model mac \
+uv run python scripts/launch_pretraining_job.py --model mac \
     --dataset HuggingFaceFW/fineweb-edu \
     --tokenizer gpt2 \
     --dim 512 --num-layers 12
 
 # Demo with synthetic data
-uv run python scripts/pretrain.py --model mac --dim 256 --epochs 10
+uv run python scripts/launch_pretraining_job.py --model mac --dim 256 --epochs 10
 
 # Resume from checkpoint
-uv run python scripts/pretrain.py --model mac \
+uv run python scripts/launch_pretraining_job.py --model mac \
     --resume checkpoints/latest.pt
 
 # Train with proportional RoPE (25% positional, 75% semantic)
-uv run python scripts/pretrain.py --model mac \
+uv run python scripts/launch_pretraining_job.py --model mac \
     --dataset HuggingFaceFW/fineweb-edu \
     --tokenizer gpt2 \
     --dim 512 --num-layers 12 --rope-proportion 0.25
@@ -590,53 +608,55 @@ uv run python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt \
 
 ### TitansConfig Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| **Architecture** |
-| `dim` | 512 | Model dimension |
-| `num_heads` | 8 | Attention heads |
-| `num_layers` | 12 | Number of blocks |
-| `vocab_size` | 32000 | Vocabulary size |
-| **Memory** |
-| `num_memory_layers` | 2 | Memory MLP depth |
-| `memory_lr` | 0.1 | Memory learning rate (theta_t) |
-| `memory_momentum` | 0.9 | Memory momentum (eta_t) |
-| **Attention** |
-| `num_persistent_tokens` | 16 | Persistent memory tokens |
-| `chunk_size` | 512 | Segment size for MAC |
-| `window_size` | 512 | Sliding window for MAG/MAL |
-| **TNT Hierarchical Memory** |
-| `use_tnt` | False | Enable hierarchical memory |
-| `global_chunk_size` | 2048 | Global memory chunk size |
-| `local_chunk_sizes` | [8, 16] | Chunk sizes per local memory |
-| `local_shard_length` | 2048 | Local memory reset period |
-| `use_qk_projection` | True | Q-K projection for local retrieval |
-| **Memory Objective (Attentional Bias)** |
-| `memory_objective` | "l2" | `"l2"` (Titans default) or `"huber"` (Yaad) |
-| `huber_delta_init` | 0.0 | Bias init for Huber delta gate |
-| **Attention Residuals** |
-| `use_attn_res` | False | Enable AttnRes |
-| `num_attnres_blocks` | 8 | Number of AttnRes blocks (N) |
-| `attnres_warmup_steps` | 0 | Steps before memory gating activates |
-| `attnres_modulate_global_memory` | True | Gate global memory LR |
-| `attnres_modulate_local_memory` | False | Gate local memory LR |
-| **Memory Cross-Attention** |
-| `use_mca` | False | Enable MCA at insertion layers |
-| `mca_insertion_layers` | None | Insertion layers (None = auto midpoint) |
-| `mca_num_heads` | 8 | Cross-attention heads |
-| `mca_gate_type` | "scalar" | Gate type: "scalar" or "vector" |
-| `mca_gate_bias_init` | -3.0 | Gate bias init (sigmoid(-3) ~ 0.05) |
-| **Adaptive Window Sizing** |
-| `adaptive_window` | False | Enable per-layer learned window sizing |
-| `adaptive_window_min` | 64 | Minimum window size floor |
-| `adaptive_window_max` | None | Maximum window size (None = `window_size`) |
-| `adaptive_window_temperature` | 10.0 | Sigmoid sharpness at boundary |
-| `adaptive_window_lambda` | 0.01 | Efficiency regularization weight |
-| **Proportional RoPE** |
-| `rope_proportion` | 1.0 | Fraction of head_dim pairs to rotate (0.0-1.0) |
-| **Auto-Checkpointing** |
-| `auto_checkpoint` | False | Enable novelty-triggered memory checkpointing |
-| `checkpoint_config` | None | `MemoryCheckpointConfig` for tuning (see docs) |
+
+| Parameter                               | Default  | Description                                    |
+| --------------------------------------- | -------- | ---------------------------------------------- |
+| **Architecture**                        | &nbsp;   | &nbsp;                                         |
+| `dim`                                   | 512      | Model dimension                                |
+| `num_heads`                             | 8        | Attention heads                                |
+| `num_layers`                            | 12       | Number of blocks                               |
+| `vocab_size`                            | 32000    | Vocabulary size                                |
+| **Memory**                              | &nbsp;   | &nbsp;                                         |
+| `num_memory_layers`                     | 2        | Memory MLP depth                               |
+| `memory_lr`                             | 0.1      | Memory learning rate (theta_t)                 |
+| `memory_momentum`                       | 0.9      | Memory momentum (eta_t)                        |
+| **Attention**                           | &nbsp;   | &nbsp;                                         |
+| `num_persistent_tokens`                 | 16       | Persistent memory tokens                       |
+| `chunk_size`                            | 512      | Segment size for MAC                           |
+| `window_size`                           | 512      | Sliding window for MAG/MAL                     |
+| **TNT Hierarchical Memory**             | &nbsp;   | &nbsp;                                         |
+| `use_tnt`                               | False    | Enable hierarchical memory                     |
+| `global_chunk_size`                     | 2048     | Global memory chunk size                       |
+| `local_chunk_sizes`                     | [8, 16]  | Chunk sizes per local memory                   |
+| `local_shard_length`                    | 2048     | Local memory reset period                      |
+| `use_qk_projection`                     | True     | Q-K projection for local retrieval             |
+| **Memory Objective (Attentional Bias)** | &nbsp;   | &nbsp;                                         |
+| `memory_objective`                      | "l2"     | `"l2"` (Titans default) or `"huber"` (Yaad)    |
+| `huber_delta_init`                      | 0.0      | Bias init for Huber delta gate                 |
+| **Attention Residuals**                 | &nbsp;   | &nbsp;                                         |
+| `use_attn_res`                          | False    | Enable AttnRes                                 |
+| `num_attnres_blocks`                    | 8        | Number of AttnRes blocks (N)                   |
+| `attnres_warmup_steps`                  | 0        | Steps before memory gating activates           |
+| `attnres_modulate_global_memory`        | True     | Gate global memory LR                          |
+| `attnres_modulate_local_memory`         | False    | Gate local memory LR                           |
+| **Memory Cross-Attention**              | &nbsp;   | &nbsp;                                         |
+| `use_mca`                               | False    | Enable MCA at insertion layers                 |
+| `mca_insertion_layers`                  | None     | Insertion layers (None = auto midpoint)        |
+| `mca_num_heads`                         | 8        | Cross-attention heads                          |
+| `mca_gate_type`                         | "scalar" | Gate type: "scalar" or "vector"                |
+| `mca_gate_bias_init`                    | -3.0     | Gate bias init (sigmoid(-3) ~ 0.05)            |
+| **Adaptive Window Sizing**              | &nbsp;   | &nbsp;                                         |
+| `adaptive_window`                       | False    | Enable per-layer learned window sizing         |
+| `adaptive_window_min`                   | 64       | Minimum window size floor                      |
+| `adaptive_window_max`                   | None     | Maximum window size (None = `window_size`)     |
+| `adaptive_window_temperature`           | 10.0     | Sigmoid sharpness at boundary                  |
+| `adaptive_window_lambda`                | 0.01     | Efficiency regularization weight               |
+| **Proportional RoPE**                   | &nbsp;   | &nbsp;                                         |
+| `rope_proportion`                       | 1.0      | Fraction of head_dim pairs to rotate (0.0-1.0) |
+| **Auto-Checkpointing**                  | &nbsp;   | &nbsp;                                         |
+| `auto_checkpoint`                       | False    | Enable novelty-triggered memory checkpointing  |
+| `checkpoint_config`                     | None     | `MemoryCheckpointConfig` for tuning (see docs) |
+
 
 ---
 
