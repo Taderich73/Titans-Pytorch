@@ -620,18 +620,28 @@ def train():
         _base_norm = None
         if memory_states is not None:
             try:
-                g_state = getattr(memory_states[0], "global_state", None)
+                state0 = memory_states[0]
+                # TNT path: state is TNTMemoryState with .global_state.weights
+                g_state = getattr(state0, "global_state", None)
                 if g_state is not None and hasattr(g_state, "weights") and len(g_state.weights) > 0:
                     _pre_reset_g_norm = g_state.weights[0].detach().float().norm().item()
+                # Non-TNT path: state is MemoryState with .weights directly
+                elif hasattr(state0, "weights") and len(state0.weights) > 0:
+                    _pre_reset_g_norm = state0.weights[0].detach().float().norm().item()
+
                 # Base weight norm (for delta param context)
                 unwrapped_norm = accelerator.unwrap_model(model)
-                block0_mem = getattr(
-                    getattr(getattr(unwrapped_norm.blocks[0], "memory", None),
-                            "global_memory", None),
+                block0_mem_module = unwrapped_norm.blocks[0].memory
+                # TNT: block.memory.global_memory.memory has .layers
+                inner = getattr(
+                    getattr(block0_mem_module, "global_memory", None),
                     "memory", None,
                 )
-                if block0_mem is not None and hasattr(block0_mem, "layers"):
-                    _base_norm = block0_mem.layers[0].weight.detach().float().norm().item()
+                # Non-TNT: block.memory.memory has .layers
+                if inner is None:
+                    inner = getattr(block0_mem_module, "memory", None)
+                if inner is not None and hasattr(inner, "layers"):
+                    _base_norm = inner.layers[0].weight.detach().float().norm().item()
             except Exception:
                 pass
 
@@ -676,12 +686,18 @@ def train():
             try:
                 unwrapped_for_log = accelerator.unwrap_model(model)
                 block0 = unwrapped_for_log.blocks[0]
+                # TNT path: block.memory.global_memory.memory.gate_decay_proj
                 gate_proj = getattr(
                     getattr(getattr(block0, "memory", None), "global_memory", None),
                     "memory",
                     None,
                 )
                 gate_proj = getattr(gate_proj, "gate_decay_proj", None)
+                # Non-TNT path: block.memory.gate_decay_proj
+                if gate_proj is None:
+                    gate_proj = getattr(
+                        getattr(block0, "memory", None), "gate_decay_proj", None
+                    )
                 if gate_proj is not None:
                     raw_bias = gate_proj.bias.item()
                     alpha0 = torch.sigmoid(gate_proj.bias).item()
