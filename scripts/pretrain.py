@@ -493,6 +493,28 @@ def train():
             filename=RESUME_FROM,
             token=token,
         )
+
+        # For safetensors, also download the .meta.pt sidecar (holds step,
+        # optimizer, scheduler).  The sidecar lives at the same stem with a
+        # .meta.pt extension.
+        if RESUME_FROM.endswith(".safetensors"):
+            sidecar_filename = RESUME_FROM.replace(".safetensors", ".meta.pt")
+            try:
+                sidecar_local = hf_hub_download(
+                    repo_id=HUB_REPO,
+                    filename=sidecar_filename,
+                    token=token,
+                )
+                # Place sidecar next to checkpoint so load_checkpoint finds it
+                from pathlib import Path as _P
+                expected = _P(ckpt_local).with_suffix(".meta.pt")
+                if not expected.exists():
+                    import shutil
+                    shutil.copy2(sidecar_local, expected)
+                logger.info(f"Downloaded metadata sidecar: {sidecar_filename}")
+            except Exception as e:
+                logger.warning(f"No metadata sidecar found ({e}), step/optimizer/scheduler will reset")
+
         checkpoint = load_checkpoint(ckpt_local, weights_only=False)
 
         unwrapped = accelerator.unwrap_model(model)
@@ -504,10 +526,23 @@ def train():
             scheduler.load_state_dict(checkpoint["scheduler"])
 
         global_step = checkpoint.get("step", 0)
+
+        # Fallback: parse step from filename when sidecar is missing
+        if global_step == 0 and "step_" in RESUME_FROM:
+            import re
+            m = re.search(r"step_(\d+)", RESUME_FROM)
+            if m:
+                global_step = int(m.group(1))
+                logger.warning(
+                    f"No step in checkpoint metadata, inferred step={global_step} "
+                    f"from filename (optimizer/scheduler state NOT restored)"
+                )
+
         logger.info(f"Resumed at step {global_step}, training to {MAX_STEPS}")
 
-        # Also try to load memory states
-        mem_filename = RESUME_FROM.replace(".pt", "").replace("step_", "memory_step_") + ".npz"
+        # Also try to load memory states — strip any extension to get the stem
+        resume_stem = RESUME_FROM.rsplit(".", 1)[0]  # works for both .pt and .safetensors
+        mem_filename = resume_stem.replace("step_", "memory_step_") + ".npz"
         if "final" in RESUME_FROM:
             mem_filename = "checkpoints/memory_final.npz"
         try:
