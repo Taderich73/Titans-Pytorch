@@ -101,11 +101,12 @@ def load_memory_states(
         path: Path to the .npz file produced by save_memory_states.
         device: Torch device for the loaded tensors. Defaults to CPU.
         reset_for_inference: When True, zero ``local_step_counters`` and
-            ``qk_projections`` for any TNTMemoryState before returning. Use this
-            only for inference warm-start. Default is False so training resume
-            callers get exact state continuity. The previous default silently
-            corrupted TNT training state — see the reliability plan for
-            background.
+            ``qk_projections`` on every returned ``TNTMemoryState``. Use this
+            only for inference warm-start where a clean starting point is
+            desired. Default is False so training-resume callers get exact
+            state continuity — the QK carry and shard-boundary counters that
+            make TNT's per-token reset cadence correct are preserved across
+            checkpoints.
 
     Logs a warning for any loaded tensor whose Frobenius norm falls below
     ``_DEGENERATE_NORM_THRESHOLD``. The most common cause of this is the
@@ -498,7 +499,9 @@ class MemoryDumpManager:
         dumps = self.list_dumps()
         if not dumps:
             return None
-        return load_memory_states(dumps[-1] / "state.npz", device=device)
+        return load_memory_states(
+            dumps[-1] / "state.npz", device=device, reset_for_inference=False
+        )
 
     def list_dumps(self) -> list[Path]:
         """Return all dump directories sorted chronologically (oldest first).
