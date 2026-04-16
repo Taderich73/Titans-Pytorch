@@ -265,21 +265,35 @@ class TestRoundTrip:
         assert result["step"] == 10
 
 
+def _write_partial_bytes(f, payload: bytes = b"GARBAGE-PARTIAL-BYTES") -> None:
+    """Helper: write partial bytes to `f`, which may be a Path, str, or file obj.
+
+    Simulates a crash *after* bytes hit disk but *before* the write completed.
+    """
+    from pathlib import Path as _Path
+
+    if hasattr(f, "write"):
+        f.write(payload)
+    elif isinstance(f, (str, _Path)):
+        _Path(f).write_bytes(payload)
+    else:
+        raise TypeError(f"Unexpected target type for partial write: {type(f)!r}")
+
+
 def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
-    """A crash mid-save must leave either the final file absent or complete —
-    never a partial file at the final path."""
+    """A crash mid-save must leave the final .pt file absent and no .tmp
+    file dangling. torch.save may receive either a Path/str or a file object
+    depending on the PyTorch version, so the stub handles both shapes."""
     import torch
     from titans.checkpoint import save_checkpoint
 
     state = {"w": torch.ones(4, 4)}
     final_path = tmp_path / "ckpt"
 
-    original_save = torch.save
-
     def exploding_save(obj, f, *args, **kwargs):
-        # Write a few bytes then raise, simulating disk-full or kill -9
-        if hasattr(f, "write"):
-            f.write(b"GARBAGE")
+        # Actually write partial bytes to wherever save was told to write,
+        # then raise. This is what a real crash / disk-full looks like.
+        _write_partial_bytes(f)
         raise RuntimeError("simulated crash mid-save")
 
     monkeypatch.setattr(torch, "save", exploding_save)
@@ -287,8 +301,51 @@ def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="simulated crash"):
         save_checkpoint(state, final_path, format="pt")
 
-    # Critical invariant: the final .pt file MUST NOT exist, because the write
-    # never completed. A partial file at the final path is the bug we're fixing.
-    assert not (final_path.with_suffix(".pt")).exists(), (
-        "Final path contains partial file — atomic write invariant broken"
+    pt_path = final_path.with_suffix(".pt")
+    tmp_pt = pt_path.with_suffix(".pt.tmp")
+
+    # Post-fix invariant 1: the final .pt file MUST NOT exist — a partial
+    # file at the final path is exactly the bug we're fixing. (Pre-fix code
+    # wrote straight to pt_path, so it would contain GARBAGE-PARTIAL-BYTES.)
+    assert not pt_path.exists(), (
+        f"Final path {pt_path} contains partial file — atomic write "
+        "invariant broken"
+    )
+    # Post-fix invariant 2: no .pt.tmp file should be left dangling.
+    assert not tmp_pt.exists(), (
+        f"Dangling tmp file {tmp_pt} was not cleaned up after crash"
+    )
+
+
+def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
+    """Same atomic-write invariant for the safetensors code path: a crash
+    mid-save must leave the final .safetensors file absent and no
+    .safetensors.tmp file dangling."""
+    import safetensors.torch as st_torch
+    from titans.checkpoint import save_checkpoint
+
+    state = {"w": torch.ones(4, 4)}
+    final_path = tmp_path / "ckpt"
+
+    def exploding_save_file(tensors, f, *args, **kwargs):
+        # save_file takes a filename string; write partial bytes to it then raise.
+        _write_partial_bytes(f)
+        raise RuntimeError("simulated crash mid-safetensors-save")
+
+    monkeypatch.setattr(st_torch, "save_file", exploding_save_file)
+
+    with pytest.raises(RuntimeError, match="simulated crash mid-safetensors-save"):
+        save_checkpoint(state, final_path, format="safetensors")
+
+    sf_path = final_path.with_suffix(".safetensors")
+    tmp_sf = sf_path.with_suffix(".safetensors.tmp")
+
+    # Post-fix invariant 1: the final .safetensors file MUST NOT exist.
+    assert not sf_path.exists(), (
+        f"Final path {sf_path} contains partial file — atomic write "
+        "invariant broken"
+    )
+    # Post-fix invariant 2: no .safetensors.tmp file should be left dangling.
+    assert not tmp_sf.exists(), (
+        f"Dangling tmp file {tmp_sf} was not cleaned up after crash"
     )
