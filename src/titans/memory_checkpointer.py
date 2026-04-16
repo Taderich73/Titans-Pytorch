@@ -377,6 +377,16 @@ class MemoryCheckpointer:
             key=lambda e: sum(e.weight_norms) + sum(e.momentum_norms),
         )
 
+    def _resolve_signal_source(self) -> str:
+        """Return the canonical signal_source string for the active decision,
+        or ``"unknown"`` if no decision is active (defensive -- in practice
+        this should never happen during ``_finalize_transition`` because the
+        state machine guarantees ``_current_decision`` is set when entering
+        the CAPTURING_AFTER branch).
+        """
+        decision = self._current_decision
+        return decision.signal_source if decision is not None else "unknown"
+
     def _finalize_transition(self) -> None:
         """Bundle before/during/after into a TransitionRecord and write to disk."""
         if self._before_entry is None or self._during_entry is None:
@@ -388,11 +398,10 @@ class MemoryCheckpointer:
         duration = (after_chunks[-1] - before_chunk) if after_chunks else 0
 
         decision = self._current_decision
-        signal_source = decision.signal_source if decision else "unknown"
         magnitude = decision.confidence if decision else 0.0
 
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        transition_id = f"tr_{timestamp}_{signal_source}"
+        transition_id = f"tr_{timestamp}_{self._resolve_signal_source()}"
 
         record = TransitionRecord(
             before=self._before_entry,
@@ -466,13 +475,10 @@ class MemoryCheckpointer:
             after_range = [first_after, last_after]
 
         decision = self._current_decision
-        signal_source = (
-            decision.signal_source if decision is not None else "unknown"
-        )
         metadata: dict[str, Any] = {
             "transition_id": record.transition_id,
             "trigger": {
-                "signal_source": signal_source,
+                "signal_source": self._resolve_signal_source(),
                 "confidence": record.transition_magnitude,
                 "reason": decision.reason if decision else "",
             },
