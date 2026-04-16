@@ -401,3 +401,57 @@ class TestSignalLog:
         log_dir = Path(cfg.checkpoint_dir) / "signal_log"
         gz_files = list(log_dir.glob("signals_*.jsonl.gz"))
         assert len(gz_files) >= 2
+
+
+def test_metadata_signal_source_preserves_full_name(tmp_path):
+    """Regression: signal_source was being truncated to the last underscore
+    segment, turning 'weight_delta' into 'delta'. Fix uses the decision object
+    directly."""
+    from titans.checkpoint_types import CheckpointEntry, MemoryCheckpointConfig, MemoryState
+    from titans.memory_checkpointer import MemoryCheckpointer
+    from titans.novelty_detector import TriggerDecision
+
+    cfg = MemoryCheckpointConfig(
+        checkpoint_dir=str(tmp_path),
+        ring_size=2,
+        after_capture_count=1,
+        cooldown_chunks=1,
+    )
+    cp = MemoryCheckpointer(cfg, config_hash="test-hash")
+
+    # Inject a synthetic decision whose signal_source contains underscores.
+    fake_decision = TriggerDecision(
+        triggered=True,
+        reason="weight_delta anomaly (z=3.0)",
+        confidence=0.9,
+        signal_source="weight_delta",
+    )
+
+    state = MemoryState(
+        weights=[torch.zeros(4, 4)],
+        momentum=[torch.zeros(4, 4)],
+    )
+
+    # Manually set up a transition with signal_source = "weight_delta"
+    entry = CheckpointEntry(
+        state=state,
+        gates=None,
+        metadata={"chunk_index": 0},
+        trigger_phase="during",
+        weight_norms=[0.0],
+        momentum_norms=[0.0],
+        config_hash="test-hash",
+    )
+    cp._before_entry = entry
+    cp._during_entry = entry
+    cp._after_entries = [entry]
+    cp._current_decision = fake_decision
+    # Build a synthetic transition record by calling the finalize path.
+    cp._finalize_transition()
+
+    transitions = list((tmp_path / "transitions").iterdir())
+    assert len(transitions) == 1
+    meta = json.loads((transitions[0] / "metadata.json").read_text())
+    assert meta["trigger"]["signal_source"] == "weight_delta", (
+        f"signal_source was truncated: {meta['trigger']['signal_source']!r}"
+    )

@@ -466,10 +466,13 @@ class MemoryCheckpointer:
             after_range = [first_after, last_after]
 
         decision = self._current_decision
+        signal_source = (
+            decision.signal_source if decision is not None else "unknown"
+        )
         metadata: dict[str, Any] = {
             "transition_id": record.transition_id,
             "trigger": {
-                "signal_source": record.transition_id.rsplit("_", 1)[-1],
+                "signal_source": signal_source,
                 "confidence": record.transition_magnitude,
                 "reason": decision.reason if decision else "",
             },
