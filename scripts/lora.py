@@ -936,6 +936,7 @@ def train(config: LoRATrainingConfig) -> None:
                     accelerator.clip_grad_norm_(
                         model.parameters(), config.grad_clip
                     )
+                    global_step += 1
 
                 optimizer.step()
                 scheduler.step()
@@ -947,7 +948,6 @@ def train(config: LoRATrainingConfig) -> None:
             loss_val = loss.item()
             epoch_loss += loss_val
             num_batches += 1
-            global_step += 1
 
             if global_step % config.log_every == 0 and accelerator.is_main_process:
                 avg_loss = epoch_loss / num_batches
