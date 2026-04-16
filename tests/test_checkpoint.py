@@ -263,3 +263,32 @@ class TestRoundTrip:
         assert torch.equal(result["model"]["weight"], state_dict["weight"])
         assert torch.equal(result["model"]["bias"], state_dict["bias"])
         assert result["step"] == 10
+
+
+def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
+    """A crash mid-save must leave either the final file absent or complete —
+    never a partial file at the final path."""
+    import torch
+    from titans.checkpoint import save_checkpoint
+
+    state = {"w": torch.ones(4, 4)}
+    final_path = tmp_path / "ckpt"
+
+    original_save = torch.save
+
+    def exploding_save(obj, f, *args, **kwargs):
+        # Write a few bytes then raise, simulating disk-full or kill -9
+        if hasattr(f, "write"):
+            f.write(b"GARBAGE")
+        raise RuntimeError("simulated crash mid-save")
+
+    monkeypatch.setattr(torch, "save", exploding_save)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        save_checkpoint(state, final_path, format="pt")
+
+    # Critical invariant: the final .pt file MUST NOT exist, because the write
+    # never completed. A partial file at the final path is the bug we're fixing.
+    assert not (final_path.with_suffix(".pt")).exists(), (
+        "Final path contains partial file — atomic write invariant broken"
+    )

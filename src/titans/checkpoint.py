@@ -11,6 +11,7 @@ detection on load.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +40,21 @@ def _save_pt(
         List containing the single ``.pt`` file written.
     """
     pt_path = path.with_suffix(".pt")
+    tmp_path = pt_path.with_suffix(".pt.tmp")
     payload: dict[str, Any] = {"model": state_dict}
     if metadata:
         payload.update(metadata)
-    torch.save(payload, pt_path)
+    try:
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, pt_path)
+    except BaseException:
+        # Clean up partial tmp file so subsequent runs don't stumble on it.
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
     logger.info("Saved pt checkpoint: %s", pt_path)
     return [pt_path]
 
@@ -82,13 +94,33 @@ def _save_safetensors(
         else:
             seen[data_ptr] = k
             prepared[k] = v.contiguous()
-    save_file(prepared, sf_path)
+    sf_tmp = sf_path.with_suffix(".safetensors.tmp")
+    try:
+        save_file(prepared, sf_tmp)
+        os.replace(sf_tmp, sf_path)
+    except BaseException:
+        try:
+            if sf_tmp.exists():
+                sf_tmp.unlink()
+        except OSError:
+            pass
+        raise
     written: list[Path] = [sf_path]
     logger.info("Saved safetensors checkpoint: %s", sf_path)
 
     if metadata:
         sidecar = path.with_suffix(".meta.pt")
-        torch.save(metadata, sidecar)
+        sidecar_tmp = sidecar.with_suffix(".meta.pt.tmp")
+        try:
+            torch.save(metadata, sidecar_tmp)
+            os.replace(sidecar_tmp, sidecar)
+        except BaseException:
+            try:
+                if sidecar_tmp.exists():
+                    sidecar_tmp.unlink()
+            except OSError:
+                pass
+            raise
         written.append(sidecar)
         logger.info("Saved metadata sidecar: %s", sidecar)
 
