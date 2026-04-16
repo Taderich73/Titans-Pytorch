@@ -40,14 +40,14 @@ def _save_pt(
         List containing the single ``.pt`` file written.
     """
     pt_path = path.with_suffix(".pt")
-    tmp_path = pt_path.with_suffix(".pt.tmp")
+    tmp_path = pt_path.with_name(pt_path.name + ".tmp")
     payload: dict[str, Any] = {"model": state_dict}
     if metadata:
         payload.update(metadata)
     try:
         torch.save(payload, tmp_path)
         os.replace(tmp_path, pt_path)
-    except BaseException:
+    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
         # Clean up partial tmp file so subsequent runs don't stumble on it.
         try:
             if tmp_path.exists():
@@ -94,11 +94,12 @@ def _save_safetensors(
         else:
             seen[data_ptr] = k
             prepared[k] = v.contiguous()
-    sf_tmp = sf_path.with_suffix(".safetensors.tmp")
+    sf_tmp = sf_path.with_name(sf_path.name + ".tmp")
     try:
         save_file(prepared, sf_tmp)
         os.replace(sf_tmp, sf_path)
-    except BaseException:
+    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+        # Clean up partial tmp file so subsequent runs don't stumble on it.
         try:
             if sf_tmp.exists():
                 sf_tmp.unlink()
@@ -110,11 +111,12 @@ def _save_safetensors(
 
     if metadata:
         sidecar = path.with_suffix(".meta.pt")
-        sidecar_tmp = sidecar.with_suffix(".meta.pt.tmp")
+        sidecar_tmp = sidecar.with_name(sidecar.name + ".tmp")
         try:
             torch.save(metadata, sidecar_tmp)
             os.replace(sidecar_tmp, sidecar)
-        except BaseException:
+        except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+            # Clean up partial tmp file so subsequent runs don't stumble on it.
             try:
                 if sidecar_tmp.exists():
                     sidecar_tmp.unlink()

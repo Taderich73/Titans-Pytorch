@@ -349,3 +349,45 @@ def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
     assert not tmp_sf.exists(), (
         f"Dangling tmp file {tmp_sf} was not cleaned up after crash"
     )
+
+
+def test_atomic_write_tmp_filenames_are_correct(tmp_path):
+    """The tmp-file names used during atomic writes must not double-suffix —
+    e.g. 'ckpt.meta.pt.tmp', not 'ckpt.meta.meta.pt.tmp'."""
+    import torch
+    from titans.checkpoint import save_checkpoint
+
+    # Capture the paths torch.save and save_file see during a successful save.
+    seen_paths: list[str] = []
+
+    original_torch_save = torch.save
+    def spy_torch_save(obj, f, *args, **kwargs):
+        seen_paths.append(str(f))
+        return original_torch_save(obj, f, *args, **kwargs)
+
+    from safetensors import torch as st
+    original_save_file = st.save_file
+    def spy_save_file(tensors, filename, *args, **kwargs):
+        seen_paths.append(str(filename))
+        return original_save_file(tensors, filename, *args, **kwargs)
+
+    import unittest.mock as mock
+    with mock.patch.object(torch, "save", spy_torch_save), \
+         mock.patch.object(st, "save_file", spy_save_file):
+        save_checkpoint({"w": torch.ones(2, 2)}, tmp_path / "ckpt", format="pt")
+        save_checkpoint(
+            {"w": torch.ones(2, 2)},
+            tmp_path / "ckpt_sf",
+            format="safetensors",
+            metadata={"step": 1},
+        )
+
+    # Every intermediate path observed by the serializers must end in exactly
+    # one ".tmp" and have no duplicated stem components.
+    tmp_paths = [p for p in seen_paths if p.endswith(".tmp")]
+    assert tmp_paths, "Expected at least one .tmp write to be observed"
+    for p in tmp_paths:
+        # No doubled '.meta' anywhere.
+        assert ".meta.meta." not in p, f"Malformed tmp path: {p}"
+        # Must end in ".tmp" once (not ".tmp.tmp" etc.)
+        assert p.count(".tmp") == 1, f"Malformed tmp suffix in: {p}"
