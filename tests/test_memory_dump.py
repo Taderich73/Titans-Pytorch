@@ -182,3 +182,53 @@ class TestCheckpointEntrySerialization:
         assert len(loaded_states) == 1
         for w_orig, w_loaded in zip(state.weights, loaded_states[0].weights):
             torch.testing.assert_close(w_orig, w_loaded)
+
+
+def test_load_memory_states_preserves_qk_projections_by_default(tmp_path):
+    """Round-trip a TNTMemoryState and verify qk_projections + counters survive.
+
+    Previously load_memory_states defaulted reset_for_inference=True, which
+    silently zeroed qk_projections and local_step_counters — corrupting state
+    for training resume callers that used the default.
+    """
+    import torch
+    from titans.checkpoint_types import MemoryState, TNTMemoryState
+    from titans.memory_dump import save_memory_states, load_memory_states
+
+    qk = torch.randn(3, 4)
+    counter = 7
+    global_state = MemoryState(
+        weights=[torch.randn(4, 4)],
+        momentum=[torch.zeros(4, 4)],
+    )
+    local_state = MemoryState(
+        weights=[torch.randn(4, 4)],
+        momentum=[torch.zeros(4, 4)],
+    )
+    tnt = TNTMemoryState(
+        global_state=global_state,
+        local_states=[local_state],
+        local_inits=[[torch.zeros(4, 4)]],
+        qk_projections=[qk],
+        local_step_counters=[counter],
+    )
+
+    path = tmp_path / "mem.npz"
+    save_memory_states([tnt], path)
+
+    # Default behaviour MUST preserve qk_projections and counters.
+    loaded = load_memory_states(path)
+    assert isinstance(loaded[0], TNTMemoryState)
+    assert loaded[0].local_step_counters == [counter], (
+        "local_step_counters zeroed — TNT state wipe regression"
+    )
+    assert torch.allclose(loaded[0].qk_projections[0], qk), (
+        "qk_projections zeroed — TNT state wipe regression"
+    )
+
+    # Explicit reset_for_inference=True still resets (inference callers).
+    loaded_reset = load_memory_states(path, reset_for_inference=True)
+    assert loaded_reset[0].local_step_counters == [0]
+    assert torch.allclose(
+        loaded_reset[0].qk_projections[0], torch.zeros_like(qk)
+    )

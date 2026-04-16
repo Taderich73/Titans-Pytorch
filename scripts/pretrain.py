@@ -551,7 +551,11 @@ def train():
             mem_local = hf_hub_download(
                 repo_id=HUB_REPO, filename=mem_filename, token=token
             )
-            memory_states = load_memory_states(mem_local, device=accelerator.device)
+            memory_states = load_memory_states(
+                mem_local,
+                device=accelerator.device,
+                reset_for_inference=False,
+            )
             logger.info(f"Loaded memory states from {mem_filename}")
         except Exception as e:
             logger.info(f"No memory states found ({e}), starting fresh")

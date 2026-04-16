@@ -90,7 +90,7 @@ def load_memory_states(
     path: Path,
     device: torch.device | None = None,
     *,
-    reset_for_inference: bool = True,
+    reset_for_inference: bool = False,
 ) -> list[MemoryState | TNTMemoryState]:
     """Deserialize memory states from a .npz file.
 
@@ -100,16 +100,12 @@ def load_memory_states(
     Args:
         path: Path to the .npz file produced by save_memory_states.
         device: Torch device for the loaded tensors. Defaults to CPU.
-        reset_for_inference: When True (default), zero ``local_step_counters``
-            and ``qk_projections`` for any TNTMemoryState before returning.
-            This prevents the loaded local memories from being silently wiped
-            on the first forward pass when the saved counters land exactly on
-            a shard boundary (a near-universal case in the dumps produced by
-            current training, where ``seq_len == local_shard_length``). Set to
-            False only if you are intentionally resuming a sequence stream and
-            need exact qk/counter persistence — note that for the existing
-            training loop this has no observable effect because local memory
-            resets every batch regardless.
+        reset_for_inference: When True, zero ``local_step_counters`` and
+            ``qk_projections`` for any TNTMemoryState before returning. Use this
+            only for inference warm-start. Default is False so training resume
+            callers get exact state continuity. The previous default silently
+            corrupted TNT training state — see the reliability plan for
+            background.
 
     Logs a warning for any loaded tensor whose Frobenius norm falls below
     ``_DEGENERATE_NORM_THRESHOLD``. The most common cause of this is the

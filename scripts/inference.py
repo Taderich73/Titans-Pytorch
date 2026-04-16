@@ -220,7 +220,9 @@ def main() -> None:
 
     memory_states = None
     if args.memory_state:
-        memory_states = load_memory_states(args.memory_state, device=device)
+        memory_states = load_memory_states(
+            args.memory_state, device=device, reset_for_inference=True
+        )
         logger.info(f"Loaded memory state from {args.memory_state}")
 
     generated, final_states = generate(

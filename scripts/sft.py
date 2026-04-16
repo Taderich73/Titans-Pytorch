@@ -967,7 +967,11 @@ def train(config: SFTConfig) -> None:
         try:
             from titans.memory_dump import load_memory_states
 
-            memory_states = load_memory_states(mem_path, device=accelerator.device)
+            memory_states = load_memory_states(
+                mem_path,
+                device=accelerator.device,
+                reset_for_inference=False,
+            )
             if accelerator.is_main_process:
                 logger.info(f"Loaded memory states from {mem_path}")
         except Exception as e:
