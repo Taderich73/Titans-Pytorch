@@ -795,3 +795,112 @@ class TestMACPerPositionQuery:
         h = torch.randn(2, 8, 32)
         core_out, _new_state, _ = block.core_forward(h)
         assert core_out.shape == (2, 8, 32)
+
+
+class TestMACGating:
+    """core_out = y_t * mem_out (element-wise) per paper Eq. 25."""
+
+    def test_core_out_is_elementwise_product(self):
+        """When mem_out is all ones, core_out should equal y_t."""
+        import torch
+
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+            mac_per_position_memory_query=True,
+        )
+        block = MACBlock(config, layer_idx=0)
+        block.eval()
+        h = torch.randn(1, 8, 16)
+
+        # Patch memory.forward to return all-ones for mem_out. nn.Module.__call__
+        # routes through self.forward, so only the bound method swap is needed.
+        orig_forward = block.memory.forward
+
+        def patched(
+            x,
+            state=None,
+            return_state=True,
+            lr_scale=1.0,
+            memory_gate=None,
+            return_keys=False,
+            retrieve_after_update=True,
+        ):
+            out, new_state, snap = orig_forward(
+                x,
+                state=state,
+                return_state=return_state,
+                lr_scale=lr_scale,
+                memory_gate=memory_gate,
+                return_keys=False,
+                retrieve_after_update=retrieve_after_update,
+            )
+            return torch.ones_like(out), new_state, snap
+
+        block.memory.forward = patched  # type: ignore[assignment]
+
+        # Compute y_t manually so we can compare.  Replicate core_forward:
+        normed = block.norm1(h)
+        persistent = block.persistent(1)
+        query = block.memory_query_proj(normed)
+        memory_retrieved = block.memory.retrieve(query, block.memory.init_state(1))
+        memory_tokens = block.norm_mem(memory_retrieved)
+        attn_out = block.attention(normed, persistent=persistent, memory=memory_tokens)
+        y_t = h + attn_out
+
+        core_out, _, _ = block.core_forward(h)
+
+        # With mem_out = all-ones, core_out = y_t * 1 = y_t
+        assert torch.allclose(core_out, y_t, atol=1e-5), (
+            "core_out should equal y_t when mem_out=1; "
+            f"max diff {(core_out - y_t).abs().max()}"
+        )
+
+    def test_gradient_flows_through_both_y_and_mem(self):
+        """Autograd check: gradient w.r.t. input h flows non-zero."""
+        import torch
+
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+            mac_per_position_memory_query=True,
+        )
+        block = MACBlock(config, layer_idx=0)
+        h = torch.randn(1, 8, 16, requires_grad=True)
+        core_out, _, _ = block.core_forward(h)
+        loss = core_out.sum()
+        loss.backward()
+        assert h.grad is not None
+        assert h.grad.abs().sum().item() > 0
+
+    def test_no_learned_gate_norm_modules(self):
+        """After fix, gate_norm_attn/gate_norm_mem are removed from MACBlock."""
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MACBlock(config, layer_idx=0)
+        assert not hasattr(block, "gate_norm_attn")
+        assert not hasattr(block, "gate_norm_mem")

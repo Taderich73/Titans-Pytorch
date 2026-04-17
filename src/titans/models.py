@@ -201,9 +201,6 @@ class MACBlock(nn.Module):
         self.norm2 = RMSNorm(config.dim)
         self.norm_mem = RMSNorm(config.dim)
 
-        self.gate_norm_attn = RMSNorm(config.dim)
-        self.gate_norm_mem = RMSNorm(config.dim)
-
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         _init_mca(self, config, layer_idx)
 
@@ -266,11 +263,9 @@ class MACBlock(nn.Module):
                 retrieve_after_update=False,
             )
 
-        gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
-            self.gate_norm_mem(mem_out)
-        )
-
-        core_out = attn_out + gated
+        # Paper Eq. 25: o_t = y_t ⊗ M_t*(y_t) (element-wise multiply).
+        # After Task 5, mem_out is per-position with shape matching y_t.
+        core_out = y_t * mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
