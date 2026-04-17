@@ -608,3 +608,24 @@ class TestLoraFeatureFlagsHonoured:
         cfg.attnres_modulate_local_memory = False
         tc = build_titans_config(cfg)
         assert tc.use_attn_res is True
+
+
+class TestDPOMigrationSmoke:
+    """Smoke: dpo.py still imports and its parser constructs."""
+
+    def test_imports(self) -> None:
+        from scripts import dpo
+
+        assert callable(dpo.create_model)
+        assert callable(dpo.build_titans_config)
+        assert callable(dpo.tokenize_chat)
+
+    def test_parse_args_help_exits_zero(self) -> None:
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "scripts/dpo.py", "--help"],
+            capture_output=True,
+            timeout=30,
+        )
+        assert r.returncode == 0
