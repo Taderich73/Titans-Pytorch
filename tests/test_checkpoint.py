@@ -391,3 +391,16 @@ def test_atomic_write_tmp_filenames_are_correct(tmp_path):
         assert ".meta.meta." not in p, f"Malformed tmp path: {p}"
         # Must end in ".tmp" once (not ".tmp.tmp" etc.)
         assert p.count(".tmp") == 1, f"Malformed tmp suffix in: {p}"
+
+
+def test_save_safetensors_rejects_non_tensor_values(tmp_path):
+    """QuantizedMemoryState fields aren't tensors; save_checkpoint in
+    safetensors format must raise a clear TypeError instead of a cryptic
+    AttributeError on .data_ptr()."""
+    from titans.checkpoint import save_checkpoint
+
+    # A non-tensor value masquerading inside a state_dict-like payload.
+    bad = {"layer.0.quantized": [1, 2, 3]}
+    path = tmp_path / "bad"
+    with pytest.raises(TypeError, match="tensor"):
+        save_checkpoint(bad, path, format="safetensors")

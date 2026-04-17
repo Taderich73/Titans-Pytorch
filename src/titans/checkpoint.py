@@ -88,6 +88,15 @@ def _save_safetensors(
     seen: dict[int, str] = {}
     prepared: dict[str, torch.Tensor] = {}
     for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            raise TypeError(
+                f"_save_safetensors: entry {k!r} is a "
+                f"{type(v).__name__}, not a torch.Tensor. "
+                "safetensors format only supports flat tensor state "
+                "dicts. If this is a QuantizedMemoryState or similar "
+                "composite, call .dequantize() first or save in 'pt' "
+                "format."
+            )
         data_ptr = v.data_ptr()
         if data_ptr in seen:
             prepared[k] = v.clone().contiguous()
