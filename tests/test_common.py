@@ -504,3 +504,33 @@ class TestBaseArgparseParser:
         ns = p.parse_args([])
         # Neither historic aliases nor dead flags should appear.
         assert not hasattr(ns, "datasetonly_alias")
+
+
+from scripts._common import init_accelerator_and_logging  # noqa: E402
+
+
+class _CfgForAcc:
+    gradient_accumulation_steps = 4
+    mixed_precision = "no"
+    wandb = False
+
+
+class TestInitAcceleratorAndLogging:
+    def test_returns_namespace_with_accelerator(self) -> None:
+        try:
+            from accelerate import Accelerator  # noqa: F401
+        except ImportError:
+            pytest.skip("accelerate not installed")
+
+        bundle = init_accelerator_and_logging(_CfgForAcc())
+        assert hasattr(bundle, "accelerator")
+        assert hasattr(bundle, "is_main_process")
+        assert bundle.is_main_process is True  # single-proc test env
+
+    def test_without_accelerate_graceful(self, monkeypatch) -> None:
+        """Callers that run without accelerate still get a usable object."""
+        import scripts._common as common
+        monkeypatch.setattr(common, "_HAS_ACCELERATE", False, raising=False)
+        bundle = common.init_accelerator_and_logging(_CfgForAcc())
+        # Stub accelerator should still expose is_main_process + device attrs.
+        assert bundle.is_main_process is True

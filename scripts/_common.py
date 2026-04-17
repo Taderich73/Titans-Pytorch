@@ -672,3 +672,78 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     misc.add_argument("--seed", type=int, default=42)
 
     return parser
+
+
+# ---------------------------------------------------------------------------
+# Accelerator + logging setup
+# ---------------------------------------------------------------------------
+
+import importlib.util
+from dataclasses import dataclass
+
+try:
+    from accelerate import Accelerator
+
+    _HAS_ACCELERATE = True
+except ImportError:  # pragma: no cover - optional dep
+    _HAS_ACCELERATE = False
+
+_HAS_WANDB = importlib.util.find_spec("wandb") is not None
+
+
+@dataclass
+class AcceleratorBundle:
+    """Tuple-ish return value of ``init_accelerator_and_logging``."""
+
+    accelerator: Any
+    logger: logging.Logger
+    is_main_process: bool
+    has_wandb: bool
+
+
+def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
+    """Initialize the Accelerate runtime and a stdlib logger.
+
+    Args:
+        cfg: Object with attributes ``gradient_accumulation_steps`` (int),
+            ``mixed_precision`` (str in {"no","fp16","bf16"}),
+            and ``wandb`` (bool).
+
+    Returns:
+        ``AcceleratorBundle`` with the accelerator instance (or a CPU
+        stub), a module-level logger, ``is_main_process`` flag and a
+        ``has_wandb`` flag indicating whether wandb logging is available.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    logger = logging.getLogger("scripts")
+
+    if _HAS_ACCELERATE:
+        accelerator = Accelerator(
+            gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+            mixed_precision=cfg.mixed_precision,
+            log_with="wandb" if getattr(cfg, "wandb", False) and _HAS_WANDB else None,
+        )
+        is_main = accelerator.is_main_process
+    else:
+        class _Stub:
+            is_main_process = True
+            device = "cpu"
+
+            def prepare(self, *args):
+                return args if len(args) > 1 else args[0]
+
+            def print(self, *args, **kwargs):
+                print(*args, **kwargs)
+
+        accelerator = _Stub()
+        is_main = True
+
+    return AcceleratorBundle(
+        accelerator=accelerator,
+        logger=logger,
+        is_main_process=is_main,
+        has_wandb=_HAS_WANDB,
+    )
