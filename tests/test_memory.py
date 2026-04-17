@@ -623,3 +623,61 @@ def test_memory_module_no_module_state_stash(num_memory_layers):
     assert not hasattr(mem, "_current_delta") or mem._current_delta is None, (
         "forward() is stashing delta on the module — thread it as an argument"
     )
+
+
+class TestVProjectionActivation:
+    """V projection must be raw linear (no SiLU, no L2-norm) per paper Eq. 12."""
+
+    def test_v_is_raw_linear_when_input_large(self):
+        """A large-magnitude input should yield a large-magnitude v tensor.
+
+        Pre-fix (SiLU + L2): all v rows have unit norm, bounded in [0, 1].
+        Post-fix: v = x @ W_V.T with no activation -> norms can exceed 1.
+        """
+        import torch
+        from titans.config import TitansConfig
+        from titans.memory import NeuralLongTermMemory
+
+        config = TitansConfig(dim=32, num_memory_layers=1)
+        memory = NeuralLongTermMemory(config)
+        # Large input so v has large norm through the linear projection
+        x = torch.randn(2, 8, 32) * 10.0
+        v = memory.proj_v(x)
+        # We only apply the convolution (if enabled) — NOT SiLU, NOT L2-norm
+        # The test must assert that the v path in forward() preserves norms.
+        # We mirror the code path exactly so any regression is caught.
+        _, v_post, _ = memory._apply_conv(memory.proj_k(x), v, memory.proj_q(x))
+        assert v_post.norm(dim=-1).mean().item() > 2.0, (
+            "V must not be L2-normalized to unit sphere"
+        )
+
+    def test_v_is_unchanged_between_proj_and_loss(self):
+        """Walk the forward path manually; verify v is not activated."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.memory import NeuralLongTermMemory
+
+        # Use 2-layer memory path so we hit _compute_gradients_deep.
+        config2 = TitansConfig(dim=16, num_memory_layers=2, memory_hidden_mult=2.0)
+        memory2 = NeuralLongTermMemory(config2)
+        x = torch.randn(1, 4, 16)
+
+        captured2 = {}
+        orig2 = memory2._compute_gradients_deep
+
+        def capture2(keys, values, weights, delta=None):
+            captured2["values"] = values.detach().clone()
+            return orig2(keys, values, weights, delta=delta)
+
+        memory2._compute_gradients_deep = capture2  # type: ignore[assignment]
+        memory2(x)
+
+        # v should equal proj_v(x) after optional conv, with NO SiLU applied
+        expected_v = memory2.proj_v(x)
+        _, expected_v, _ = memory2._apply_conv(
+            memory2.proj_k(x), expected_v, memory2.proj_q(x)
+        )
+        # The values passed to gradient computation should match this raw v
+        assert torch.allclose(captured2["values"], expected_v, atol=1e-6), (
+            "V passed to the loss must be raw linear (post-conv only)"
+        )

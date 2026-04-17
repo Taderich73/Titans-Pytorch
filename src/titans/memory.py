@@ -373,11 +373,13 @@ class NeuralLongTermMemory(nn.Module):
 
         k, v, q = self._apply_conv(k, v, q)
 
+        # Per paper Eq. 11-13: only Q and K pass through SiLU + L2-norm.
+        # V is kept as the raw linear projection so the MLP target is
+        # not forced onto the unit sphere (which would impose an error floor).
         k = F.silu(k)
-        v = F.silu(v)
         q = F.silu(q)
 
-        # L2-normalize in float32
+        # L2-normalize Q and K in float32 (V is left untouched)
         q_f32 = q.float()
         k_f32 = k.float()
         q = (q_f32 / torch.sqrt(
