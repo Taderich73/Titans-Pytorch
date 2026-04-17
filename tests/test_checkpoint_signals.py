@@ -549,3 +549,152 @@ def test_signal_frame_no_local_reset_flags_field():
     assert "local_reset_flags" not in field_names, (
         "SignalFrame still has dead local_reset_flags field"
     )
+
+
+def test_build_signal_frame_single_cpu_sync(monkeypatch) -> None:
+    """All per-tensor .item() calls must be batched into <= 1 CPU sync.
+
+    The old implementation issued one ``.item()`` per Frobenius norm per layer
+    (weight_delta, momentum_shift, weight, momentum) plus one per gate mean,
+    i.e. roughly ``4 * L + 3 * L`` syncs per frame for a plain MemoryState.
+    After batching we should collapse that into ~1 sync via ``.tolist()`` on
+    a single stacked tensor. Budget is generous (<= 4) to accommodate a few
+    small scalar tolists without regressing the core contract.
+    """
+    from titans.checkpoint_signals import build_signal_frame
+    from titans.checkpoint_types import GateSnapshot
+
+    item_calls = {"count": 0}
+    tolist_calls = {"count": 0}
+    orig_item = torch.Tensor.item
+    orig_tolist = torch.Tensor.tolist
+
+    def counting_item(self):  # type: ignore[no-untyped-def]
+        item_calls["count"] += 1
+        return orig_item(self)
+
+    def counting_tolist(self):  # type: ignore[no-untyped-def]
+        tolist_calls["count"] += 1
+        return orig_tolist(self)
+
+    monkeypatch.setattr(torch.Tensor, "item", counting_item)
+    monkeypatch.setattr(torch.Tensor, "tolist", counting_tolist)
+
+    n_layers = 5
+    torch.manual_seed(0)
+    old = MemoryState(
+        weights=[torch.randn(8, 8) for _ in range(n_layers)],
+        momentum=[torch.randn(8, 8) for _ in range(n_layers)],
+    )
+    new = MemoryState(
+        weights=[torch.randn(8, 8) for _ in range(n_layers)],
+        momentum=[torch.randn(8, 8) for _ in range(n_layers)],
+    )
+    gates = GateSnapshot(
+        alpha=[torch.randn(1) for _ in range(n_layers)],
+        theta=[torch.randn(1) for _ in range(n_layers)],
+        eta=[torch.randn(1) for _ in range(n_layers)],
+        delta=None,
+        input_activation_norm=0.0,
+        chunk_index=0,
+    )
+    _ = build_signal_frame(old, new, gates, chunk_index=0)
+    # Budget: at most 4 scalar .item() calls and a small handful of .tolist()s
+    # combined total (prior impl was ~35).
+    total_syncs = item_calls["count"] + tolist_calls["count"]
+    assert total_syncs <= 4, (
+        f"Expected <= 4 CPU syncs, got .item()={item_calls['count']} "
+        f".tolist()={tolist_calls['count']}"
+    )
+
+
+def test_build_signal_frame_numeric_parity_after_batching() -> None:
+    """Batched implementation must match element-wise the naive per-tensor one."""
+    from titans.checkpoint_signals import (
+        build_signal_frame,
+        compute_momentum_norms,
+        compute_momentum_shift,
+        compute_weight_delta,
+        compute_weight_norms,
+    )
+    from titans.checkpoint_types import GateSnapshot
+
+    n_layers = 3
+    torch.manual_seed(17)
+    old = MemoryState(
+        weights=[torch.randn(6, 6) for _ in range(n_layers)],
+        momentum=[torch.randn(6, 6) for _ in range(n_layers)],
+    )
+    new = MemoryState(
+        weights=[torch.randn(6, 6) for _ in range(n_layers)],
+        momentum=[torch.randn(6, 6) for _ in range(n_layers)],
+    )
+    gates = GateSnapshot(
+        alpha=[torch.tensor([0.3, 0.4]) for _ in range(n_layers)],
+        theta=[torch.tensor([0.1, 0.2]) for _ in range(n_layers)],
+        eta=[torch.tensor([0.5, 0.6]) for _ in range(n_layers)],
+        delta=None,
+        input_activation_norm=0.0,
+        chunk_index=0,
+    )
+    frame = build_signal_frame(old, new, gates, chunk_index=0)
+
+    assert frame.weight_delta_norms == pytest.approx(compute_weight_delta(old, new), rel=1e-6)
+    assert frame.momentum_shift_norms == pytest.approx(
+        compute_momentum_shift(old, new), rel=1e-6
+    )
+    assert frame.weight_norms == pytest.approx(compute_weight_norms(new), rel=1e-6)
+    assert frame.momentum_norms == pytest.approx(compute_momentum_norms(new), rel=1e-6)
+    assert frame.gate_alpha_means == pytest.approx(
+        [float(t.float().mean().item()) for t in gates.alpha], rel=1e-6
+    )
+    assert frame.gate_theta_means == pytest.approx(
+        [float(t.float().mean().item()) for t in gates.theta], rel=1e-6
+    )
+    assert frame.gate_eta_means == pytest.approx(
+        [float(t.float().mean().item()) for t in gates.eta], rel=1e-6
+    )
+
+
+def test_build_signal_frame_tnt_parity_and_batching(monkeypatch) -> None:
+    """TNT path must also be batched and numerically equivalent."""
+    from titans.checkpoint_signals import build_signal_frame, compute_weight_norms
+    from titans.checkpoint_types import GateSnapshot
+
+    n_layers = 3
+    n_local = 2
+    dim = 6
+    torch.manual_seed(5)
+    old = _make_tnt_state(n_layers, n_local, dim, torch.device("cpu"))
+    new = _make_tnt_state(n_layers, n_local, dim, torch.device("cpu"))
+    gates = GateSnapshot(
+        alpha=[torch.tensor([0.2, 0.3]) for _ in range(n_layers)],
+        theta=[torch.tensor([0.1, 0.2]) for _ in range(n_layers)],
+        eta=[torch.tensor([0.5, 0.6]) for _ in range(n_layers)],
+        delta=None,
+        input_activation_norm=0.0,
+        chunk_index=0,
+    )
+
+    item_calls = {"count": 0}
+    orig_item = torch.Tensor.item
+
+    def counting_item(self):  # type: ignore[no-untyped-def]
+        item_calls["count"] += 1
+        return orig_item(self)
+
+    monkeypatch.setattr(torch.Tensor, "item", counting_item)
+
+    frame = build_signal_frame(old, new, gates, chunk_index=0)
+
+    # With n_layers=3 + 2 locals * 3 layers, the old impl did ~21 .item()s.
+    # Post-batch we expect 0-3 direct .item() calls (all routed through tolist()).
+    assert item_calls["count"] <= 4, f".item() count too high: {item_calls['count']}"
+
+    # Local signal norms parity
+    assert frame.local_signal_norms is not None
+    assert len(frame.local_signal_norms) == n_local
+    for i, local_state in enumerate(new.local_states):
+        assert frame.local_signal_norms[i] == pytest.approx(
+            compute_weight_norms(local_state), rel=1e-6
+        )
