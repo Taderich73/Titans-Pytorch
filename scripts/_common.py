@@ -281,3 +281,114 @@ def loss_mask_to_zero_one(labels: list[int]) -> list[int]:
         List of 0/1 ints: 0 iff label == -100, else 1.
     """
     return [0 if tok == -100 else 1 for tok in labels]
+
+
+# ---------------------------------------------------------------------------
+# tokenize_chat
+# ---------------------------------------------------------------------------
+
+
+def tokenize_chat(
+    messages: list[dict],
+    tokenizer,  # transformers.PreTrainedTokenizerBase when installed
+    max_len: int,
+    train_on_all: bool = False,
+) -> dict[str, list[int]]:
+    """Tokenize a ChatML conversation and produce input_ids + labels + mask.
+
+    Uses ``tokenizer.apply_chat_template`` when the tokenizer provides a
+    chat template; otherwise falls back to ChatML markup (``format_chatml``).
+    Identifies assistant turns so non-assistant tokens can be masked out
+    of the loss.
+
+    Output is shifted for next-token prediction:
+        input_ids = tokens[:-1]
+        labels    = tokens[1:]
+        loss_mask = mask[1:]
+
+    Args:
+        messages: List of role/content dicts.
+        tokenizer: HuggingFace-style tokenizer.
+        max_len: Sequences are truncated to at most ``max_len`` tokens
+            before shifting.
+        train_on_all: If True, every output position is supervised.
+
+    Returns:
+        Dict with keys ``input_ids``, ``labels``, ``loss_mask``.
+        All lists of ints of equal length ``<= max_len - 1``.
+    """
+    use_native_template = (
+        hasattr(tokenizer, "apply_chat_template")
+        and getattr(tokenizer, "chat_template", None) is not None
+    )
+
+    if use_native_template:
+        full_ids: list[int] = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=False,
+        )
+
+        assistant_spans: list[tuple[int, int]] = []
+        eos_after_assistant: list[int] = []
+
+        if not train_on_all:
+            for i, msg in enumerate(messages):
+                if msg.get("role") != "assistant":
+                    continue
+                prefix_turns = messages[:i]
+                if prefix_turns:
+                    prefix_ids = tokenizer.apply_chat_template(
+                        prefix_turns, tokenize=True, add_generation_prompt=True,
+                    )
+                else:
+                    prefix_ids = tokenizer.encode(
+                        f"{CHATML_IM_START}assistant\n", add_special_tokens=False,
+                    )
+                content_start = len(prefix_ids)
+                through_ids = tokenizer.apply_chat_template(
+                    messages[: i + 1], tokenize=True, add_generation_prompt=False,
+                )
+                content_end = len(through_ids)
+                if content_end < len(full_ids):
+                    eos_after_assistant.append(content_end)
+                assistant_spans.append((content_start, content_end))
+    else:
+        full_text = format_chatml(messages)
+        full_ids = tokenizer.encode(full_text, add_special_tokens=False)
+        assistant_spans = []
+        eos_after_assistant = []
+
+        if not train_on_all:
+            cursor = 0
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                header = f"{CHATML_IM_START}{role}\n"
+                footer = f"{CHATML_IM_END}\n"
+                header_ids = tokenizer.encode(header, add_special_tokens=False)
+                content_ids = tokenizer.encode(content, add_special_tokens=False)
+                footer_ids = tokenizer.encode(footer, add_special_tokens=False)
+                content_start = cursor + len(header_ids)
+                content_end = content_start + len(content_ids)
+                footer_end = content_end + len(footer_ids)
+                if role == "assistant":
+                    assistant_spans.append((content_start, content_end))
+                    if footer_ids and content_end < len(full_ids):
+                        eos_after_assistant.append(content_end)
+                cursor = footer_end
+
+    full_ids = full_ids[:max_len]
+    input_ids = full_ids[:-1]
+    labels = full_ids[1:]
+
+    shifted_spans = [(max(0, s - 1), max(0, e - 1)) for s, e in assistant_spans]
+    shifted_eos = [max(0, p - 1) for p in eos_after_assistant]
+
+    loss_mask = build_loss_mask(
+        seq_len=len(labels),
+        assistant_content_spans=shifted_spans,
+        include_eos=True,
+        eos_positions=shifted_eos,
+        train_on_all=train_on_all,
+    )
+
+    return {"input_ids": input_ids, "labels": labels, "loss_mask": loss_mask}

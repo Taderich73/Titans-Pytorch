@@ -28,6 +28,7 @@ from scripts._common import (  # noqa: E402
     make_dataloader,
     make_optimizer,
     maybe_compile,
+    tokenize_chat,
 )
 
 
@@ -224,3 +225,75 @@ class TestLossMaskToZeroOne:
 
     def test_zero_is_still_a_real_token(self) -> None:
         assert loss_mask_to_zero_one([0, 0, -100]) == [1, 1, 0]
+
+
+class _FakeTokenizer:
+    """Minimal whitespace-ish tokenizer (no chat template)."""
+
+    chat_template = None
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        return [ord(c) % 256 for c in text]
+
+    def apply_chat_template(self, *args, **kwargs):  # pragma: no cover - unused
+        raise NotImplementedError
+
+
+class TestTokenizeChat:
+    """tokenize_chat falls back to ChatML markup when chat_template is None."""
+
+    def test_shift_and_mask_length_consistency(self) -> None:
+        tok = _FakeTokenizer()
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        out = tokenize_chat(msgs, tok, max_len=64)
+        assert set(out.keys()) == {"input_ids", "labels", "loss_mask"}
+        assert len(out["input_ids"]) == len(out["labels"]) == len(out["loss_mask"])
+
+    def test_train_on_all_all_ones(self) -> None:
+        tok = _FakeTokenizer()
+        msgs = [{"role": "user", "content": "a"}]
+        out = tokenize_chat(msgs, tok, max_len=32, train_on_all=True)
+        assert all(m == 1 for m in out["loss_mask"])
+
+    def test_assistant_tokens_supervised_user_tokens_not(self) -> None:
+        tok = _FakeTokenizer()
+        msgs = [
+            {"role": "user", "content": "Q"},
+            {"role": "assistant", "content": "A"},
+        ]
+        out = tokenize_chat(msgs, tok, max_len=128)
+        # At least one supervised position must exist (the assistant content).
+        assert sum(out["loss_mask"]) > 0
+        # And at least one non-supervised position (the user content).
+        assert any(m == 0 for m in out["loss_mask"])
+
+    def test_max_len_truncates(self) -> None:
+        tok = _FakeTokenizer()
+        msgs = [{"role": "assistant", "content": "x" * 100}]
+        out = tokenize_chat(msgs, tok, max_len=10)
+        # After max_len=10 truncation we have 9 shifted tokens.
+        assert len(out["input_ids"]) == 9
+
+
+class TestTokenizeChatParityWithSFT:
+    """Parity check: consolidated helper must match sft.py's old output."""
+
+    def test_output_matches_reference_emit(self) -> None:
+        tok = _FakeTokenizer()
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ]
+        out = tokenize_chat(msgs, tok, max_len=128)
+        # Reference emit constructed the same way sft.py did pre-migration.
+        expected_text = (
+            "<|im_start|>system\nsys<|im_end|>\n"
+            "<|im_start|>user\nq<|im_end|>\n"
+            "<|im_start|>assistant\na<|im_end|>\n"
+        )
+        expected_ids = tok.encode(expected_text, add_special_tokens=False)
+        assert out["input_ids"] + [out["labels"][-1]] == expected_ids
