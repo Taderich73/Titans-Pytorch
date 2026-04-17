@@ -534,3 +534,45 @@ class TestInitAcceleratorAndLogging:
         bundle = common.init_accelerator_and_logging(_CfgForAcc())
         # Stub accelerator should still expose is_main_process + device attrs.
         assert bundle.is_main_process is True
+
+
+from scripts._common import setup_checkpoint_dir  # noqa: E402
+
+
+class TestSetupCheckpointDir:
+    def test_creates_missing_directory(self, tmp_path) -> None:
+        target = tmp_path / "new_run"
+        result = setup_checkpoint_dir(str(target), resume_path=None)
+        assert target.exists()
+        assert result.output_dir == target
+        assert result.resume_path is None
+        assert result.resume_step == 0
+
+    def test_existing_directory_accepted(self, tmp_path) -> None:
+        target = tmp_path / "existing"
+        target.mkdir()
+        result = setup_checkpoint_dir(str(target), resume_path=None)
+        assert result.output_dir == target
+
+    def test_explicit_resume_path(self, tmp_path) -> None:
+        target = tmp_path / "run"
+        target.mkdir()
+        ckpt = target / "step_123.pt"
+        ckpt.write_bytes(b"\x00")
+        result = setup_checkpoint_dir(str(target), resume_path=str(ckpt))
+        assert result.resume_path == ckpt
+        assert result.resume_step == 123
+
+    def test_resume_step_unparseable_falls_back_to_zero(self, tmp_path) -> None:
+        target = tmp_path / "run"
+        target.mkdir()
+        ckpt = target / "arbitrary_name.pt"
+        ckpt.write_bytes(b"\x00")
+        result = setup_checkpoint_dir(str(target), resume_path=str(ckpt))
+        assert result.resume_step == 0
+
+    def test_resume_path_nonexistent_raises(self, tmp_path) -> None:
+        target = tmp_path / "run"
+        target.mkdir()
+        with pytest.raises(FileNotFoundError):
+            setup_checkpoint_dir(str(target), resume_path=str(tmp_path / "missing.pt"))

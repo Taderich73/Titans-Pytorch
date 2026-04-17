@@ -747,3 +747,55 @@ def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
         is_main_process=is_main,
         has_wandb=_HAS_WANDB,
     )
+
+
+# ---------------------------------------------------------------------------
+# setup_checkpoint_dir
+# ---------------------------------------------------------------------------
+
+import re
+from pathlib import Path
+
+
+@dataclass
+class CheckpointSetup:
+    """Return type for setup_checkpoint_dir."""
+
+    output_dir: Path
+    resume_path: Path | None
+    resume_step: int
+
+
+def setup_checkpoint_dir(
+    output_dir: str, resume_path: str | None = None,
+) -> CheckpointSetup:
+    """Create the output directory (if missing) and resolve a resume path.
+
+    Args:
+        output_dir: Where future checkpoints will be written.
+        resume_path: Optional explicit checkpoint file to resume from.
+            Must exist if provided.
+
+    Returns:
+        ``CheckpointSetup`` with the resolved output path, the resume
+        checkpoint (if any), and the step number parsed from the
+        filename (``step_123.pt`` -> 123; unparseable -> 0).
+
+    Raises:
+        FileNotFoundError: If ``resume_path`` is given but the file does
+            not exist.
+    """
+    out = Path(output_dir).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    resume: Path | None = None
+    step = 0
+    if resume_path is not None:
+        resume = Path(resume_path).expanduser()
+        if not resume.exists():
+            raise FileNotFoundError(f"--resume file not found: {resume}")
+        m = re.search(r"step[_-]?(\d+)", resume.stem)
+        if m:
+            step = int(m.group(1))
+
+    return CheckpointSetup(output_dir=out, resume_path=resume, resume_step=step)
