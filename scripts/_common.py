@@ -1,12 +1,32 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Shared helpers for training/eval scripts.
+"""Shared helpers for training / inference scripts.
 
-This module is the landing pad for DRY consolidation across the
-sft / lora / dpo / rlvr scripts. It currently exposes only
-``chunked_forward``; future plans will add tokenize_chat,
-build_titans_config, and create_model helpers.
+This module is the single source of truth for code that would otherwise
+drift across sft / lora / dpo / rlvr / pretrain / inference.
+
+Forward (Plan 2):
+    chunked_forward, compute_log_probs, compute_token_log_probs,
+    and memory-plumbing helpers.
+
+Optimiser / dataloader (Plan 8):
+    make_optimizer, make_dataloader, maybe_compile.
+
+DRY consolidation (Plan 3):
+    - CHATML_IM_START, CHATML_IM_END: canonical ChatML markers.
+    - format_chatml: list[dict] -> str in ChatML markup.
+    - build_loss_mask: span-based 0/1 mask builder (sft/dpo canonical form).
+    - loss_mask_to_zero_one: adapter for lora's -100-sentinel labels.
+    - tokenize_chat: ChatML tokenisation + shift + loss-mask in one call.
+    - MODEL_CLASSES / create_model: Titans variant registry.
+    - build_titans_config: duck-typed config -> TitansConfig.
+    - base_argparse_parser: argparse skeleton shared by all training scripts.
+    - init_accelerator_and_logging: Accelerator + logging setup bundle.
+    - setup_checkpoint_dir: output dir creation + resume-path resolution.
+
+Do not add helpers here that belong in the library (``src/titans``); this
+module is only for script-level orchestration glue.
 """
 
 from __future__ import annotations

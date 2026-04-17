@@ -691,3 +691,21 @@ class TestInferenceMigrationSmoke:
             timeout=30,
         )
         assert r.returncode == 0
+
+
+class TestCommonModuleDocumentation:
+    def test_module_docstring_lists_public_helpers(self) -> None:
+        import scripts._common as common
+
+        doc = common.__doc__ or ""
+        for name in (
+            "format_chatml",
+            "build_loss_mask",
+            "tokenize_chat",
+            "create_model",
+            "build_titans_config",
+            "base_argparse_parser",
+            "init_accelerator_and_logging",
+            "setup_checkpoint_dir",
+        ):
+            assert name in doc, f"{name} missing from scripts/_common docstring"
