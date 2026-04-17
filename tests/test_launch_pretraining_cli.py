@@ -1,5 +1,5 @@
 """Regression: --help text mentioned a stale commit SHA (e309d70) that no
-longer matched the default (5ae40b8). Derive the help text from the default
+longer matched the default. Derive the help text from the default
 at runtime."""
 from __future__ import annotations
 

@@ -181,7 +181,7 @@ def main():
             "content hash, and an unpinned dependency line hashes the "
             "same across runs even when origin/main has moved). Pass a "
             "short SHA to force a fresh install of a specific commit, or "
-            f"'main' to track the branch tip. Default: {DEFAULT_TITANS_SHA}."
+            "'main' to track the branch tip."
         ),
     )
     diag.add_argument(
