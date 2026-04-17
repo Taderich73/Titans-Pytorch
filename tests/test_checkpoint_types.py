@@ -211,7 +211,6 @@ class TestSignalFrame:
             gate_theta_means=[0.1] * n_layers,
             gate_eta_means=[0.85] * n_layers,
             batch_variance=0.05,
-            global_signal_norms=None,
             local_signal_norms=None,
             local_reset_flags=None,
         )
@@ -232,12 +231,10 @@ class TestSignalFrame:
             gate_theta_means=[0.1, 0.1],
             gate_eta_means=[0.85, 0.85],
             batch_variance=None,
-            global_signal_norms=None,
             local_signal_norms=None,
             local_reset_flags=None,
         )
         assert frame.chunk_index == 7
-        assert frame.global_signal_norms is None
         assert frame.local_signal_norms is None
         assert frame.local_reset_flags is None
 
@@ -257,11 +254,9 @@ class TestSignalFrame:
             gate_theta_means=[0.1],
             gate_eta_means=[0.8],
             batch_variance=0.01,
-            global_signal_norms=[0.7, 0.8],
             local_signal_norms=[[0.1, 0.2], [0.3, 0.4]],
             local_reset_flags=[False, True],
         )
-        assert frame.global_signal_norms == [0.7, 0.8]
         assert len(frame.local_signal_norms) == 2
         assert frame.local_reset_flags == [False, True]
 
@@ -290,7 +285,6 @@ class TestSignalFrame:
             "gate_theta_means",
             "gate_eta_means",
             "batch_variance",
-            "global_signal_norms",
             "local_signal_norms",
             "local_reset_flags",
         }
@@ -312,12 +306,10 @@ class TestSignalFrame:
             gate_theta_means=[0.1],
             gate_eta_means=[0.8],
             batch_variance=0.02,
-            global_signal_norms=[0.5],
             local_signal_norms=[[0.1]],
             local_reset_flags=[True],
         )
         d = frame.to_dict()
-        assert d["global_signal_norms"] == [0.5]
         assert d["local_signal_norms"] == [[0.1]]
         assert d["local_reset_flags"] == [True]
 
@@ -436,7 +428,6 @@ class TestTransitionRecord:
             gate_theta_means=[0.1],
             gate_eta_means=[0.8],
             batch_variance=None,
-            global_signal_norms=None,
             local_signal_norms=None,
             local_reset_flags=None,
         )

@@ -372,7 +372,6 @@ class TestBuildSignalFrame:
         gates = _make_gate_snapshot(2, device)
         frame = build_signal_frame(state, state, gates, chunk_index=0)
 
-        assert frame.global_signal_norms is None
         assert frame.local_signal_norms is None
         assert frame.local_reset_flags is None
 
@@ -494,10 +493,8 @@ class TestBuildSignalFrame:
 
         frame = build_signal_frame(old_tnt, new_tnt, gates, chunk_index=3)
 
-        assert frame.global_signal_norms is not None
         assert frame.local_signal_norms is not None
         assert frame.local_reset_flags is not None
-        assert len(frame.global_signal_norms) == n_layers
         assert len(frame.local_signal_norms) == n_local
         assert len(frame.local_reset_flags) == n_local
 
@@ -531,3 +528,17 @@ class TestBuildSignalFrame:
         serialized = json.dumps(d)
         recovered = json.loads(serialized)
         assert recovered["chunk_index"] == 1
+
+
+def test_signal_frame_no_duplicate_tnt_weight_norms():
+    """Regression: global_signal_norms was populated with exactly the same
+    values as weight_norms on the TNT path. Either remove the duplicate field
+    or populate with distinct semantics. We choose removal."""
+    from titans.checkpoint_types import SignalFrame
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(SignalFrame)}
+    assert "global_signal_norms" not in field_names, (
+        "SignalFrame still has global_signal_norms — remove the duplicate "
+        "of weight_norms"
+    )
