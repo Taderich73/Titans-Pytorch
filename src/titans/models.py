@@ -184,9 +184,15 @@ class MACBlock(nn.Module):
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
-        self.memory_query = nn.Parameter(
-            torch.randn(1, 1, config.dim) * config.init_std
-        )
+        if config.mac_per_position_memory_query:
+            # Paper Eq. 21: q_t = S^(t) W_Q (per-position linear projection).
+            self.memory_query_proj = nn.Linear(config.dim, config.dim, bias=False)
+            nn.init.normal_(self.memory_query_proj.weight, std=config.init_std)
+        else:
+            # Legacy: single learned query broadcast across batch and positions.
+            self.memory_query = nn.Parameter(
+                torch.randn(1, 1, config.dim) * config.init_std
+            )
         self.persistent = PersistentMemory(config)
         self.attention = SegmentedAttention(config)
         self.ffn = FeedForward(config)
@@ -226,12 +232,18 @@ class MACBlock(nn.Module):
         if state is None:
             state = self.memory.init_state(batch_size)
 
-        query = self.memory_query.expand(batch_size, -1, -1)
+        normed = self.norm1(h)
+        if self.config.mac_per_position_memory_query:
+            # Paper Eq. 21: per-position query q_t = S^(t) W_Q.  The query
+            # lives in the same normalized space as the attention input.
+            query = self.memory_query_proj(normed)
+        else:
+            # Legacy: single learned query broadcast across batch and positions.
+            query = self.memory_query.expand(batch_size, -1, -1)
         memory_retrieved = self.memory.retrieve(query, state)
         memory_tokens = self.norm_mem(memory_retrieved)
 
         persistent = self.persistent(batch_size)
-        normed = self.norm1(h)
         attn_out = self.attention(normed, persistent=persistent, memory=memory_tokens)
         if self.dropout is not None:
             attn_out = self.dropout(attn_out)

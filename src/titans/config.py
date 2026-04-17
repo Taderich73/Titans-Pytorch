@@ -136,6 +136,11 @@ class TitansConfig:
     auto_checkpoint: bool = False
     checkpoint_config: dict | None = None  # MemoryCheckpointConfig as dict or instance
 
+    # MAC memory query: paper Eq. 21 uses per-position q_t = S^(t) W_Q.
+    # Legacy checkpoints trained with a single learned-constant query can
+    # load by flipping this flag to False.
+    mac_per_position_memory_query: bool = True
+
     @property
     def head_dim(self) -> int:
         return self.dim // self.num_heads
@@ -262,6 +267,7 @@ class TitansConfig:
                 if hasattr(self.checkpoint_config, "to_dict")
                 else self.checkpoint_config
             ),
+            "mac_per_position_memory_query": self.mac_per_position_memory_query,
         }
 
     @classmethod

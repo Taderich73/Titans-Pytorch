@@ -693,3 +693,105 @@ class TestMACRetrieveOrdering:
 
         core_out, _new_state, _ = block.core_forward(h, state=state)
         assert core_out.shape == (1, 8, 32)
+
+
+class TestMACPerPositionQuery:
+    """MAC memory query is per-position projection, not a learned constant."""
+
+    def test_retrieved_shape_is_per_position(self):
+        """mem_out consumed by the gate has shape (B, seq_len, D), not (B, 1, D)."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=16,
+            window_size=16,
+            mac_per_position_memory_query=True,
+        )
+        block = MACBlock(config, layer_idx=0)
+        h = torch.randn(2, 16, 32)
+
+        captured_queries: list[torch.Tensor] = []
+        orig = block.memory.retrieve
+
+        def capture(query, state):
+            captured_queries.append(query.detach().clone())
+            return orig(query, state)
+
+        block.memory.retrieve = capture  # type: ignore[assignment]
+        _ = block.core_forward(h)
+        assert len(captured_queries) == 1
+        assert captured_queries[0].shape == (2, 16, 32), (
+            "Per-position query shape expected (2,16,32), got "
+            f"{captured_queries[0].shape}"
+        )
+
+    def test_different_positions_retrieve_differently(self):
+        """Two positions with different content produce different retrieved tokens."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+            mac_per_position_memory_query=True,
+        )
+        block = MACBlock(config, layer_idx=0)
+        h = torch.randn(1, 8, 32)
+        # Make position 0 and position 4 dramatically different.
+        h[0, 0] = 5.0
+        h[0, 4] = -5.0
+
+        captured: list[torch.Tensor] = []
+        orig = block.memory.retrieve
+
+        def capture(query, state):
+            result = orig(query, state)
+            captured.append(result.detach().clone())
+            return result
+
+        block.memory.retrieve = capture  # type: ignore[assignment]
+        block.core_forward(h)
+        assert not torch.allclose(captured[0][0, 0], captured[0][0, 4]), (
+            "Per-position retrieval must yield different outputs for different inputs"
+        )
+
+    def test_legacy_constant_query_mode(self):
+        """With mac_per_position_memory_query=False, fall back to learned constant."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+            mac_per_position_memory_query=False,
+        )
+        block = MACBlock(config, layer_idx=0)
+        assert hasattr(block, "memory_query"), (
+            "Legacy flag should preserve the learned-constant memory_query param"
+        )
+        assert block.memory_query.shape == (1, 1, 32)
+        assert not hasattr(block, "memory_query_proj"), (
+            "Legacy flag should not create the per-position projection"
+        )
+
+        # And the block should still run end-to-end.
+        h = torch.randn(2, 8, 32)
+        core_out, _new_state, _ = block.core_forward(h)
+        assert core_out.shape == (2, 8, 32)
