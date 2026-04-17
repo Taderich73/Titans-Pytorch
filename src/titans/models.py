@@ -352,8 +352,7 @@ class MAGBlock(nn.Module):
     Architecture:
     1. y_t = SW-Attn([persistent || norm(h)]) — sliding window attention
     2. mem_out = M([persistent || normed]) — memory on normed input (NOT y_t)
-    3. gated = sigmoid(gate_attn(y_t)) * sigmoid(gate_mem(mem_out))
-    4. core_out = attn_out + gated
+    3. core_out = y_t * mem_out — element-wise multiplicative gate (Eq. 28)
     """
 
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
@@ -372,9 +371,6 @@ class MAGBlock(nn.Module):
 
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
-
-        self.gate_norm_attn = RMSNorm(config.dim)
-        self.gate_norm_mem = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
@@ -437,12 +433,10 @@ class MAGBlock(nn.Module):
         else:
             mem_out = mem_out_full
 
-        # Eq. 28: Gated output
-        gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
-            self.gate_norm_mem(mem_out)
-        )
-
-        core_out = attn_out + gated
+        # Paper Eq. 28: o = y ⊗ M(x̃) (element-wise multiply).
+        # mem_out is per-position after slicing off the persistent prefix,
+        # with shape matching y_t naturally.
+        core_out = y_t * mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:

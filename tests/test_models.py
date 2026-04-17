@@ -904,3 +904,85 @@ class TestMACGating:
         block = MACBlock(config, layer_idx=0)
         assert not hasattr(block, "gate_norm_attn")
         assert not hasattr(block, "gate_norm_mem")
+
+
+class TestMAGGating:
+    """core_out = y_t * mem_out (element-wise) per paper Eq. 28."""
+
+    def test_mag_core_out_is_elementwise_product(self):
+        """When mem_out is all ones, core_out should equal y_t."""
+        import torch
+
+        from titans.config import TitansConfig
+        from titans.models import MAGBlock
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MAGBlock(config, layer_idx=0)
+        block.eval()
+        h = torch.randn(1, 8, 16)
+
+        # Patch memory.forward to return all-ones for mem_out. The MAG block
+        # feeds [persistent || normed] to memory, so the patched output has
+        # shape (B, P + T, D); slicing off the prefix yields (B, T, D) ones.
+        orig_forward = block.memory.forward
+
+        def patched(
+            x,
+            state=None,
+            return_state=True,
+            lr_scale=1.0,
+            memory_gate=None,
+            return_keys=False,
+            retrieve_after_update=True,
+        ):
+            out, new_state, snap = orig_forward(
+                x,
+                state=state,
+                return_state=return_state,
+                lr_scale=lr_scale,
+                memory_gate=memory_gate,
+                return_keys=False,
+                retrieve_after_update=retrieve_after_update,
+            )
+            return torch.ones_like(out), new_state, snap
+
+        block.memory.forward = patched  # type: ignore[assignment]
+
+        # Compute y_t manually so we can compare. Replicate core_forward:
+        normed = block.norm1(h)
+        persistent = block.persistent(1)
+        attn_out = block.attention(normed, prefix=persistent)
+        y_t = h + attn_out
+
+        core_out, _, _ = block.core_forward(h)
+
+        # With mem_out = all-ones, core_out = y_t * 1 = y_t
+        assert torch.allclose(core_out, y_t, atol=1e-5), (
+            "core_out should equal y_t when mem_out=1; "
+            f"max diff {(core_out - y_t).abs().max()}"
+        )
+
+    def test_mag_no_learned_gate_norm_modules(self):
+        """After fix, gate_norm_attn/gate_norm_mem are removed from MAGBlock."""
+        from titans.config import TitansConfig
+        from titans.models import MAGBlock
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MAGBlock(config, layer_idx=0)
+        assert not hasattr(block, "gate_norm_attn")
+        assert not hasattr(block, "gate_norm_mem")
