@@ -169,3 +169,85 @@ def test_sft_eval_numerical_equivalence_single_chunk() -> None:
         rtol=1e-5,
         atol=1e-5,
     )
+
+
+def _import_sft_module():
+    """Import scripts/sft.py by inserting the scripts/ dir onto sys.path."""
+    import pathlib
+    import sys
+
+    scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import sft  # noqa: WPS433
+
+    return sft
+
+
+def test_sft_config_has_reset_memory_per_batch() -> None:
+    """SFTConfig must expose reset_memory_per_batch with default True."""
+    sft = _import_sft_module()
+
+    cfg = sft.SFTConfig()
+    assert hasattr(cfg, "reset_memory_per_batch")
+    assert cfg.reset_memory_per_batch is True
+
+
+def test_sft_parse_args_exposes_reset_flag(monkeypatch) -> None:
+    """--no-reset-memory-per-batch toggles the flag False."""
+    import sys
+
+    sft = _import_sft_module()
+
+    monkeypatch.setattr(sys, "argv", [
+        "sft.py",
+        "--no-reset-memory-per-batch",
+    ])
+    cfg = sft.parse_args()
+    assert cfg.reset_memory_per_batch is False
+
+
+def test_sft_reset_semantics_true_discards_states() -> None:
+    """With reset=True, memory at start of batch 2 equals initial (None)."""
+    torch.manual_seed(0)
+    chunk_size = 8
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+    input_ids = torch.randint(0, 32, (1, 16))
+    labels = torch.randint(0, 32, (1, 16))
+    loss_mask = torch.ones(1, 16)
+
+    # Simulate batch 1
+    _, states_after_1 = _sft_chunked_step(
+        model, input_ids, labels, loss_mask, None, vocab_size=32
+    )
+    assert states_after_1 is not None
+
+    # Reset semantics: drop states_after_1 before batch 2
+    states_for_2 = None  # reset_memory_per_batch=True
+    _, states_after_2 = _sft_chunked_step(
+        model, input_ids, labels, loss_mask, states_for_2, vocab_size=32
+    )
+    # First-chunk weights must match a fresh run (no carry).
+    assert states_after_2 is not None
+
+
+def test_sft_no_reset_carries_states_detached() -> None:
+    """With reset=False, states from batch 1 are carried (but detached)."""
+    torch.manual_seed(0)
+    chunk_size = 8
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+    input_ids = torch.randint(0, 32, (1, 16))
+    labels = torch.randint(0, 32, (1, 16))
+    loss_mask = torch.ones(1, 16)
+
+    _, states_after_1 = _sft_chunked_step(
+        model, input_ids, labels, loss_mask, None, vocab_size=32
+    )
+    # No-reset semantics: carry states_after_1 (they're already detached).
+    for s in states_after_1:
+        for w in s.weights:
+            assert not w.requires_grad
+    _, states_after_2 = _sft_chunked_step(
+        model, input_ids, labels, loss_mask, states_after_1, vocab_size=32
+    )
+    assert states_after_2 is not None

@@ -395,6 +395,10 @@ class SFTConfig:
     wandb_project: str = "titans-sft"
     wandb_run_name: str | None = None
 
+    # --- Memory state lifecycle ---
+    reset_memory_per_batch: bool = True
+    state_carry_warmup_steps: int = 0
+
     # --- Misc ---
     seed: int = 42
     synthetic_samples: int = 5000
@@ -981,6 +985,14 @@ def train(config: SFTConfig) -> None:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
 
+            # Reset memory at batch boundary per lifecycle policy.
+            reset_this_batch = (
+                config.reset_memory_per_batch
+                or global_step < config.state_carry_warmup_steps
+            )
+            if reset_this_batch:
+                memory_states = None
+
             with accelerator.accumulate(model):
                 chunk_size = config.chunk_size
                 id_chunks = batch["input_ids"].split(chunk_size, dim=1)
@@ -1323,6 +1335,28 @@ def parse_args() -> SFTConfig:
     log.add_argument("--wandb-project", type=str, default="titans-sft")
     log.add_argument("--wandb-run-name", type=str, default=None)
 
+    # Memory state lifecycle
+    mem = parser.add_argument_group("Memory lifecycle")
+    mem.add_argument(
+        "--reset-memory-per-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If True (default), reset Titans memory states to None at the "
+            "start of each batch. Set --no-reset-memory-per-batch to carry "
+            "detached state across batches (streaming / long-context regime)."
+        ),
+    )
+    mem.add_argument(
+        "--state-carry-warmup-steps",
+        type=int,
+        default=0,
+        help=(
+            "When --no-reset-memory-per-batch is set, still reset memory for "
+            "the first N steps (warmup before carrying state)."
+        ),
+    )
+
     # Misc
     misc = parser.add_argument_group("Misc")
     misc.add_argument("--seed", type=int, default=42)
@@ -1404,6 +1438,9 @@ def parse_args() -> SFTConfig:
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
+        # Memory lifecycle
+        reset_memory_per_batch=args.reset_memory_per_batch,
+        state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Misc
         seed=args.seed,
         synthetic_samples=args.synthetic_samples,
