@@ -106,6 +106,54 @@ class LocalMemory(nn.Module):
             return self.init_state(batch_size=batch_size), 0
         return state, step_counter
 
+    @staticmethod
+    def _reset_segments(
+        start_counter: int, seq_len: int, shard_length: int,
+    ) -> list[tuple[int, int, bool]]:
+        """Enumerate ``(local_begin, local_end, reset_at_begin)`` segments.
+
+        Given a chunk of length ``seq_len`` whose first token has global
+        step index ``start_counter`` and a shard length ``shard_length``,
+        returns contiguous segments over local indices ``[0, seq_len)``
+        such that within each segment no reset fires. The
+        ``reset_at_begin`` flag indicates whether the segment should
+        re-initialise the memory state at its local begin.
+
+        Reset rule (paper Eq. 6): a reset fires AT every local index ``i``
+        whose global step ``start_counter + i`` is a positive multiple
+        of ``shard_length``.
+
+        Fast path: when no reset falls inside ``[0, seq_len)``, exactly
+        one segment ``(0, seq_len, False)`` is returned (assuming
+        ``start_counter`` itself is not a positive multiple of
+        ``shard_length``).
+
+        Args:
+            start_counter: Global step index of the first token in the chunk.
+            seq_len: Length of the chunk.
+            shard_length: Reset period (S_L).
+
+        Returns:
+            List of ``(begin, end, reset_at_begin)`` tuples covering
+            ``[0, seq_len)`` contiguously.
+        """
+        segments: list[tuple[int, int, bool]] = []
+        current_start = 0
+        for i in range(1, seq_len):
+            global_step = start_counter + i
+            if global_step > 0 and global_step % shard_length == 0:
+                segments.append((current_start, i, current_start != 0))
+                current_start = i
+        segments.append((current_start, seq_len, current_start != 0))
+
+        # Resolve whether the FIRST segment resets at begin. It does iff
+        # ``start_counter`` itself is a positive multiple of
+        # ``shard_length``.
+        first_begin, first_end, _ = segments[0]
+        first_reset = start_counter > 0 and start_counter % shard_length == 0
+        segments[0] = (first_begin, first_end, first_reset)
+        return segments
+
     def forward(
         self,
         x: torch.Tensor,
@@ -140,6 +188,89 @@ class LocalMemory(nn.Module):
             x, state=state, lr_scale=lr_scale, return_keys=False
         )
         return output, new_state
+
+    def forward_with_resets(
+        self,
+        x: torch.Tensor,
+        state: MemoryState,
+        start_counter: int,
+        lr_scale: float | torch.Tensor = 1.0,
+        return_keys: bool = False,
+        return_q: bool = False,
+    ) -> tuple:
+        """Forward a chunk while honouring per-token shard resets (Eq. 6).
+
+        Splits the chunk at every position whose global step is a
+        positive multiple of ``shard_length``, re-initialises the
+        memory state at each boundary, and concatenates the outputs.
+        The fast path (no in-chunk reset and no reset at start) runs
+        a single ``forward`` call identical to today's hot path.
+
+        Args:
+            x: Input chunk of shape ``(B, C, D)``.
+            state: Local memory state entering this chunk.
+            start_counter: Global step index of the first token in ``x``
+                (equivalently, position-within-shard on entry, since
+                the counter tracks ``global_step mod shard_length``).
+            lr_scale: Memory gate LR scale, forwarded to NLTM.
+            return_keys: If True, return concatenated L2-normalised keys.
+            return_q: If True, return concatenated L2-normalised queries.
+                Requires ``return_keys`` to also be True.
+
+        Returns:
+            Up to 5-tuple ``(output, new_state, end_counter[, keys[, q]])``.
+            ``output`` has shape ``(B, C, D)``. ``end_counter`` equals
+            ``(start_counter + C) mod shard_length`` and lies in
+            ``[0, shard_length)``.
+        """
+        seq_len = x.shape[1]
+        segments = self._reset_segments(
+            start_counter=start_counter,
+            seq_len=seq_len,
+            shard_length=self.shard_length,
+        )
+
+        cur_state = state
+        out_parts: list[torch.Tensor] = []
+        k_parts: list[torch.Tensor] = []
+        q_parts: list[torch.Tensor] = []
+
+        for begin, end, reset_at_begin in segments:
+            if reset_at_begin:
+                cur_state = self.init_state(batch_size=x.shape[0])
+            sub_x = x[:, begin:end, :]
+            if return_keys and return_q:
+                out, cur_state, k, q = self(
+                    sub_x, state=cur_state, lr_scale=lr_scale,
+                    return_keys=True, return_q=True,
+                )
+                k_parts.append(k)
+                q_parts.append(q)
+            elif return_keys:
+                out, cur_state, k = self(
+                    sub_x, state=cur_state, lr_scale=lr_scale,
+                    return_keys=True,
+                )
+                k_parts.append(k)
+            else:
+                out, cur_state = self(
+                    sub_x, state=cur_state, lr_scale=lr_scale,
+                )
+            out_parts.append(out)
+
+        output = (
+            out_parts[0] if len(out_parts) == 1 else torch.cat(out_parts, dim=1)
+        )
+        end_counter = (start_counter + seq_len) % self.shard_length
+
+        if return_keys and return_q:
+            keys = k_parts[0] if len(k_parts) == 1 else torch.cat(k_parts, dim=1)
+            qs = q_parts[0] if len(q_parts) == 1 else torch.cat(q_parts, dim=1)
+            return output, cur_state, end_counter, keys, qs
+        if return_keys:
+            keys = k_parts[0] if len(k_parts) == 1 else torch.cat(k_parts, dim=1)
+            return output, cur_state, end_counter, keys
+        return output, cur_state, end_counter
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
         return self.memory.retrieve(queries, state)
@@ -216,14 +347,21 @@ class HierarchicalMemory(nn.Module):
         use_per_position = self.config.tnt_qk_projection == "per_position"
 
         for i, local_mem in enumerate(self.local_memories):
-            local_state, counter = local_mem.maybe_reset(
-                state.local_states[i],
-                state.local_step_counters[i],
-                batch_size=batch_size,
-            )
+            start_counter = state.local_step_counters[i]
 
-            if counter == 0 and state.local_step_counters[i] > 0:
-                qk_carry = torch.zeros(self.config.dim, self.config.dim, device=x.device)
+            # Decide whether any reset at the chunk's *start* zeroes the
+            # QK-projection carry. Per-token mid-chunk resets do not
+            # currently zero the carry (it accumulates across the chunk
+            # in a single call, matching pre-fix behaviour for the
+            # common case where at most one boundary falls at the start).
+            will_reset_at_start = (
+                start_counter > 0
+                and start_counter % local_mem.shard_length == 0
+            )
+            if will_reset_at_start:
+                qk_carry = torch.zeros(
+                    self.config.dim, self.config.dim, device=x.device,
+                )
             else:
                 qk_carry = state.qk_projections[i]
 
@@ -233,11 +371,18 @@ class HierarchicalMemory(nn.Module):
                 # Paper Eq. 7: per-position projection inside the chunk.
                 # Pull (k, q) out of NLTM; project queries causally; then
                 # re-retrieve local memory with the projected queries.
-                local_out_unprojected, new_local_state, normed_keys, normed_q = local_mem(
-                    x, state=local_state, lr_scale=local_lr_scale,
+                (
+                    _local_out_unprojected,
+                    new_local_state,
+                    end_counter,
+                    normed_keys,
+                    normed_q,
+                ) = local_mem.forward_with_resets(
+                    x, state=state.local_states[i],
+                    start_counter=start_counter,
+                    lr_scale=local_lr_scale,
                     return_keys=True, return_q=True,
                 )
-                del local_out_unprojected  # discarded: we re-retrieve below
                 projected_q, new_carry = local_mem.qk_proj(
                     normed_q, normed_keys, qk_carry,
                 )
@@ -253,21 +398,32 @@ class HierarchicalMemory(nn.Module):
                 new_qk_projections.append(new_carry)
             elif has_qk:
                 # Legacy chunk-mean path: single carry applied uniformly.
-                local_out, new_local_state, normed_keys = local_mem(
-                    x, state=local_state, lr_scale=local_lr_scale, return_keys=True,
+                (
+                    local_out,
+                    new_local_state,
+                    end_counter,
+                    normed_keys,
+                ) = local_mem.forward_with_resets(
+                    x, state=state.local_states[i],
+                    start_counter=start_counter,
+                    lr_scale=local_lr_scale,
+                    return_keys=True,
                 )
                 new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
                 new_qk_projections.append(new_carry)
             else:
-                local_out, new_local_state = local_mem(
-                    x, state=local_state, lr_scale=local_lr_scale,
+                local_out, new_local_state, end_counter = (
+                    local_mem.forward_with_resets(
+                        x, state=state.local_states[i],
+                        start_counter=start_counter,
+                        lr_scale=local_lr_scale,
+                    )
                 )
                 new_qk_projections.append(qk_carry)
 
             local_outs.append(local_out)
             new_local_states.append(new_local_state)
-
-            new_step_counters.append(counter + seq_len)
+            new_step_counters.append(end_counter)
 
         new_state = TNTMemoryState(
             global_state=new_global_state,

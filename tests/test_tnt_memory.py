@@ -148,13 +148,13 @@ class TestLocalMemoryReset:
         x = torch.randn(batch_size, seq_len, config.dim, device=device)
 
         out1, state1, _ = hm(x)
-        # After first call: counter = seq_len = 16, which is divisible by shard_length=8
-        assert state1.local_step_counters[0] == seq_len
+        # After first call: global step = 16, 16 % 8 == 0 so counter = 0
+        # (per-token reset semantics: counter tracks position within shard).
+        assert state1.local_step_counters[0] == 0
 
         out2, state2, _ = hm(x, state=state1)
-        # Reset path runs at start of second call (16 % 8 == 0), then counter
-        # increments by seq_len, so the new value should be exactly seq_len.
-        assert state2.local_step_counters[0] == seq_len, (
-            f"expected reset+increment to {seq_len}, got {state2.local_step_counters[0]}"
+        # After second call: global step = 32, also 0 mod 8.
+        assert state2.local_step_counters[0] == 0, (
+            f"expected counter=0 at shard boundary, got {state2.local_step_counters[0]}"
         )
         assert out2.shape == (batch_size, seq_len, config.dim)

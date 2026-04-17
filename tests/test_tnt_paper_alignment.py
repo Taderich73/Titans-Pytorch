@@ -222,3 +222,68 @@ class TestHierarchicalPerPositionProjection:
             f"per-position projection not engaged: delta_last={delta_last} "
             f"delta_first={delta_first}"
         )
+
+
+class TestPerTokenResetCadence:
+    def test_reset_at_nondivisible_boundary(self, device):
+        """With shard_length=4 and chunk_size=6, a reset must fire at
+        local position 4 within the chunk (global step counter crosses a
+        multiple of shard_length mid-chunk)."""
+        config = _tnt_config(chunk_size=6, shard_length=4,
+                             local_chunk_sizes=[6], dim=16)
+        hm = HierarchicalMemory(config).to(device)
+        x = torch.randn(1, 6, config.dim, device=device)
+
+        # Use two consecutive forwards so an in-chunk reset is forced.
+        # After call 1: counter = 6. After reset boundary at t=0 of
+        # call 2 (because 6 % 4 != 0 -> no reset at start, but t=2 of
+        # call 2 is global t=8 ≡ 0 mod 4 -> reset there).
+        _, state1, _ = hm(x)
+        assert state1.local_step_counters[0] == 6 % 4
+
+        out2, state2, _ = hm(x, state=state1)
+        # After processing 6 more tokens, counter must reflect the
+        # *position within the current shard*: global step = 12,
+        # 12 % 4 == 0 so we are at a shard boundary; counter = 0.
+        assert state2.local_step_counters[0] == 0, (
+            f"Expected counter=0 at shard boundary (global step 12), "
+            f"got {state2.local_step_counters[0]}"
+        )
+        assert out2.shape == (1, 6, config.dim)
+
+    def test_fast_path_single_segment(self, device):
+        """When S_L >= seq_len and we start at counter=0, there is
+        exactly one segment — no Python-level splitting."""
+        config = _tnt_config(chunk_size=8, shard_length=2048,
+                             local_chunk_sizes=[8], dim=16)
+        local = LocalMemory(config, chunk_size=8, shard_length=2048).to(device)
+
+        segments = local._reset_segments(
+            start_counter=0, seq_len=8, shard_length=2048,
+        )
+        assert segments == [(0, 8, False)], (
+            f"fast path should emit a single segment, got {segments}"
+        )
+
+    def test_segment_split_two_resets(self, device):
+        """Three shards within a single chunk."""
+        # S_L = 3, seq_len = 7, start_counter = 2.
+        # Global positions in the chunk: 2, 3, 4, 5, 6, 7, 8.
+        # Resets fire at global 3, 6 (the first >= start positions divisible
+        # by 3 that are NOT the start itself).
+        # Actually: global step increments PER TOKEN. A reset fires AT the
+        # token whose global position is ≡ 0 mod S_L. Global positions:
+        #   t0=2 (no reset), t1=3 (reset), t2=4, t3=5, t4=6 (reset), ...
+        config = _tnt_config(dim=16)
+        local = LocalMemory(config, chunk_size=7, shard_length=3).to(device)
+        segments = local._reset_segments(
+            start_counter=2, seq_len=7, shard_length=3,
+        )
+        # Expected: [(0, 1, False), (1, 4, True), (4, 7, True)]
+        #  - first segment covers local [0, 1), no reset at start
+        #    (counter starts at 2, first reset happens AT local index 1)
+        #  - second segment covers [1, 4), reset at local index 1
+        #  - third segment covers [4, 7), reset at local index 4
+        assert segments == [(0, 1, False), (1, 4, True), (4, 7, True)], (
+            f"unexpected segments: {segments}"
+        )
