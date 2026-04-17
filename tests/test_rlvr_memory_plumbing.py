@@ -125,18 +125,24 @@ def test_compute_log_probs_for_generated_passes_states_through() -> None:
 
 
 def test_generate_rollouts_uses_prefill_pattern() -> None:
-    """generate_rollouts must implement prefill->buffer->commit over chunks."""
+    """Rollout helpers must implement prefill->buffer->commit over chunks.
+
+    After Plan 8 Task 13 the prefill/commit machinery lives in the
+    ``rollout_samples`` helper (plus the two module-level ``_prefill_prompt``
+    and ``_decode_from_committed`` helpers it composes).
+    ``generate_rollouts`` is a thin delegator.  The inspection checks the
+    combined source spans both the delegator and the helper(s).
+    """
     import pathlib
 
     src = pathlib.Path(_RLVR_PATH).read_text()
-    # After Task 9, generate_rollouts should have a committed_states concept
-    # matching inference.py:102-153.
-    gen_start = src.index("def generate_rollouts(")
-    gen_end = src.index("\ndef ", gen_start + 1)
+    # Scan from the first prefill helper through the legacy delegator.
+    gen_start = src.index("def _prefill_prompt(")
+    gen_end = src.index("\ndef decode_tokens(")
     body = src[gen_start:gen_end]
 
     assert "committed_states" in body, (
-        "generate_rollouts must commit memory at chunk boundaries "
+        "rollout helpers must commit memory at chunk boundaries "
         "(mirror inference.py:102-153)"
     )
     assert "buffer_start" in body, "Must track decode buffer start position"
