@@ -1,5 +1,11 @@
 # Adaptive Window Sizing
 
+> **Paper alignment:** N/A — novel extension.
+>
+> **Implementation status:** Novel extension. No reference paper specifies this component.
+>
+> **Details:** `AdaptiveWindowPredictor` and the differentiable sigmoid-falloff soft masking are not in any Titans / TNT / AttnRes paper. The idea — learn per-layer effective window sizes through a differentiable falloff — is project-specific. Treat this as an experimental knob. Disabled by default (`adaptive_window=False`).
+
 ## Overview
 
 Standard sliding window attention uses a fixed window size for all layers and all content. Adaptive window sizing lets each layer **learn its own effective window size** from the input, using differentiable soft masking.
