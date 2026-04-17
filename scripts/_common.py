@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Iterator
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -406,6 +407,94 @@ MODEL_CLASSES: dict[str, type[nn.Module]] = {
     "mal": TitansMAL,
     "lmm": TitansLMM,
 }
+
+
+def build_titans_config(cfg: Any) -> TitansConfig:
+    """Translate any duck-typed training config into a ``TitansConfig``.
+
+    This is the canonical builder used by sft / lora / dpo / rlvr / pretrain.
+    Feature sub-groups (TNT / AttnRes / adaptive window / MCA) are only
+    forwarded when their top-level toggle (e.g. ``cfg.use_tnt``) is truthy.
+
+    Includes fields added in Plan 5 (``num_memory_inner_steps``,
+    ``mac_per_position_memory_query``) when both the caller config and
+    ``TitansConfig`` expose them.
+
+    Args:
+        cfg: Any object with the expected attribute names (a dataclass
+            such as ``SFTConfig`` / ``DPOConfig`` / ``RLVRConfig`` /
+            ``LoRATrainingConfig``, or an argparse Namespace).
+
+    Returns:
+        A fully populated ``TitansConfig`` ready to hand to ``create_model``.
+    """
+    kwargs: dict[str, Any] = dict(
+        dim=cfg.dim,
+        num_heads=cfg.num_heads,
+        num_layers=cfg.num_layers,
+        vocab_size=cfg.vocab_size,
+        chunk_size=cfg.chunk_size,
+        window_size=cfg.window_size,
+        rope_proportion=cfg.rope_proportion,
+        num_persistent_tokens=cfg.num_persistent_tokens,
+        num_memory_layers=cfg.num_memory_layers,
+        memory_objective=cfg.memory_objective,
+        huber_delta_init=cfg.huber_delta_init,
+        dropout=cfg.dropout,
+        use_conv=cfg.use_conv,
+    )
+
+    # TNT fields
+    if getattr(cfg, "use_tnt", False):
+        kwargs.update(
+            use_tnt=cfg.use_tnt,
+            global_chunk_size=cfg.global_chunk_size,
+            use_qk_projection=cfg.use_qk_projection,
+            tnt_stage=cfg.tnt_stage,
+            finetune_local_chunk_sizes=cfg.finetune_local_chunk_sizes,
+        )
+        if cfg.local_chunk_sizes:
+            kwargs["local_chunk_sizes"] = cfg.local_chunk_sizes
+        if cfg.local_shard_length:
+            kwargs["local_shard_length"] = cfg.local_shard_length
+
+    # Attention-residual
+    if getattr(cfg, "use_attn_res", False):
+        kwargs.update(
+            use_attn_res=cfg.use_attn_res,
+            num_attnres_blocks=cfg.num_attnres_blocks,
+            attnres_warmup_steps=cfg.attnres_warmup_steps,
+            attnres_modulate_global_memory=cfg.attnres_modulate_global_memory,
+            attnres_modulate_local_memory=cfg.attnres_modulate_local_memory,
+        )
+
+    # Adaptive window
+    if getattr(cfg, "adaptive_window", False):
+        kwargs.update(
+            adaptive_window=cfg.adaptive_window,
+            adaptive_window_min=cfg.adaptive_window_min,
+            adaptive_window_max=cfg.adaptive_window_max,
+            adaptive_window_temperature=cfg.adaptive_window_temperature,
+            adaptive_window_lambda=cfg.adaptive_window_lambda,
+        )
+
+    # MCA
+    if getattr(cfg, "use_mca", False):
+        kwargs.update(
+            use_mca=cfg.use_mca,
+            mca_num_heads=cfg.mca_num_heads,
+            mca_gate_type=cfg.mca_gate_type,
+            mca_gate_bias_init=cfg.mca_gate_bias_init,
+        )
+        if cfg.mca_insertion_layers:
+            kwargs["mca_insertion_layers"] = cfg.mca_insertion_layers
+
+    # Plan 5 additions (guarded by hasattr on TitansConfig)
+    for extra in ("num_memory_inner_steps", "mac_per_position_memory_query"):
+        if hasattr(cfg, extra) and extra in TitansConfig.__dataclass_fields__:
+            kwargs[extra] = getattr(cfg, extra)
+
+    return TitansConfig(**kwargs)
 
 
 def create_model(variant: str, config: TitansConfig) -> nn.Module:

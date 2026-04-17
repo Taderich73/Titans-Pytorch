@@ -26,6 +26,7 @@ from scripts._common import (  # noqa: E402
     CHATML_IM_START,
     MODEL_CLASSES,
     build_loss_mask,
+    build_titans_config,
     create_model,
     format_chatml,
     loss_mask_to_zero_one,
@@ -324,3 +325,111 @@ class TestCreateModel:
 
     def test_registry_keys_are_lowercase_and_exhaustive(self) -> None:
         assert set(MODEL_CLASSES.keys()) == {"mac", "mag", "mal", "lmm"}
+
+
+# ---------------------------------------------------------------------------
+# build_titans_config tests
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field  # noqa: E402
+
+
+@dataclass
+class _FakeCfg:
+    """Minimal duck-typed cfg exposing every field build_titans_config reads."""
+
+    # Core
+    dim: int = 64
+    num_heads: int = 4
+    num_layers: int = 2
+    vocab_size: int = 256
+    chunk_size: int = 16
+    window_size: int = 16
+    rope_proportion: float = 1.0
+    num_persistent_tokens: int = 4
+    num_memory_layers: int = 2
+    memory_objective: str = "l2"
+    huber_delta_init: float = 0.0
+    dropout: float = 0.0
+    use_conv: bool = False
+    # TNT
+    use_tnt: bool = False
+    global_chunk_size: int = 64
+    local_chunk_sizes: list[int] = field(default_factory=lambda: [4, 8])
+    local_shard_length: int = 64
+    use_qk_projection: bool = True
+    tnt_stage: int = 1
+    finetune_local_chunk_sizes: list[int] | None = None
+    # Attn res
+    use_attn_res: bool = False
+    num_attnres_blocks: int = 2
+    attnres_warmup_steps: int = 0
+    attnres_modulate_global_memory: bool = True
+    attnres_modulate_local_memory: bool = False
+    # Adaptive window
+    adaptive_window: bool = False
+    adaptive_window_min: int = 8
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+    # MCA
+    use_mca: bool = False
+    mca_insertion_layers: list[int] | None = None
+    mca_num_heads: int = 4
+    mca_gate_type: str = "scalar"
+    mca_gate_bias_init: float = -3.0
+    # Plan 5 additions
+    num_memory_inner_steps: int = 1
+    mac_per_position_memory_query: bool = False
+
+
+class TestBuildTitansConfig:
+    """build_titans_config must produce a config exactly equivalent to the old
+    sft.py/dpo.py/rlvr.py inline builders, including all optional feature
+    field-sets (TNT / AttnRes / MCA / adaptive window / Plan 5 fields)."""
+
+    def test_core_fields_copied(self) -> None:
+        c = build_titans_config(_FakeCfg(dim=128, num_heads=8))
+        assert c.dim == 128
+        assert c.num_heads == 8
+
+    def test_tnt_fields_only_populated_when_enabled(self) -> None:
+        base = build_titans_config(_FakeCfg(use_tnt=False))
+        assert base.use_tnt is False
+        with_tnt = build_titans_config(
+            _FakeCfg(use_tnt=True, local_chunk_sizes=[8, 16]),
+        )
+        assert with_tnt.use_tnt is True
+        assert with_tnt.local_chunk_sizes == [8, 16]
+
+    def test_attn_res_fields(self) -> None:
+        c = build_titans_config(_FakeCfg(use_attn_res=True, num_attnres_blocks=4))
+        assert c.use_attn_res is True
+        assert c.num_attnres_blocks == 4
+
+    def test_mca_fields(self) -> None:
+        c = build_titans_config(
+            _FakeCfg(use_mca=True, num_layers=4, mca_insertion_layers=[1, 3]),
+        )
+        assert c.use_mca is True
+        assert c.mca_insertion_layers == [1, 3]
+
+    def test_adaptive_window_fields(self) -> None:
+        c = build_titans_config(
+            _FakeCfg(adaptive_window=True, adaptive_window_min=32),
+        )
+        assert c.adaptive_window is True
+        assert c.adaptive_window_min == 32
+
+    def test_plan5_fields_forwarded_when_present(self) -> None:
+        c = build_titans_config(
+            _FakeCfg(
+                num_memory_inner_steps=3,
+                mac_per_position_memory_query=True,
+            ),
+        )
+        # If TitansConfig exposes these fields (Plan 5 merged), they must match.
+        if hasattr(c, "num_memory_inner_steps"):
+            assert c.num_memory_inner_steps == 3
+        if hasattr(c, "mac_per_position_memory_query"):
+            assert c.mac_per_position_memory_query is True
