@@ -496,3 +496,51 @@ class TestStatisticalNoveltyDetector:
         result = det.observe(_make_frame(chunk_index=20, error_norms=[1000.0]))
         assert result.triggered is True
         assert result.confidence == pytest.approx(1.0)
+
+    # ------------------------------------------------------------------
+    # Direction vs magnitude in per-layer evaluation
+    # ------------------------------------------------------------------
+
+    def test_evaluate_per_layer_picks_drop_when_drop_is_larger(self) -> None:
+        """Per-layer evaluation preserves direction (drop vs spike) in the reason.
+
+        `_z_score_spike` returns a signed z-score filtered above +sigma, while
+        `_z_score_drop` returns the magnitude of a strongly negative RoC z.
+        The selection should rank by |z| and the trigger reason should label
+        the winning direction ("drop" vs "spike") so downstream logging can
+        tell a grokking cliff apart from a noise spike.
+        """
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=True
+        )
+
+        # Prime two layers with noisy histories so variance > 0 for both the
+        # value window and the rate-of-change window.
+        # Layer 0 wanders around 1.0 with moderate noise (enough std that a
+        # modest jump to 1.5 produces a moderate, not huge, z-spike).
+        # Layer 1 wanders around 5.0 with similar relative noise.
+        jitter_pattern = [0.3, -0.2, 0.15, -0.25, 0.1, -0.15, 0.2, -0.3, 0.25, -0.1]
+        for i in range(30):
+            j = jitter_pattern[i % len(jitter_pattern)]
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[1.0 + j, 5.0 + j],
+                )
+            )
+
+        # Layer 0: modest positive spike (value ~1.0 -> 1.6, small z).
+        # Layer 1: large cliff drop (5.0 -> 0.01, huge negative RoC z).
+        # Drop magnitude in z-units dwarfs the spike magnitude, so the
+        # winning trigger reason must mention "drop".
+        result = det.observe(
+            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
+        )
+
+        assert result.triggered is True
+        assert result.signal_source == "prediction_error"
+        assert "drop" in result.reason.lower(), (
+            f"Expected drop direction in reason; got {result.reason!r}"
+        )
