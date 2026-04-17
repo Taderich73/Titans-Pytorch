@@ -238,7 +238,21 @@ class MACBlock(nn.Module):
 
         y_t = h + attn_out
 
-        mem_out, new_state, gate_snapshot = self.memory(y_t, state=state, memory_gate=memory_gate)
+        # Paper Eq. 24: retrieve from M_{t-1} (pre-update), not post-update.
+        # The memory is still UPDATED with y_t; only the output path reads
+        # from the incoming state. TNT's HierarchicalMemory does not expose
+        # this flag, so we only pass it when using NeuralLongTermMemory.
+        if self.config.use_tnt:
+            mem_out, new_state, gate_snapshot = self.memory(
+                y_t, state=state, memory_gate=memory_gate
+            )
+        else:
+            mem_out, new_state, gate_snapshot = self.memory(
+                y_t,
+                state=state,
+                memory_gate=memory_gate,
+                retrieve_after_update=False,
+            )
 
         gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
             self.gate_norm_mem(mem_out)

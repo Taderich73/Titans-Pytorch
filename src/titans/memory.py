@@ -359,7 +359,18 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | torch.Tensor = 1.0,
         memory_gate: torch.Tensor | None = None,
         return_keys: bool = False,
+        retrieve_after_update: bool = True,
     ) -> tuple:
+        """Forward with optional retrieval source.
+
+        Args:
+            retrieve_after_update: When True (default), retrieve with the
+                POST-update effective weights (paper-consistent for
+                MAG/MAL/LMM where ``x̃`` is the same input fed to memory and
+                consumed by the gate). When False (paper Eq. 24 for MAC),
+                retrieve with the INCOMING state — the returned ``output`` is
+                computed from ``state`` before the update.
+        """
         batch_size = x.shape[0]
 
         if state is None:
@@ -463,10 +474,20 @@ class NeuralLongTermMemory(nn.Module):
             ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
-        # Retrieve from the UPDATED state (Titans Eq. 3-4: o_t = f(W_t, q_t)).
-        # This puts alpha, theta, eta in the output's computation graph so gate
-        # projections receive gradients from the LM loss.
-        effective = self._get_effective_weights(new_state.weights, detach_base=False)
+        if retrieve_after_update:
+            # Paper Eq. 3-4 for MAG/MAL/LMM: retrieve from the updated state.
+            # Places alpha/theta/eta in the output's graph so gate projections
+            # receive gradient from the LM loss.
+            effective = self._get_effective_weights(
+                new_state.weights, detach_base=False
+            )
+        else:
+            # Paper Eq. 24 for MAC: retrieve from the INCOMING state
+            # (M_{t-1}). Gate projections still receive gradient via the
+            # returned new_state through the caller's retain-state flow.
+            effective = self._get_effective_weights(
+                state.weights, detach_base=False
+            )
         retrieved = self.memory.forward_with_weights(q, effective)
 
         output = self.proj_out(retrieved)

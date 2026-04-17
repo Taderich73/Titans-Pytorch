@@ -572,3 +572,124 @@ class TestHierarchicalMemoryCleanup:
         global_nltm = hm.global_memory.memory
         assert global_nltm.gate_decay_proj.bias.grad is not None
         assert global_nltm.gate_decay_proj.bias.grad.abs().max() > 0
+
+
+class TestMACRetrieveOrdering:
+    """MAC retrieval must read from M_{t-1}, not post-update M_t (paper Eq. 24)."""
+
+    def test_memory_forward_flag_switches_retrieval_source(self):
+        """NeuralLongTermMemory.forward retrieves from the incoming state
+        when retrieve_after_update=False, and from the updated state when
+        retrieve_after_update=True (default).  The two outputs must differ
+        whenever the update is non-trivial."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.memory import NeuralLongTermMemory
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        memory = NeuralLongTermMemory(config)
+        memory.eval()  # disable dropout and any stochastic paths
+        x = torch.randn(2, 8, 32)
+
+        # Seed a state so that the pre- vs post-update retrieval truly differs.
+        state = memory.init_state(2)
+        state.weights[0] = state.weights[0] + torch.randn_like(state.weights[0])
+
+        with torch.no_grad():
+            out_post, _, _ = memory(x, state=state, retrieve_after_update=True)
+            out_pre, _, _ = memory(x, state=state, retrieve_after_update=False)
+
+        assert out_post.shape == out_pre.shape == (2, 8, 32)
+        assert not torch.allclose(out_post, out_pre, atol=1e-6), (
+            "Pre- and post-update retrievals must differ when memory is "
+            "actually updated; the flag appears to be a no-op."
+        )
+
+        # And the pre-update retrieval must match an explicit retrieve(x, state).
+        with torch.no_grad():
+            expected_pre = memory.retrieve(x, state)
+        assert torch.allclose(out_pre, expected_pre, atol=1e-5), (
+            "retrieve_after_update=False output must equal retrieve(x, state) "
+            "computed against the incoming state."
+        )
+
+    def test_mac_block_uses_pre_update_retrieval(self):
+        """MACBlock.core_forward must request pre-update retrieval from its
+        memory module (paper Eq. 24).  Verified by checking that mem_out
+        matches an explicit pre-update retrieve(y_t, state)."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MACBlock(config, layer_idx=0)
+        block.eval()
+        h = torch.randn(2, 8, 32)
+        state_in = block.memory.init_state(2)
+        state_in.weights[0] = state_in.weights[0] + torch.randn_like(
+            state_in.weights[0]
+        )
+
+        # Spy on NeuralLongTermMemory.__call__ to capture the exact kwargs the
+        # block uses — this locks the contract that MAC requests pre-update.
+        calls: list = []
+        orig_forward = block.memory.forward
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs.copy())
+            return orig_forward(*args, **kwargs)
+
+        block.memory.forward = spy  # type: ignore[assignment]
+        try:
+            _core_out, _new_state, _ = block.core_forward(h, state=state_in)
+        finally:
+            block.memory.forward = orig_forward  # type: ignore[assignment]
+
+        assert len(calls) == 1, "MACBlock should invoke memory.forward exactly once"
+        assert calls[0].get("retrieve_after_update") is False, (
+            "MACBlock must call memory.forward with retrieve_after_update=False "
+            "(paper Eq. 24)."
+        )
+
+    def test_mac_core_forward_runs_with_perturbed_state(self):
+        """Smoke test: MAC core_forward produces the expected shape when a
+        non-default incoming state is supplied (the pre-update retrieval path
+        must not assume identity weights)."""
+        import torch
+        from titans.config import TitansConfig
+        from titans.models import MACBlock
+
+        torch.manual_seed(1)
+        config = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MACBlock(config, layer_idx=0)
+        h = torch.randn(1, 8, 32)
+        state = block.memory.init_state(1)
+        state.weights[0] = state.weights[0] + 0.5 * torch.randn_like(
+            state.weights[0]
+        )
+
+        core_out, _new_state, _ = block.core_forward(h, state=state)
+        assert core_out.shape == (1, 8, 32)
