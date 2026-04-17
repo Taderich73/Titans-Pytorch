@@ -3,6 +3,12 @@
 
 """TNT Hierarchical Memory System (PyTorch Implementation).
 
+Paper alignment: TNT (Li et al., 2025) — Faithful, with three Plan-6 fixes:
+    * W_init is a proper nn.Parameter (was accidentally frozen via .data).
+    * Per-position causal Q-K projection via prefix-sum scan (was chunk-mean,
+      which leaked future context within a chunk — violated causality).
+    * Reset fires at every token t with t ≡ 0 (mod S_L) (was chunk-boundary only).
+
 Implements the TNT paper's hierarchical memory:
 - GlobalMemory: Large chunks (C_G) for long-range context (Eq. 5)
 - LocalMemory: Small chunks (C_L) with periodic resets (Eq. 6)

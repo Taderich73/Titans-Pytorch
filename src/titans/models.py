@@ -1,7 +1,20 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Titans Model Architectures (PyTorch Implementation)."""
+"""Titans Model Architectures (PyTorch Implementation).
+
+Paper alignment: Titans (Behrouz et al., 2024), §4.1–4.3 — MAC, MAG, MAL.
+    Post-Plan-5 alignment fixes applied:
+      * MAC learned-constant memory query q_t = S^(t) W_Q (Eq. 21), per position.
+      * MAC/MAG gating y ⊗ M(·) (Eq. 25 / 28), element-wise product.
+      * MAL ordering (Eq. 29–31), parallel sum of memory and attention branches.
+      * Retrieve(M_{t-1}) decoupled from update(M_t) in MAC.
+      * SiLU / L2-norm applied to Q, K only (not V), per paper §3.1.
+      * Error-scale 2/S (absorbed into learnable theta).
+
+Novel extensions live in attn_res.py, mca.py, adaptive_window.py, and
+memory_checkpointer.py — see docs/ for per-feature callouts.
+"""
 
 from __future__ import annotations
 
