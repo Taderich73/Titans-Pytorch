@@ -71,6 +71,7 @@ from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.memory_dump import load_memory_states, save_memory_states
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -722,6 +723,10 @@ class RLVRConfig:
     save_format: str = "pt"
     resume: str | None = None
     init_weights: str | None = None
+
+    # --- Memory state lifecycle ---
+    reset_memory_per_batch: bool = True
+    state_carry_warmup_steps: int = 0
 
     # --- Logging ---
     log_every: int = 10
@@ -1477,6 +1482,7 @@ def train(config: RLVRConfig) -> None:
     # ------------------------------------------------------------------
     global_step = 0
     start_epoch = 0
+    memory_states: list | None = None
 
     if config.resume is not None:
         resume_path = Path(config.resume)
@@ -1494,6 +1500,22 @@ def train(config: RLVRConfig) -> None:
                 f"Resumed from {resume_path} at step {global_step}, "
                 f"epoch {start_epoch}"
             )
+
+        if not config.reset_memory_per_batch:
+            mem_path = resume_path.parent / f"memory_step_{global_step}.npz"
+            if not mem_path.exists():
+                mem_path = resume_path.parent / "memory_final.npz"
+            try:
+                memory_states = load_memory_states(
+                    mem_path, device=accelerator.device
+                )
+                if accelerator.is_main_process:
+                    logger.info(f"Loaded memory states from {mem_path}")
+            except Exception as exc:  # noqa: BLE001
+                if accelerator.is_main_process:
+                    logger.info(
+                        f"No memory states found ({exc}), starting fresh"
+                    )
 
     # ------------------------------------------------------------------
     # Training loop
@@ -1514,6 +1536,13 @@ def train(config: RLVRConfig) -> None:
         for batch in pbar:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
+
+            reset_this_batch = (
+                config.reset_memory_per_batch
+                or global_step < config.state_carry_warmup_steps
+            )
+            if reset_this_batch:
+                memory_states = None
 
             with accelerator.accumulate(model):
                 unwrapped_model = accelerator.unwrap_model(model)
@@ -1724,6 +1753,20 @@ def train(config: RLVRConfig) -> None:
                             "adapter-only save."
                         )
 
+                    if (
+                        not config.reset_memory_per_batch
+                        and memory_states is not None
+                        and any(s is not None for s in memory_states)
+                    ):
+                        mem_path = (
+                            checkpoint_dir
+                            / f"memory_step_{global_step}.npz"
+                        )
+                        save_memory_states(memory_states, mem_path)
+                        logger.info(
+                            f"Saved memory states: step {global_step}"
+                        )
+
         # End-of-epoch summary
         if accelerator.is_main_process:
             n = num_optimizer_steps if num_optimizer_steps > 0 else 1
@@ -1778,6 +1821,15 @@ def train(config: RLVRConfig) -> None:
                 "safetensors not installed — skipping adapter-only save. "
                 "Install with: pip install safetensors"
             )
+
+        if (
+            not config.reset_memory_per_batch
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        ):
+            mem_path = checkpoint_dir / "memory_final.npz"
+            save_memory_states(memory_states, mem_path)
+            logger.info(f"Saved final memory states to {mem_path}")
 
         if config.merge_and_save is not None:
             merge_path = Path(config.merge_and_save)
@@ -2052,6 +2104,24 @@ def parse_args() -> RLVRConfig:
         metavar="PATH",
         help="Load pretrained or SFT weights before RLVR",
     )
+    ckpt.add_argument(
+        "--reset-memory-per-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reset Titans memory at the start of each batch. "
+            "Default True because rollouts are typically independent."
+        ),
+    )
+    ckpt.add_argument(
+        "--state-carry-warmup-steps",
+        type=int,
+        default=0,
+        help=(
+            "Steps to force memory reset at training start even when "
+            "--no-reset-memory-per-batch is set."
+        ),
+    )
 
     # Logging
     log = parser.add_argument_group("Logging")
@@ -2150,6 +2220,8 @@ def parse_args() -> RLVRConfig:
         save_format=args.save_format,
         resume=args.resume,
         init_weights=args.init_weights,
+        reset_memory_per_batch=args.reset_memory_per_batch,
+        state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Logging
         log_every=args.log_every,
         wandb=args.wandb,

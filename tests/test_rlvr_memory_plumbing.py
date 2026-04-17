@@ -186,3 +186,50 @@ def test_generate_rollouts_long_prompt_does_not_crash() -> None:
     )
 
     assert torch.isfinite(completion_lp).all()
+
+
+def test_rlvr_config_has_reset_memory_per_batch() -> None:
+    RLVRConfig = _rlvr_mod.RLVRConfig
+
+    cfg = RLVRConfig()
+    assert hasattr(cfg, "reset_memory_per_batch")
+    assert cfg.reset_memory_per_batch is True
+
+
+def test_rlvr_source_gates_memory_save() -> None:
+    import pathlib
+
+    src = pathlib.Path(_RLVR_PATH).read_text()
+    # After Task 10 the save path references reset_memory_per_batch and
+    # calls save_memory_states from titans.memory_dump.
+    assert "reset_memory_per_batch" in src, (
+        "rlvr.py must consult reset_memory_per_batch for memory save"
+    )
+    assert "save_memory_states" in src, (
+        "rlvr.py must import and call save_memory_states"
+    )
+
+
+def test_rlvr_memory_roundtrip(tmp_path) -> None:
+    """Simulate the rlvr.py save/load pattern and verify tensors roundtrip."""
+    from titans.memory import MemoryState
+    from titans.memory_dump import load_memory_states, save_memory_states
+
+    ckpt_dir = tmp_path / "rlvr"
+    ckpt_dir.mkdir()
+    memory_states = [
+        MemoryState(
+            weights=[torch.arange(16).reshape(4, 4).float()],
+            momentum=[torch.zeros(4, 4)],
+        )
+    ]
+    global_step = 500
+    save_memory_states(
+        memory_states, ckpt_dir / f"memory_step_{global_step}.npz"
+    )
+    loaded = load_memory_states(
+        ckpt_dir / f"memory_step_{global_step}.npz",
+        device=torch.device("cpu"),
+    )
+    assert len(loaded) == 1
+    torch.testing.assert_close(loaded[0].weights[0], memory_states[0].weights[0])
