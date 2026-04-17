@@ -360,7 +360,7 @@ class NeuralLongTermMemory(nn.Module):
             state = self.init_state(batch_size)
 
         if self.config.quantize_memory_state:
-            from titans.quantize_state import QuantizedMemoryState, get_weights, get_momentum
+            from titans.quantize_state import QuantizedMemoryState
 
             if isinstance(state, QuantizedMemoryState):
                 state = state.dequantize()

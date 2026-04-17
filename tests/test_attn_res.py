@@ -1,6 +1,5 @@
 """Tests for Attention Residuals."""
 
-import pytest
 import torch
 
 

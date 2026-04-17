@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Tests for memory state persistence in SFT training checkpoints."""
 
-import pytest
 import torch
 
 from titans.checkpoint import save_checkpoint

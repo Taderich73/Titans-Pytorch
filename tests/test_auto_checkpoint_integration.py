@@ -1,7 +1,6 @@
 """Integration test for full auto-checkpointing pipeline."""
 
 import json
-from pathlib import Path
 
 import torch
 

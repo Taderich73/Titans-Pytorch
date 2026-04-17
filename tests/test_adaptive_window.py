@@ -1,6 +1,5 @@
 """Tests for Adaptive Window Sizing."""
 
-import pytest
 import torch
 
 

@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from titans.config import TitansConfig
 
 pytest.importorskip("transformers")
 
