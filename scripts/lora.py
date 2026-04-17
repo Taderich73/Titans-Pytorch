@@ -117,8 +117,14 @@ class LoRATrainingConfig:
 
     # Data
     data_path: str | None = None
+    eval_data_path: str | None = None
     dataset: str | None = None
     dataset_subset: str | None = None
+    eval_dataset: str | None = None
+    eval_dataset_subset: str | None = None
+    messages_field: str = "messages"
+    train_on_all: bool = False
+    eval_split: str = "test"
     tokenizer: str = "gpt2"
     seq_len: int = 2048
     max_seq_len: int = 2048
@@ -147,6 +153,7 @@ class LoRATrainingConfig:
     save_every: int = 5000
     save_format: str = "pt"
     eval_every: int = 500
+    eval_batches: int = 50
     resume: str | None = None
 
     # Logging
@@ -255,8 +262,8 @@ def build_loss_mask(labels: list[int]) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
-class SFTStreamingDataset(IterableDataset):  # type: ignore[type-arg]
-    """Streaming dataset for SFT/LoRA training from a JSONL chat file.
+class JSONLChatDataset(IterableDataset):  # type: ignore[type-arg]
+    """Streaming dataset for LoRA training from a local JSONL chat file.
 
     Each line must be a JSON object with a "messages" key containing a list
     of role/content dicts in ChatML format.
@@ -315,6 +322,96 @@ class SFTStreamingDataset(IterableDataset):  # type: ignore[type-arg]
                 except Exception as exc:
                     logger.warning(f"Skipping malformed record: {exc}")
                     continue
+
+
+class HFChatStreamingDataset(IterableDataset):  # type: ignore[type-arg]
+    """Stream chat examples from a HuggingFace dataset repo and tokenize live.
+
+    Mirrors :class:`scripts.sft.SFTStreamingDataset` so the LoRA script can
+    consume HF repos (e.g. ``HuggingFaceH4/ultrachat_200k``) in addition to
+    local JSONL files. Each example must have a ``messages_field`` containing
+    a list of role/content dicts in ChatML format. Examples that produce no
+    supervised (assistant-turn) tokens are skipped.
+
+    Args:
+        dataset_name: HuggingFace dataset repo id.
+        subset: Optional dataset configuration name.
+        tokenizer: HuggingFace tokenizer instance.
+        max_seq_len: Maximum sequence length (examples are truncated).
+        messages_field: Name of the field holding the messages list.
+        train_on_all: If ``True`` compute loss on all tokens (not just
+            assistant turns).
+        split: Dataset split to stream (``"train"``, ``"test"``, ...).
+        seed: Shuffle buffer seed.
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        subset: str | None,
+        tokenizer: PreTrainedTokenizerBase,
+        max_seq_len: int,
+        messages_field: str = "messages",
+        train_on_all: bool = False,
+        split: str = "train",
+        seed: int = 42,
+    ) -> None:
+        if not HAS_DATASETS:
+            raise ImportError(
+                "datasets library is required. "
+                "Install with: pip install datasets"
+            )
+        from datasets import load_dataset
+
+        ds = load_dataset(
+            dataset_name,
+            subset,
+            split=split,
+            streaming=True,
+            trust_remote_code=True,
+        )
+        # shuffle() is no-op for test splits that are already deterministic but
+        # safe to call; buffer_size is small to avoid memory pressure on eval.
+        self.ds = ds.shuffle(seed=seed, buffer_size=10_000)
+
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+        self.messages_field = messages_field
+        self.train_on_all = train_on_all
+
+    def __iter__(self):  # type: ignore[override]
+        for example in self.ds:
+            messages = example.get(self.messages_field)
+            if not messages or not isinstance(messages, list):
+                continue
+            try:
+                tokenized = tokenize_chat(
+                    messages, self.tokenizer, self.max_seq_len
+                )
+            except Exception as exc:
+                logger.debug(
+                    f"Skipping HF example due to tokenization error: {exc}"
+                )
+                continue
+
+            input_ids = tokenized["input_ids"]
+            labels = tokenized["labels"]
+            loss_mask = (
+                [1] * len(labels)
+                if self.train_on_all
+                else build_loss_mask(labels)
+            )
+
+            if sum(loss_mask) == 0 or len(input_ids) < 2:
+                continue
+
+            labels_clean = [max(tok, 0) for tok in labels]
+
+            yield {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels_clean, dtype=torch.long),
+                "loss_mask": torch.tensor(loss_mask, dtype=torch.float),
+            }
 
 
 class SyntheticChatDataset(Dataset):  # type: ignore[type-arg]
@@ -415,10 +512,29 @@ def build_model(config: LoRATrainingConfig) -> nn.Module:
     return _MODEL_CLASSES[config.model_type](model_config)
 
 
+def _load_tokenizer(config: LoRATrainingConfig) -> PreTrainedTokenizerBase:
+    """Load a HF tokenizer once, raising a clear error if unavailable."""
+    if not HAS_TRANSFORMERS:
+        raise ImportError(
+            "transformers is required for chat datasets. "
+            "Install with: pip install transformers"
+        )
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
 def build_dataset(
     config: LoRATrainingConfig,
 ) -> Dataset | IterableDataset:  # type: ignore[type-arg]
     """Build a training dataset from the config.
+
+    Routing precedence:
+        1. ``data_path`` — local JSONL file (:class:`JSONLChatDataset`).
+        2. ``dataset``   — HuggingFace repo id, streamed
+           (:class:`HFChatStreamingDataset`).
+        3. fallback      — :class:`SyntheticChatDataset` for demo/smoke runs.
 
     Args:
         config: Training configuration.
@@ -427,28 +543,152 @@ def build_dataset(
         A Dataset or IterableDataset.
     """
     if config.data_path is not None:
-        if not HAS_TRANSFORMERS:
-            raise ImportError(
-                "transformers is required for chat datasets. "
-                "Install with: pip install transformers"
-            )
-        tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        return SFTStreamingDataset(
+        tokenizer = _load_tokenizer(config)
+        return JSONLChatDataset(
             Path(config.data_path), tokenizer, config.max_seq_len
         )
 
     if config.dataset is not None:
-        raise NotImplementedError(
-            "Streaming HuggingFace dataset support for LoRA coming soon. "
-            "Use --data-path with a local JSONL file, or omit for synthetic data."
+        tokenizer = _load_tokenizer(config)
+        logger.info(
+            f"Streaming HF dataset '{config.dataset}' "
+            f"(subset={config.dataset_subset}) for training."
+        )
+        return HFChatStreamingDataset(
+            dataset_name=config.dataset,
+            subset=config.dataset_subset,
+            tokenizer=tokenizer,
+            max_seq_len=config.max_seq_len,
+            messages_field=config.messages_field,
+            train_on_all=config.train_on_all,
+            split="train",
+            seed=config.seed,
         )
 
     logger.info("No dataset specified — using synthetic data for demo")
     return SyntheticChatDataset(
         config.vocab_size, config.seq_len, config.synthetic_samples, config.seed
     )
+
+
+def build_eval_dataset(
+    config: LoRATrainingConfig,
+) -> Dataset | IterableDataset | None:  # type: ignore[type-arg]
+    """Build an optional eval dataset mirroring :func:`build_dataset`.
+
+    Returns ``None`` when no eval data is configured so the caller skips
+    evaluation cleanly. Routing precedence:
+
+    1. ``eval_data_path`` — local JSONL file (:class:`JSONLChatDataset`).
+    2. ``eval_dataset``   — explicit HF repo id for eval
+       (:class:`HFChatStreamingDataset`, split=``eval_split``).
+    3. ``dataset``        — reuse training HF repo with ``eval_split``. This
+       matches :mod:`scripts.sft`'s convenience default: if the caller only
+       sets ``--dataset``, we stream its test split for eval. If the split
+       does not exist, we surface the error to the caller rather than
+       silently disabling eval.
+    4. Otherwise, returns ``None``.
+    """
+    if config.eval_data_path is not None:
+        tokenizer = _load_tokenizer(config)
+        return JSONLChatDataset(
+            Path(config.eval_data_path), tokenizer, config.max_seq_len
+        )
+
+    eval_repo = config.eval_dataset or config.dataset
+    eval_subset = config.eval_dataset_subset or config.dataset_subset
+    if eval_repo is not None:
+        tokenizer = _load_tokenizer(config)
+        logger.info(
+            f"Streaming HF eval dataset '{eval_repo}' "
+            f"(subset={eval_subset}, split={config.eval_split})."
+        )
+        return HFChatStreamingDataset(
+            dataset_name=eval_repo,
+            subset=eval_subset,
+            tokenizer=tokenizer,
+            max_seq_len=config.max_seq_len,
+            messages_field=config.messages_field,
+            train_on_all=config.train_on_all,
+            split=config.eval_split,
+            seed=config.seed + 1,
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+
+def evaluate(
+    model: nn.Module,
+    dataloader: DataLoader,
+    accelerator: "Accelerator",
+    vocab_size: int,
+    max_batches: int = 50,
+) -> float:
+    """Compute masked validation loss over a subset of the eval dataloader.
+
+    Ported from :mod:`scripts.sft` so lora.py remains self-contained. Mirrors
+    the training-side masked cross-entropy: per-token CE weighted by
+    ``loss_mask``, summed then divided by the total supervised-token count
+    gathered across processes.
+
+    Args:
+        model: The (possibly wrapped) model; caller's train/eval mode is
+            preserved — we flip to eval here and restore train on exit.
+        dataloader: DataLoader over an eval dataset.
+        accelerator: Accelerate instance used for cross-process gather.
+        vocab_size: Used to reshape logits.
+        max_batches: Maximum number of batches to evaluate. Guards against
+            long-running eval passes when the eval set is large.
+
+    Returns:
+        Mean masked cross-entropy loss as a Python float. Returns
+        ``float('inf')`` if no supervised tokens were seen.
+    """
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+    memory_states = None
+
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            if i >= max_batches:
+                break
+
+            logits, memory_states, _ = model(
+                batch["input_ids"], states=memory_states
+            )
+            logits_flat = logits.view(-1, vocab_size)
+            labels_flat = batch["labels"].view(-1)
+            mask_flat = batch["loss_mask"].view(-1).float()
+
+            per_token = F.cross_entropy(
+                logits_flat, labels_flat, reduction="none"
+            )
+            batch_loss = (per_token * mask_flat).sum()
+            batch_tokens = mask_flat.sum()
+
+            batch_loss = accelerator.gather(
+                batch_loss.unsqueeze(0)
+            ).sum().item()
+            batch_tokens = accelerator.gather(
+                batch_tokens.unsqueeze(0)
+            ).sum().item()
+
+            total_loss += batch_loss
+            total_tokens += batch_tokens
+
+            if memory_states is not None:
+                memory_states = [s.detach() for s in memory_states]
+
+    model.train()
+    if total_tokens == 0:
+        return float("inf")
+    return total_loss / total_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +780,7 @@ def train(config: LoRATrainingConfig) -> None:
 
     # --- 5. Dataset and dataloader ---
     dataset = build_dataset(config)
-    use_collate = isinstance(dataset, SFTStreamingDataset)
+    use_collate = isinstance(dataset, (JSONLChatDataset, HFChatStreamingDataset))
     dataloader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -549,6 +789,33 @@ def train(config: LoRATrainingConfig) -> None:
         drop_last=True,
         collate_fn=sft_collate_fn if use_collate else None,
     )
+
+    # Optional eval dataloader — None when no eval data is configured so the
+    # periodic-eval branch below simply skips without crashing.
+    eval_dataset = build_eval_dataset(config)
+    eval_dataloader: DataLoader | None = None
+    if eval_dataset is not None:
+        eval_use_collate = isinstance(
+            eval_dataset, (JSONLChatDataset, HFChatStreamingDataset)
+        )
+        eval_dataloader = DataLoader(
+            eval_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            num_workers=0,
+            drop_last=False,
+            collate_fn=sft_collate_fn if eval_use_collate else None,
+        )
+        if accelerator.is_main_process:
+            logger.info(
+                f"Eval dataloader ready "
+                f"(eval_every={config.eval_every}, "
+                f"eval_batches={config.eval_batches})."
+            )
+    elif accelerator.is_main_process:
+        logger.info(
+            "No --eval-data-path configured — skipping periodic evaluation."
+        )
 
     # --- 6. LR scheduler ---
     total_steps = (
@@ -566,9 +833,16 @@ def train(config: LoRATrainingConfig) -> None:
     )
 
     # --- 7. Accelerate preparation ---
-    model, optimizer, dataloader, scheduler = accelerator.prepare(
-        model, optimizer, dataloader, scheduler
-    )
+    if eval_dataloader is not None:
+        model, optimizer, dataloader, eval_dataloader, scheduler = (
+            accelerator.prepare(
+                model, optimizer, dataloader, eval_dataloader, scheduler
+            )
+        )
+    else:
+        model, optimizer, dataloader, scheduler = accelerator.prepare(
+            model, optimizer, dataloader, scheduler
+        )
 
     if config.wandb and HAS_WANDB and accelerator.is_main_process:
         accelerator.init_trackers(
@@ -686,6 +960,33 @@ def train(config: LoRATrainingConfig) -> None:
                         },
                         step=global_step,
                     )
+
+            # ----------------------------------------------------------
+            # Periodic evaluation
+            # ----------------------------------------------------------
+            if (
+                global_step > 0
+                and global_step % config.eval_every == 0
+                and eval_dataloader is not None
+            ):
+                val_loss = evaluate(
+                    model,
+                    eval_dataloader,
+                    accelerator,
+                    vocab_size,
+                    max_batches=config.eval_batches,
+                )
+                # Detach memory states after eval — evaluate() restores
+                # train mode but the training-loop states above are still
+                # what we propagate forward.
+                if accelerator.is_main_process:
+                    logger.info(
+                        f"Step {global_step} — val loss: {val_loss:.4f}"
+                    )
+                    if config.wandb and HAS_WANDB:
+                        accelerator.log(
+                            {"eval/loss": val_loss}, step=global_step
+                        )
 
             if (
                 global_step % config.save_every == 0
@@ -848,8 +1149,34 @@ def parse_args() -> LoRATrainingConfig:
     data_group = parser.add_argument_group("Data")
     data_group.add_argument("--data-path", type=str, default=None,
                             help="Path to JSONL file with 'messages' field per line")
-    data_group.add_argument("--dataset", type=str, default=None)
+    data_group.add_argument(
+        "--eval-data-path", type=str, default=None,
+        help="Optional JSONL eval file (same schema as --data-path). "
+             "If unset, periodic eval is skipped.",
+    )
+    data_group.add_argument(
+        "--dataset", type=str, default=None,
+        help="HuggingFace dataset repo id to stream for training.",
+    )
     data_group.add_argument("--dataset-subset", type=str, default=None)
+    data_group.add_argument(
+        "--eval-dataset", type=str, default=None,
+        help="Optional HF dataset repo for eval. Defaults to --dataset when "
+             "--eval-data-path is unset and --dataset is set.",
+    )
+    data_group.add_argument("--eval-dataset-subset", type=str, default=None)
+    data_group.add_argument(
+        "--eval-split", type=str, default="test",
+        help="Split to stream from the eval HF dataset (default: test).",
+    )
+    data_group.add_argument(
+        "--messages-field", type=str, default="messages",
+        help="Field name containing the messages list in HF examples.",
+    )
+    data_group.add_argument(
+        "--train-on-all", action="store_true",
+        help="Compute loss on all tokens instead of assistant-only.",
+    )
     data_group.add_argument("--tokenizer", type=str, default="gpt2")
     data_group.add_argument("--seq-len", type=int, default=2048)
     data_group.add_argument("--max-seq-len", type=int, default=2048)
@@ -908,6 +1235,10 @@ def parse_args() -> LoRATrainingConfig:
         choices=["pt", "safetensors"],
     )
     ckpt_group.add_argument("--eval-every", type=int, default=500)
+    ckpt_group.add_argument(
+        "--eval-batches", type=int, default=50,
+        help="Max batches per eval pass (caps wall-time when eval set is large).",
+    )
     ckpt_group.add_argument("--resume", type=str, default=None)
 
     # --- Logging ---
@@ -937,8 +1268,14 @@ def parse_args() -> LoRATrainingConfig:
         num_memory_layers=args.num_memory_layers,
         memory_objective=args.memory_objective,
         data_path=args.data_path,
+        eval_data_path=args.eval_data_path,
         dataset=args.dataset,
         dataset_subset=args.dataset_subset,
+        eval_dataset=args.eval_dataset,
+        eval_dataset_subset=args.eval_dataset_subset,
+        messages_field=args.messages_field,
+        train_on_all=args.train_on_all,
+        eval_split=args.eval_split,
         tokenizer=args.tokenizer,
         seq_len=args.seq_len,
         max_seq_len=args.max_seq_len,
@@ -961,6 +1298,7 @@ def parse_args() -> LoRATrainingConfig:
         save_every=args.save_every,
         save_format=args.save_format,
         eval_every=args.eval_every,
+        eval_batches=args.eval_batches,
         resume=args.resume,
         log_every=args.log_every,
         wandb=args.wandb,
