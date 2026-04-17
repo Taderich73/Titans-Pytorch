@@ -135,7 +135,6 @@ class HierarchicalMemory(nn.Module):
     def init_state(self, batch_size: int) -> TNTMemoryState:
         global_state = self.global_memory.init_state(batch_size)
         local_states = [lm.init_state(batch_size) for lm in self.local_memories]
-        local_inits = [[w.clone() for w in lm.w_init] for lm in self.local_memories]
         qk_projections = [
             torch.zeros(self.config.dim, self.config.dim,
                         device=next(self.parameters()).device)
@@ -146,7 +145,6 @@ class HierarchicalMemory(nn.Module):
         return TNTMemoryState(
             global_state=global_state,
             local_states=local_states,
-            local_inits=local_inits,
             qk_projections=qk_projections,
             local_step_counters=local_step_counters,
         )
@@ -218,7 +216,6 @@ class HierarchicalMemory(nn.Module):
         new_state = TNTMemoryState(
             global_state=new_global_state,
             local_states=new_local_states,
-            local_inits=state.local_inits,
             qk_projections=new_qk_projections,
             local_step_counters=new_step_counters,
         )

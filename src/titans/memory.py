@@ -63,14 +63,12 @@ class TNTMemoryState:
     Attributes:
         global_state: MemoryState for the global memory (V)
         local_states: List of MemoryState, one per local memory (W^(i))
-        local_inits: Initial weight snapshots per local memory
         qk_projections: Accumulated Q-K projection matrices (M_t^(i))
         local_step_counters: Position within shard for each local memory
     """
 
     global_state: MemoryState
     local_states: list[MemoryState]
-    local_inits: list[list[torch.Tensor]]
     qk_projections: list[torch.Tensor]
     local_step_counters: list[int]
 
@@ -78,9 +76,6 @@ class TNTMemoryState:
         return TNTMemoryState(
             global_state=self.global_state.detach(),
             local_states=[s.detach() for s in self.local_states],
-            local_inits=[
-                [w.detach() for w in init_list] for init_list in self.local_inits
-            ],
             qk_projections=[qk.detach() for qk in self.qk_projections],
             local_step_counters=list(self.local_step_counters),
         )
@@ -89,10 +84,6 @@ class TNTMemoryState:
         return TNTMemoryState(
             global_state=self.global_state.clone(),
             local_states=[s.clone() for s in self.local_states],
-            local_inits=[
-                [w.detach().clone() for w in init_list]
-                for init_list in self.local_inits
-            ],
             qk_projections=[qk.detach().clone() for qk in self.qk_projections],
             local_step_counters=list(self.local_step_counters),
         )

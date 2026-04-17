@@ -49,7 +49,7 @@ class TestTNTMemoryState:
             momentum=[torch.zeros(64, 64, device=device)],
         )
         state = TNTMemoryState(
-            global_state=gstate, local_states=[], local_inits=[],
+            global_state=gstate, local_states=[],
             qk_projections=[], local_step_counters=[],
         )
         detached = state.detach()

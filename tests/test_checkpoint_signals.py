@@ -50,7 +50,6 @@ def _make_tnt_state(
     return TNTMemoryState(
         global_state=global_state,
         local_states=local_states,
-        local_inits=[[torch.zeros(dim, dim, device=device)] for _ in range(n_local)],
         qk_projections=[torch.eye(dim, device=device) for _ in range(n_local)],
         local_step_counters=[0] * n_local,
     )

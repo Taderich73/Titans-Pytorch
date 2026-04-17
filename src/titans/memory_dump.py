@@ -64,11 +64,6 @@ def save_memory_states(
             arrays[f"layer_{i}_num_locals"] = np.array([len(state.local_states)])
             for k, local_s in enumerate(state.local_states):
                 _save_memory_state(arrays, f"layer_{i}_local_{k}", local_s)
-            # Save local_inits
-            for k, inits in enumerate(state.local_inits):
-                arrays[f"layer_{i}_local_init_{k}_count"] = np.array([len(inits)])
-                for j, t in enumerate(inits):
-                    arrays[f"layer_{i}_local_init_{k}_{j}"] = t.detach().cpu().numpy()
             # Save qk_projections
             arrays[f"layer_{i}_num_qk"] = np.array([len(state.qk_projections)])
             for k, qk in enumerate(state.qk_projections):
@@ -142,15 +137,9 @@ def load_memory_states(
                 _load_memory_state(data, f"layer_{i}_local_{k}", device)
                 for k in range(num_locals)
             ]
-            # Load local_inits
-            local_inits: list[list[torch.Tensor]] = []
-            for k in range(num_locals):
-                count = int(data[f"layer_{i}_local_init_{k}_count"][0])
-                inits = [
-                    torch.from_numpy(data[f"layer_{i}_local_init_{k}_{j}"].copy()).to(device)
-                    for j in range(count)
-                ]
-                local_inits.append(inits)
+            # Legacy files may contain layer_{i}_local_init_{k}_* keys from the
+            # removed ``local_inits`` field. These are ignored silently here;
+            # the reset path reads live module parameters instead.
             # Load qk_projections
             num_qk = int(data[f"layer_{i}_num_qk"][0])
             qk_projections = [
@@ -163,7 +152,6 @@ def load_memory_states(
                 TNTMemoryState(
                     global_state=global_state,
                     local_states=local_states,
-                    local_inits=local_inits,
                     qk_projections=qk_projections,
                     local_step_counters=step_counters,
                 )
