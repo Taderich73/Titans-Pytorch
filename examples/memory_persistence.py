@@ -5,8 +5,7 @@
 """
 Memory persistence examples for Titans PyTorch.
 
-Demonstrates saving and loading memory states across sessions,
-memory state inspection, diffing, merging, and forking.
+Demonstrates saving and loading memory states across sessions.
 
 Run with:
     uv run python examples/memory_persistence.py
@@ -20,7 +19,7 @@ from pathlib import Path
 import torch
 
 from titans import TitansConfig, TitansMAC
-from titans.memory_dump import MemoryDumpManager, load_memory_states, save_memory_states
+from titans.memory_dump import load_memory_states, save_memory_states
 
 
 def example_save_load() -> None:
@@ -96,64 +95,6 @@ def example_memory_evolution() -> None:
             prev_norm = norm
 
 
-def example_dump_manager() -> None:
-    """Use MemoryDumpManager for advanced workflows."""
-    print("\n" + "=" * 60)
-    print("Example: MemoryDumpManager")
-    print("=" * 60)
-
-    config = TitansConfig(
-        dim=64,
-        num_heads=4,
-        num_layers=2,
-        vocab_size=256,
-        chunk_size=32,
-    )
-
-    model = TitansMAC(config)
-    model.eval()
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        manager = MemoryDumpManager(tmpdir, keep_last_n=3)
-
-        # Create two different memory snapshots
-        with torch.no_grad():
-            chunk1 = torch.randint(0, 256, (1, 32))
-            _, states_a = model(chunk1)
-            manager.save(states_a, tag="checkpoint_a")
-
-            chunk2 = torch.randint(0, 256, (1, 32))
-            _, states_b = model(chunk2)
-            manager.save(states_b, tag="checkpoint_b")
-
-        # List dumps
-        dumps = manager.list_dumps()
-        print(f"  Saved dumps: {len(dumps)}")
-
-        # Inspect
-        info = manager.inspect(states_a)
-        for layer in info["layers"]:
-            print(f"  Layer {layer['layer_idx']}: "
-                  f"weight_norm={layer['weight_norm_mean']:.4f}, "
-                  f"momentum_norm={layer['momentum_norm_mean']:.4f}")
-
-        # Diff
-        diff = manager.diff(states_a, states_b)
-        print(f"  Total distance between snapshots: {diff['total_distance']:.4f}")
-
-        # Merge
-        merged = manager.merge([states_a, states_b], strategy="weighted_mean")
-        print(f"  Merged {len(merged)} layer states (weighted_mean)")
-
-        # Fork (deep copy)
-        forked = manager.fork(states_a)
-        print(f"  Forked {len(forked)} layer states")
-
-        # Load latest
-        loaded = manager.load_latest()
-        print(f"  Loaded latest dump: {len(loaded)} layers")
-
-
 def main() -> None:
     """Run all memory persistence examples."""
     print("#" * 60)
@@ -164,7 +105,6 @@ def main() -> None:
 
     example_save_load()
     example_memory_evolution()
-    example_dump_manager()
 
     print("\n" + "=" * 60)
     print("All memory persistence examples completed.")
