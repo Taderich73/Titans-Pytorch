@@ -145,3 +145,16 @@ def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
     assert native.checkpoint_config is not None
     assert native.checkpoint_config.checkpoint_dir == "./cp"
     assert native.checkpoint_config.ring_size == 4
+
+
+def test_titans_hf_double_import_is_idempotent():
+    """Re-importing titans.hf in the same process must not raise.
+
+    transformers.AutoConfig.register raises on duplicate registration; we
+    guard against it so long-running kernels / notebooks can reload safely.
+    """
+    import importlib
+    import titans.hf
+
+    # Second import of the subpackage — must not raise.
+    importlib.reload(titans.hf)

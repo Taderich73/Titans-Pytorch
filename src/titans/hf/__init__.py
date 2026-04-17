@@ -37,9 +37,28 @@ _VARIANT_REGISTRY = [
 
 from transformers import AutoConfig, AutoModelForCausalLM
 
+
+def _safe_register(model_type: str, config_cls, model_cls) -> None:
+    """Register with AutoConfig / AutoModelForCausalLM, tolerating duplicates.
+
+    transformers raises ValueError on second registration of the same
+    model_type. Swallow that specific case so re-import in notebooks or
+    long-running kernels is safe.
+    """
+    try:
+        AutoConfig.register(model_type, config_cls)
+    except ValueError as exc:
+        if "already used" not in str(exc):
+            raise
+    try:
+        AutoModelForCausalLM.register(config_cls, model_cls)
+    except ValueError as exc:
+        if "already" not in str(exc):
+            raise
+
+
 for _model_type, _config_cls, _model_cls in _VARIANT_REGISTRY:
-    AutoConfig.register(_model_type, _config_cls)
-    AutoModelForCausalLM.register(_config_cls, _model_cls)
+    _safe_register(_model_type, _config_cls, _model_cls)
 
 __all__ = [
     "TitansMACConfig",
