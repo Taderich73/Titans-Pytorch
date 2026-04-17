@@ -234,7 +234,10 @@ class NeuralLongTermMemory(nn.Module):
         else:
             error = raw_error
 
-        scale = 2.0 / float(error.numel())
+        # Per paper §3.1: loss averages over sequence length S only.
+        # error.shape = (B, S, D_out); we want 2/S.
+        seq_len = error.shape[1]
+        scale = 2.0 / float(seq_len)
         batch_seq = error.shape[0] * error.shape[1]
         error_flat = error.reshape(batch_seq, -1)
         keys_flat = keys.reshape(batch_seq, -1)
@@ -277,7 +280,10 @@ class NeuralLongTermMemory(nn.Module):
         else:
             error = raw_error
 
-        scale = 2.0 / float(error.numel())
+        # Per paper §3.1: outer scale is 2/S, not 2/(B*S*D_out).
+        # This multiplier is absorbed by learnable theta = sigmoid(.)*memory_lr;
+        # no behavioral regression expected, just paper-correct calibration.
+        scale = 2.0 / float(seq_len)
         delta_bp = scale * error
 
         grad_clip = self.config.memory_grad_clip
@@ -512,7 +518,8 @@ class NeuralLongTermMemory(nn.Module):
                 abs_errors = torch.abs(errors)
                 errors = torch.where(abs_errors <= hub_delta, errors, hub_delta * torch.sign(errors))
 
-        scale = 2.0 / float(B * S * D)
+        # Per paper §3.1: outer scale is 2/S (absorbed into learnable theta).
+        scale = 2.0 / float(S)
         errors_scaled = errors * scale
 
         positions = torch.arange(S, dtype=torch.float32, device=keys.device)

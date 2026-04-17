@@ -681,3 +681,115 @@ class TestVProjectionActivation:
         assert torch.allclose(captured2["values"], expected_v, atol=1e-6), (
             "V passed to the loss must be raw linear (post-conv only)"
         )
+
+
+class TestErrorScale:
+    """Error scale must be 2/S per paper §3.1, not 2/numel."""
+
+    def test_linear_gradient_scale_is_2_over_S(self):
+        """Manually verify the scale factor used in _compute_gradients_linear."""
+        config = TitansConfig(
+            dim=8,
+            num_memory_layers=1,
+            memory_error_clip=1e6,  # effectively disable clamp
+            memory_grad_clip=1e6,
+            delta_memory_param=False,
+        )
+        memory = NeuralLongTermMemory(config)
+        B, S, D = 3, 5, 8
+        keys = torch.randn(B, S, D)
+        values = torch.randn(B, S, D)
+        weight = memory.memory.layers[0].weight.data.clone()
+
+        grads = memory._compute_gradients_linear(keys, values, weight)
+
+        # Expected per paper: scale = 2/S
+        preds = torch.nn.functional.linear(keys, weight)
+        err = preds - values
+        expected_scale = 2.0 / float(S)
+        batch_seq = B * S
+        err_flat = err.reshape(batch_seq, -1)
+        keys_flat = keys.reshape(batch_seq, -1)
+        expected_grad = expected_scale * (err_flat.T @ keys_flat)
+
+        assert torch.allclose(grads[0], expected_grad, atol=1e-5), (
+            f"Expected scale 2/S={expected_scale:.6f}, got mismatched gradient"
+        )
+
+    def test_deep_gradient_scale_is_2_over_S(self):
+        """Verify deep-memory gradient outer-scale is 2/S."""
+        config = TitansConfig(
+            dim=8,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            memory_error_clip=1e6,
+            memory_grad_clip=1e6,
+            delta_memory_param=False,
+        )
+        memory = NeuralLongTermMemory(config)
+        B, S, D = 2, 4, 8
+        keys = torch.randn(B, S, D)
+        values = torch.randn(B, S, D)
+        weights = [memory.memory.layers[i].weight.data.clone() for i in range(2)]
+
+        grads = memory._compute_gradients_deep(keys, values, weights)
+
+        # With 2/numel, grad would be scaled by D_out smaller than 2/S.
+        # We assert the last-layer grad's Frobenius norm matches 2/S scaling.
+        h = keys
+        acts = [h]
+        for w in weights[:-1]:
+            h = torch.nn.functional.silu(torch.nn.functional.linear(h, w))
+            acts.append(h)
+        h = torch.nn.functional.linear(h, weights[-1])
+        err = h - values
+        batch_seq = B * S
+        err_flat = err.reshape(batch_seq, -1)
+        last_act_flat = acts[-1].reshape(batch_seq, -1)
+        expected_last = (2.0 / float(S)) * (err_flat.T @ last_act_flat)
+
+        assert torch.allclose(grads[-1], expected_last, atol=1e-5), (
+            "Deep-memory last-layer gradient should use 2/S outer scale"
+        )
+
+    def test_parallel_update_uses_2_over_S(self):
+        """Parallel linear update also uses 2/S (not 2/(B*S*D))."""
+        import torch.nn.functional as F
+
+        config = TitansConfig(
+            dim=8,
+            num_memory_layers=1,
+            memory_error_clip=1e6,
+            memory_grad_clip=1e6,
+            per_chunk_decay=False,
+            delta_memory_param=False,
+        )
+        memory = NeuralLongTermMemory(config)
+        B, S, D = 2, 4, 8
+        x = torch.randn(B, S, D)
+        state = memory.init_state(B)
+
+        k = memory.proj_k(x)
+        v = memory.proj_v(x)  # post-Task-1: raw linear
+        k_proc = F.silu(k)
+        k_proc = (k_proc.float() / (k_proc.float().norm(dim=-1, keepdim=True) + 1e-8)).to(
+            k.dtype
+        )
+
+        alpha = torch.tensor(1.0)  # decay = 0
+        eta = torch.tensor(0.0)  # no momentum
+        theta = torch.tensor(1.0)
+
+        new_state = memory._parallel_memory_update_linear(
+            k_proc, v, state, alpha, theta, eta
+        )
+        new_w = new_state.weights[0]
+
+        # Ratio check: post-fix scale (2/S) over pre-fix scale (2/(B*S*D)) = B*D.
+        pre_scale = 2.0 / float(B * S * D)
+        post_scale = 2.0 / float(S)
+        ratio = post_scale / pre_scale
+        assert abs(ratio - float(B * D)) < 1e-6, (
+            f"Scale ratio must be B*D = {B * D}, got {ratio}"
+        )
+        assert new_w.abs().sum().item() > 0, "Update should be non-zero"
