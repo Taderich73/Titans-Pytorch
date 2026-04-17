@@ -399,13 +399,19 @@ def generate_rollouts(
         # Track which sequences have hit EOS
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
-        # ---- Prefill: chunk the prompt through the model, accumulating
-        # memory at each chunk. ----
-        prompt_chunks = input_ids.split(chunk_size, dim=1)
+        # ---- Prefill: iterate only FULL prompt chunks so memory commits
+        # are aligned to chunk boundaries. Any partial tail is handled
+        # uniformly via the re-feed path below (the same pattern used in
+        # the decode loop). Iterating input_ids.split(chunk_size) would
+        # commit the partial tail here AND re-feed it, double-counting
+        # those tokens once the first decode chunk commits. ----
+        n_full = prompt_len // chunk_size
+        buffer_start = n_full * chunk_size
         states = None
-        logits = None
-        for ids_c in prompt_chunks:
-            logits, states, _ = model(ids_c, states=states)
+        last_chunk_logits = None
+        for i in range(n_full):
+            chunk_ids = input_ids[:, i * chunk_size : (i + 1) * chunk_size]
+            last_chunk_logits, states, _ = model(chunk_ids, states=states)
             if states is not None:
                 states = [
                     s.detach() if s is not None else None for s in states
@@ -416,24 +422,20 @@ def generate_rollouts(
             if states is not None
             else None
         )
-        # buffer_start = index in `tokens` where the decode buffer begins.
-        # After prefill the last committed chunk ended at the largest
-        # multiple of chunk_size <= prompt_len.
-        prefilled_committed = (prompt_len // chunk_size) * chunk_size
-        buffer_start = prefilled_committed
 
-        # If prompt_len is not a multiple of chunk_size, there's a
-        # partial buffer of prompt tokens already. Re-run it from
-        # committed_states so the next-token logits are valid.
+        # Derive next-token logits (for sampling the first generated token).
+        # If the prompt has a partial tail, re-feed it from committed_states
+        # so memory only ever sees it once (when the chunk completes during
+        # decode). If the prompt is chunk-aligned, the last committed chunk's
+        # final-position logits are already the next-token prediction.
         if buffer_start < prompt_len:
             buf = tokens[:, buffer_start:]
-            logits, states, _ = model(buf, states=committed_states)
-            if states is not None:
-                states = [
-                    s.detach() if s is not None else None for s in states
-                ]
-        # else: `logits` from the final prompt_chunks iteration is valid
-        # and committed_states == states already.
+            logits, _, _ = model(buf, states=committed_states)
+        else:
+            assert last_chunk_logits is not None, (
+                "chunk-aligned prompt must have at least one full chunk"
+            )
+            logits = last_chunk_logits
 
         # ---- Decode loop ----
         for _ in range(max_new_tokens):

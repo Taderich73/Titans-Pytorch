@@ -188,6 +188,145 @@ def test_generate_rollouts_long_prompt_does_not_crash() -> None:
     assert torch.isfinite(completion_lp).all()
 
 
+def test_generate_rollouts_no_double_commit_of_partial_prompt_tail() -> None:
+    """Regression: partial prompt tail must not commit during prefill.
+
+    Before the fix, prefill iterated ``input_ids.split(chunk_size)`` which
+    committed the final partial chunk into memory. The re-feed then fed the
+    same tokens again, and once decoding produced enough tokens to complete
+    the chunk, those prompt-tail tokens were committed a second time.
+
+    We verify that after prefill, ``committed_states`` reflects ONLY the
+    full prompt chunks — equal to what we get by prefilling just the
+    full-chunk prefix. Any deviation indicates the partial tail leaked into
+    memory during prefill.
+    """
+    torch.manual_seed(0)
+    chunk_size = 8
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+
+    batch_size = 1
+    # Prompt with a partial tail: 2 full chunks + 3 extra tokens.
+    prompt_len = chunk_size * 2 + 3
+    prompt = torch.randint(1, 32, (batch_size, prompt_len))
+    full_chunk_end = (prompt_len // chunk_size) * chunk_size
+
+    # Reference: commit only the full-chunk prefix.
+    with torch.no_grad():
+        ref_states = None
+        for i in range(prompt_len // chunk_size):
+            chunk = prompt[:, i * chunk_size : (i + 1) * chunk_size]
+            _, ref_states, _ = model(chunk, states=ref_states)
+            ref_states = [
+                s.detach() if s is not None else None for s in ref_states
+            ]
+
+    # Capture the ``committed_states`` that generate_rollouts builds during
+    # prefill by patching model.__call__ and snapshotting state right after
+    # the prefill loop finishes. Simplest: monkey-patch the model to record
+    # every call's input length, then verify the prefill only invoked the
+    # model with full-chunk inputs (plus at most one partial re-feed with
+    # states=committed_states ~ ref_states).
+    def _states_equal(a_states, b_states) -> bool:  # type: ignore[no-untyped-def]
+        """Compare two lists of MemoryState (or None) entries."""
+        if a_states is None and b_states is None:
+            return True
+        if a_states is None or b_states is None:
+            return False
+        if len(a_states) != len(b_states):
+            return False
+        for a, b in zip(a_states, b_states):
+            if a is None and b is None:
+                continue
+            if a is None or b is None:
+                return False
+            # MemoryState has .weights (list[Tensor]) and .momentum (list[Tensor]).
+            if len(a.weights) != len(b.weights):
+                return False
+            for wa, wb in zip(a.weights, b.weights):
+                if wa.shape != wb.shape or not torch.allclose(wa, wb, atol=1e-6):
+                    return False
+            if len(a.momentum) != len(b.momentum):
+                return False
+            for ma, mb in zip(a.momentum, b.momentum):
+                if ma.shape != mb.shape or not torch.allclose(ma, mb, atol=1e-6):
+                    return False
+        return True
+
+    calls: list[tuple[int, bool]] = []  # (seq_len, committed_states_matches_ref)
+    orig_forward = model.forward
+
+    def recording_forward(input_ids, states=None, **kwargs):  # type: ignore[no-untyped-def]
+        seq_len = input_ids.shape[1]
+        matches_ref = _states_equal(states, ref_states)
+        calls.append((seq_len, matches_ref))
+        return orig_forward(input_ids, states=states, **kwargs)
+
+    model.forward = recording_forward  # type: ignore[method-assign]
+    try:
+        with torch.no_grad():
+            generate_rollouts(
+                model,
+                prompt,
+                max_new_tokens=1,  # one step of decode is enough
+                temperature=0.7,
+                num_samples=1,
+                eos_token_id=None,
+                pad_token_id=0,
+            )
+    finally:
+        model.forward = orig_forward  # type: ignore[method-assign]
+
+    # The prefill phase must consist of exactly:
+    #   - (prompt_len // chunk_size) full-chunk calls with seq_len == chunk_size
+    #   - one partial-tail re-feed with seq_len == tail_len and
+    #     states=committed_states that equals the full-chunks-only ref_states
+    # The buggy code instead produced an extra prefill call: it iterated
+    # input_ids.split(chunk_size) (yielding full chunks AND the partial tail),
+    # committing the tail, then re-fed the tail a second time. We detect the
+    # bug in two independent ways:
+    #
+    #   1. Total prefill-call count. After one decode step the call log is:
+    #          fix:   [8]*n_full + [tail] + [tail+1]
+    #          buggy: [8]*n_full + [tail] + [tail]   + [tail+1]
+    #      So (total_calls - 1) after decoding one token equals
+    #      n_full + 1 in the fix, and n_full + 2 in the buggy version.
+    #   2. At the *prefill* tail re-feed (the last call with seq_len==tail_len
+    #      during prefill), states must equal ref_states (full-chunks-only).
+    #      In the buggy version states include the tail's commit from the
+    #      previous call.
+    tail_len = prompt_len - full_chunk_end
+    assert tail_len > 0 and tail_len < chunk_size, "test assumes partial tail"
+
+    n_full = prompt_len // chunk_size
+    expected_prefill_calls = n_full + 1  # full chunks + one tail re-feed
+    # We asked for max_new_tokens=1, which adds exactly one post-prefill call.
+    expected_total = expected_prefill_calls + 1
+    assert len(calls) == expected_total, (
+        f"Expected {expected_total} model calls for n_full={n_full} + "
+        f"1 tail re-feed + 1 decode, got {len(calls)}: {calls}. Extra calls "
+        f"indicate the partial prompt tail was committed during prefill "
+        f"(split iteration) AND re-fed (the double-commit bug)."
+    )
+
+    # Sanity: first n_full calls are full chunks.
+    for seq_len, _ in calls[:n_full]:
+        assert seq_len == chunk_size, (
+            f"Prefill must only commit full chunks; got seq_len={seq_len}"
+        )
+    # The tail re-feed (call index n_full) must see ref_states.
+    tail_call_seq_len, tail_call_matches = calls[n_full]
+    assert tail_call_seq_len == tail_len, (
+        f"Prefill tail re-feed must have seq_len={tail_len}; "
+        f"got {tail_call_seq_len}. Calls: {calls}"
+    )
+    assert tail_call_matches, (
+        "Partial-tail re-feed during prefill must receive committed_states "
+        "equal to full-chunks-only prefill. Mismatch means the partial tail "
+        "was committed into memory during prefill (the double-commit bug)."
+    )
+
+
 def test_rlvr_config_has_reset_memory_per_batch() -> None:
     RLVRConfig = _rlvr_mod.RLVRConfig
 
