@@ -19,10 +19,14 @@ if str(_REPO_ROOT) not in sys.path:
 
 import pytest  # noqa: E402
 
+from titans import TitansConfig  # noqa: E402
+
 from scripts._common import (  # noqa: E402
     CHATML_IM_END,
     CHATML_IM_START,
+    MODEL_CLASSES,
     build_loss_mask,
+    create_model,
     format_chatml,
     loss_mask_to_zero_one,
     make_dataloader,
@@ -297,3 +301,26 @@ class TestTokenizeChatParityWithSFT:
         )
         expected_ids = tok.encode(expected_text, add_special_tokens=False)
         assert out["input_ids"] + [out["labels"][-1]] == expected_ids
+
+
+class TestCreateModel:
+    """Tests for the shared Titans variant registry."""
+
+    @pytest.mark.parametrize("variant", ["mac", "mag", "mal", "lmm"])
+    def test_every_variant_instantiates(self, variant: str) -> None:
+        cfg = TitansConfig(
+            dim=32, num_heads=2, num_layers=2, vocab_size=128,
+            chunk_size=8, window_size=8,
+        )
+        model = create_model(variant, cfg)
+        # One forward pass must not explode.
+        ids = torch.zeros(1, 8, dtype=torch.long)
+        _ = model(ids)
+
+    def test_unknown_variant_raises_with_options(self) -> None:
+        cfg = TitansConfig(dim=16, num_heads=1, num_layers=1, vocab_size=8)
+        with pytest.raises(ValueError, match="Unknown variant"):
+            create_model("xyz", cfg)
+
+    def test_registry_keys_are_lowercase_and_exhaustive(self) -> None:
+        assert set(MODEL_CLASSES.keys()) == {"mac", "mag", "mal", "lmm"}

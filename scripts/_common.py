@@ -392,3 +392,37 @@ def tokenize_chat(
     )
 
     return {"input_ids": input_ids, "labels": labels, "loss_mask": loss_mask}
+
+
+# ---------------------------------------------------------------------------
+# Model factory
+# ---------------------------------------------------------------------------
+
+from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL  # noqa: E402
+
+MODEL_CLASSES: dict[str, type[nn.Module]] = {
+    "mac": TitansMAC,
+    "mag": TitansMAG,
+    "mal": TitansMAL,
+    "lmm": TitansLMM,
+}
+
+
+def create_model(variant: str, config: TitansConfig) -> nn.Module:
+    """Instantiate a Titans model by variant name.
+
+    Args:
+        variant: One of ``mac``, ``mag``, ``mal``, ``lmm``.
+        config: Fully-populated ``TitansConfig``.
+
+    Returns:
+        Initialised (but untrained) model instance.
+
+    Raises:
+        ValueError: If ``variant`` is not a known key.
+    """
+    if variant not in MODEL_CLASSES:
+        raise ValueError(
+            f"Unknown variant: {variant!r}. Options: {sorted(MODEL_CLASSES)}"
+        )
+    return MODEL_CLASSES[variant](config)
