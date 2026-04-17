@@ -1,5 +1,11 @@
 # HuggingFace Integration
 
+> **Paper alignment:** N/A — packaging and serialization layer.
+>
+> **Implementation status:** Not paper-derived. `TitansMACConfig` serializes exactly the hyperparameters discussed in the `docs/configuration_guide.md` "Paper Origin Tags" section — some of which are paper-faithful, some deliberate deviations, and some novel extensions. Saving or loading a config therefore preserves whatever alignment stance the configured model has; it does not add or remove deviations by itself.
+>
+> **Details:** When you push a model to the Hub, all flags listed under "Paper Origin Tags" are round-tripped. A "Faithful" flag stays Faithful; a "Novel" flag stays Novel. Consumers who want to know whether a published checkpoint deviates from the papers should inspect the config against the Paper Origin Tags table.
+
 ## Overview
 
 Titans v0.5.0 adds full HuggingFace transformers compatibility for the MAC architecture. This enables standard HF workflows: loading models via `from_pretrained()`, generating text via HF pipelines, training with the HF `Trainer`, and sharing models on the Hub.
