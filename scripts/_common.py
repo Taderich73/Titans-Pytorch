@@ -70,15 +70,12 @@ def maybe_compile(
     *,
     enabled: bool,
     device_type: str,
-    use_attn_res: bool,
+    use_attn_res: bool = False,
 ) -> nn.Module:
     """Conditionally wrap ``model`` with ``torch.compile``.
 
     Guardrails:
     - Disabled unless ``enabled and device_type == "cuda"``.
-    - Auto-disable + warn when ``use_attn_res`` is True (``process_chunk``
-      contains Python control flow that Dynamo graph-breaks; see the
-      source-level note in ``src/titans/models.py:process_chunk``).
 
     Args:
         model: The module to (optionally) compile. Usually the post-
@@ -87,24 +84,21 @@ def maybe_compile(
             should default to ``False``.
         device_type: ``accelerator.device.type`` (``"cuda"``, ``"cpu"``,
             ``"mps"``, ...). Only ``"cuda"`` gets compiled.
-        use_attn_res: ``config.use_attn_res``. When True we skip compile
-            and log a warning instead of producing a noisy broken graph.
+        use_attn_res: Deprecated, kept for call-site compatibility. The
+            AttnRes sub-layer schedule is now compile-compatible
+            (``src/titans/models.py::_build_attnres_schedule`` makes the
+            loop a construction-time constant that Dynamo unrolls). The
+            flag is ignored.
 
     Returns:
         Either the wrapped ``torch.compile`` model or the original model
         unchanged.
     """
+    del use_attn_res  # retained in signature for back-compat; now a no-op
     if not enabled:
         return model
     if device_type != "cuda":
         _log.info("torch.compile requested but device=%s; skipping.", device_type)
-        return model
-    if use_attn_res:
-        _log.warning(
-            "torch.compile skipped: use_attn_res=True is compile-hostile "
-            "(process_chunk has Python control flow that graph-breaks "
-            "Dynamo). Refactor tracked separately."
-        )
         return model
     _log.info("Wrapping model with torch.compile(mode='default').")
     return torch.compile(model, mode="default")

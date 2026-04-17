@@ -38,15 +38,21 @@ def test_maybe_compile_disabled_flag() -> None:
     assert out is model
 
 
-def test_maybe_compile_warns_and_skips_attn_res(caplog) -> None:
-    """``use_attn_res=True`` auto-disables compile and logs a warning."""
+def test_maybe_compile_attn_res_no_longer_auto_disables(caplog) -> None:
+    """``use_attn_res=True`` must NOT emit the legacy auto-disable warning.
+
+    The AttnRes sub-layer schedule is now compile-compatible
+    (see ``src/titans/models.py::_build_attnres_schedule``), so the old
+    warning + skip behavior has been removed. We still return ``model``
+    unchanged on CPU because ``torch.compile`` only activates on CUDA.
+    """
     model = torch.nn.Linear(4, 4)
     with caplog.at_level(logging.WARNING, logger="scripts._common"):
         out = maybe_compile(
-            model, enabled=True, device_type="cuda", use_attn_res=True
+            model, enabled=True, device_type="cpu", use_attn_res=True
         )
-    assert out is model
-    assert any("attn_res" in r.message.lower() for r in caplog.records)
+    assert out is model  # CPU path is a no-op
+    assert not any("attn_res" in r.message.lower() for r in caplog.records)
 
 
 def test_make_optimizer_cpu_defaults_to_foreach() -> None:
