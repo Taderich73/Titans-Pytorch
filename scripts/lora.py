@@ -128,6 +128,10 @@ class LoRATrainingConfig:
     seq_len: int = 2048
     max_seq_len: int = 2048
 
+    # Memory state lifecycle
+    reset_memory_per_batch: bool = True
+    state_carry_warmup_steps: int = 0
+
     # Training
     init_weights: str | None = None
     epochs: int = 1
@@ -911,22 +915,58 @@ def train(config: LoRATrainingConfig) -> None:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
 
+            reset_this_batch = (
+                config.reset_memory_per_batch
+                or global_step < config.state_carry_warmup_steps
+            )
+            if reset_this_batch:
+                memory_states = None
+
             with accelerator.accumulate(model):
-                logits, memory_states, _ = model(
-                    batch["input_ids"], states=memory_states
+                chunk_size = config.chunk_size
+                id_chunks = batch["input_ids"].split(chunk_size, dim=1)
+                lbl_chunks = batch["labels"].split(chunk_size, dim=1)
+                msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
+
+                total_loss_num = torch.tensor(
+                    0.0, device=batch["input_ids"].device
+                )
+                total_tokens = torch.tensor(
+                    0.0, device=batch["input_ids"].device
+                )
+                backward_accum = torch.tensor(
+                    0.0, device=batch["input_ids"].device
                 )
 
-                # Masked cross-entropy: only compute loss on assistant tokens
-                logits_flat = logits.view(-1, vocab_size)
-                labels_flat = batch["labels"].view(-1)
-                mask_flat = batch["loss_mask"].view(-1).float()
+                for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
+                    logits, memory_states, _ = model(
+                        ids_c, states=memory_states
+                    )
+                    logits_flat = logits.reshape(-1, vocab_size)
+                    labels_flat = lbl_c.reshape(-1)
+                    mask_flat = msk_c.reshape(-1).float()
 
-                per_token = F.cross_entropy(
-                    logits_flat, labels_flat, reduction="none"
-                )
-                loss = (per_token * mask_flat).sum() / mask_flat.sum().clamp(min=1)
+                    per_token = F.cross_entropy(
+                        logits_flat, labels_flat, reduction="none"
+                    )
+                    chunk_num = (per_token * mask_flat).sum()
+                    chunk_tok = mask_flat.sum()
 
-                accelerator.backward(loss)
+                    total_loss_num = total_loss_num + chunk_num.detach()
+                    total_tokens = total_tokens + chunk_tok.detach()
+                    backward_accum = (
+                        backward_accum + chunk_num / chunk_tok.clamp(min=1.0)
+                    )
+
+                    if memory_states is not None:
+                        memory_states = [
+                            s.detach() if s is not None else None
+                            for s in memory_states
+                        ]
+
+                loss = total_loss_num / total_tokens.clamp(min=1.0)
+                backward_loss = backward_accum / max(len(id_chunks), 1)
+                accelerator.backward(backward_loss)
 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
@@ -937,12 +977,6 @@ def train(config: LoRATrainingConfig) -> None:
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-
-            if memory_states is not None:
-                memory_states = [
-                    s.detach() if s is not None else None
-                    for s in memory_states
-                ]
 
             loss_val = loss.item()
             epoch_loss += loss_val
@@ -1045,7 +1079,11 @@ def train(config: LoRATrainingConfig) -> None:
                 )
 
                 # Memory states
-                if memory_states is not None:
+                if (
+                    not config.reset_memory_per_batch
+                    and memory_states is not None
+                    and any(s is not None for s in memory_states)
+                ):
                     mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
                     save_memory_states(memory_states, mem_path)
                     logger.info(f"Saved memory states: step {global_step}")
@@ -1105,7 +1143,11 @@ def train(config: LoRATrainingConfig) -> None:
             logger.info(f"Saved merged model to {merge_files[0]}")
 
         # Memory states
-        if memory_states is not None:
+        if (
+            not config.reset_memory_per_batch
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        ):
             mem_path = checkpoint_dir / "memory_final.npz"
             save_memory_states(memory_states, mem_path)
 
@@ -1208,6 +1250,19 @@ def parse_args() -> LoRATrainingConfig:
         choices=["no", "fp16", "bf16"],
     )
 
+    # --- Memory lifecycle ---
+    mem_group = parser.add_argument_group("memory lifecycle")
+    mem_group.add_argument(
+        "--reset-memory-per-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    mem_group.add_argument(
+        "--state-carry-warmup-steps",
+        type=int,
+        default=0,
+    )
+
     # --- LoRA ---
     lora_group = parser.add_argument_group("LoRA")
     lora_group.add_argument("--lora-rank", type=int, default=8,
@@ -1282,6 +1337,8 @@ def parse_args() -> LoRATrainingConfig:
         tokenizer=args.tokenizer,
         seq_len=args.seq_len,
         max_seq_len=args.max_seq_len,
+        reset_memory_per_batch=args.reset_memory_per_batch,
+        state_carry_warmup_steps=args.state_carry_warmup_steps,
         init_weights=args.init_weights,
         epochs=args.epochs,
         max_steps=args.max_steps,
