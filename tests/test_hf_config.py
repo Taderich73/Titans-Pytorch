@@ -147,37 +147,36 @@ def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
     assert native.checkpoint_config.ring_size == 4
 
 
-def test_safe_register_tolerates_already_used_error():
-    """_safe_register must swallow 'already used' ValueError from
-    transformers.AutoConfig.register / AutoModelForCausalLM.register.
+def test_safe_register_passes_exist_ok_true():
+    """_safe_register must pass ``exist_ok=True`` to both upstream register
+    calls so duplicate registration is tolerated by transformers directly
+    (no substring matching on error messages)."""
+    from unittest.mock import MagicMock, patch
 
-    This is the defensive guard for re-imports / reloads on transformers
-    versions that actually raise on duplicate registration.
-    """
-    from unittest.mock import patch
     from titans.hf import _safe_register
     from titans.hf.configuration import TitansMACConfig
     from titans.hf.modeling import TitansMACForCausalLM
 
-    def raise_already_used(*args, **kwargs):
-        raise ValueError(
-            "'titans-mac' is already used by a Transformers config, "
-            "pick another name."
-        )
-
-    # Both register calls simulate the "already used" failure path.
-    with patch("transformers.AutoConfig.register", side_effect=raise_already_used), \
-         patch(
-             "transformers.AutoModelForCausalLM.register",
-             side_effect=raise_already_used,
-         ):
-        # Must NOT raise.
+    mock_cfg = MagicMock()
+    mock_model = MagicMock()
+    with patch("transformers.AutoConfig.register", mock_cfg), \
+         patch("transformers.AutoModelForCausalLM.register", mock_model):
         _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
+
+    mock_cfg.assert_called_once_with("titans-mac", TitansMACConfig, exist_ok=True)
+    mock_model.assert_called_once_with(
+        TitansMACConfig, TitansMACForCausalLM, exist_ok=True
+    )
 
 
 def test_safe_register_propagates_unrelated_valueerror():
-    """_safe_register must still raise for ValueErrors that aren't the
-    'already used' variety — narrow swallowing only."""
+    """_safe_register must not silently swallow ValueErrors.
+
+    Regression guard: if someone ever reintroduces a bare ``except ValueError``
+    around the register calls, this test fails. The helper now relies on
+    ``exist_ok=True`` at the upstream level and has no try/except of its own,
+    so unrelated errors must propagate untouched.
+    """
     import pytest
     from unittest.mock import patch
     from titans.hf import _safe_register
@@ -195,10 +194,9 @@ def test_safe_register_propagates_unrelated_valueerror():
 def test_titans_hf_double_import_is_idempotent():
     """Re-importing titans.hf in the same process must not raise.
 
-    Regression guard — on transformers versions where duplicate
-    registration raises, _safe_register swallows it. On versions
-    that silently tolerate (e.g., 5.5.4 via CONFIG_MAPPING._extra_content),
-    this is a no-op check.
+    Regression guard: ``_safe_register`` passes ``exist_ok=True`` to
+    transformers' register APIs, so duplicate registration during a
+    module reload is tolerated at the upstream level.
     """
     import importlib
     import titans.hf
