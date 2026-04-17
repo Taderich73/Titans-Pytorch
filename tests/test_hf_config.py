@@ -88,3 +88,60 @@ class TestTitansMACConfig:
             config.save_pretrained(tmpdir)
             loaded = TitansMACConfig.from_pretrained(tmpdir)
             assert loaded.local_chunk_sizes == [8, 16, 32]
+
+
+def test_titans_mac_config_roundtrips_auto_checkpoint_fields():
+    """auto_checkpoint and checkpoint_config must survive the
+    TitansConfig -> TitansMACConfig -> TitansConfig round-trip."""
+    from titans.checkpoint_types import MemoryCheckpointConfig
+
+    cp_cfg = MemoryCheckpointConfig(
+        checkpoint_dir="./some/path",
+        ring_size=8,
+        after_capture_count=3,
+        cooldown_chunks=5,
+    )
+    native = TitansConfig(
+        dim=128,
+        num_heads=4,
+        num_layers=2,
+        vocab_size=1000,
+        auto_checkpoint=True,
+        checkpoint_config=cp_cfg,
+    )
+
+    hf_cfg = TitansMACConfig.from_titans_config(native)
+    round_tripped = hf_cfg.to_titans_config()
+
+    assert round_tripped.auto_checkpoint is True
+    assert round_tripped.checkpoint_config is not None
+    assert round_tripped.checkpoint_config.checkpoint_dir == "./some/path"
+    assert round_tripped.checkpoint_config.ring_size == 8
+    assert round_tripped.checkpoint_config.after_capture_count == 3
+    assert round_tripped.checkpoint_config.cooldown_chunks == 5
+
+
+def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
+    """Auto-checkpoint fields must survive save_pretrained / from_pretrained."""
+    from titans.checkpoint_types import MemoryCheckpointConfig
+
+    cp_cfg = MemoryCheckpointConfig(checkpoint_dir="./cp", ring_size=4)
+    hf_cfg = TitansMACConfig(
+        dim=128,
+        num_heads=4,
+        num_layers=2,
+        vocab_size=1000,
+        auto_checkpoint=True,
+        checkpoint_config=cp_cfg,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hf_cfg.save_pretrained(tmpdir)
+        loaded = TitansMACConfig.from_pretrained(tmpdir)
+
+    assert loaded.auto_checkpoint is True
+    assert loaded.checkpoint_config is not None
+    native = loaded.to_titans_config()
+    assert native.checkpoint_config is not None
+    assert native.checkpoint_config.checkpoint_dir == "./cp"
+    assert native.checkpoint_config.ring_size == 4

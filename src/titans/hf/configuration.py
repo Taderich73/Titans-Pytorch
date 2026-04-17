@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -79,6 +80,8 @@ class TitansMACConfig(PretrainedConfig):
         dropout: float = 0.0,
         activation: str = "silu",
         init_std: float = 0.02,
+        auto_checkpoint: bool = False,
+        checkpoint_config: Any | None = None,
         **kwargs,
     ) -> None:
         # Set architectures before super().__init__ so save_pretrained includes it.
@@ -142,13 +145,32 @@ class TitansMACConfig(PretrainedConfig):
         self.dropout = dropout
         self.activation = activation
         self.init_std = init_std
+        self.auto_checkpoint = auto_checkpoint
+        # Serialize MemoryCheckpointConfig as a dict on the HF side so it
+        # survives JSON round-trips (config.json); rehydrate in
+        # to_titans_config().
+        if checkpoint_config is not None and not isinstance(
+            checkpoint_config, dict
+        ):
+            self.checkpoint_config = (
+                checkpoint_config.to_dict()
+                if hasattr(checkpoint_config, "to_dict")
+                else dataclasses.asdict(checkpoint_config)
+            )
+        else:
+            self.checkpoint_config = checkpoint_config
 
     def to_titans_config(self) -> TitansConfig:
         """Convert to native TitansConfig for model construction."""
         field_names = {f.name for f in dataclasses.fields(TitansConfig)}
-        return TitansConfig(
-            **{k: getattr(self, k) for k in field_names if hasattr(self, k)}
-        )
+        kwargs = {k: getattr(self, k) for k in field_names if hasattr(self, k)}
+
+        cp = kwargs.get("checkpoint_config")
+        if isinstance(cp, dict):
+            from titans.checkpoint_types import MemoryCheckpointConfig
+
+            kwargs["checkpoint_config"] = MemoryCheckpointConfig.from_dict(cp)
+        return TitansConfig(**kwargs)
 
     @classmethod
     def from_titans_config(
