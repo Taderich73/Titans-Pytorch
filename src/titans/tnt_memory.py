@@ -64,10 +64,23 @@ class LocalMemory(nn.Module):
 
     @property
     def w_init(self) -> list[torch.Tensor]:
-        return [w.data for w in self._w_init]
+        """Return the learnable initial-state parameters (gradient-connected).
+
+        Returns the live ``nn.Parameter`` tensors, not ``.data``, so autograd
+        from downstream retrievals flows back into ``_w_init`` (TNT §4.1.1,
+        Eq. 6).
+        """
+        return list(self._w_init)
 
     def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
-        weights = [w.data.clone() for w in self._w_init]
+        """Initialise a fresh ``MemoryState`` whose weights are clones of the
+        learnable ``_w_init`` parameters.
+
+        ``clone()`` (no ``.detach()``) preserves the autograd edge from the
+        state's weights back to ``_w_init`` while guaranteeing that in-place
+        mutations on the returned state do not alias the parameter.
+        """
+        weights = [w.clone() for w in self._w_init]
         momentum = [torch.zeros_like(w) for w in weights]
         return MemoryState(weights=weights, momentum=momentum)
 
