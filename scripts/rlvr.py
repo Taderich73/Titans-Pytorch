@@ -277,27 +277,45 @@ def compute_token_log_probs(
     model: nn.Module,
     input_ids: torch.Tensor,
     vocab_size: int,
-) -> torch.Tensor:
-    """Compute per-token log-probabilities over the sequence.
+    states: list | None = None,
+) -> tuple[torch.Tensor, list | None]:
+    """Compute per-token log-probs with memory-aware chunking.
+
+    Chunks the sequence along dim=1 by the model's ``config.chunk_size``,
+    threading Titans memory state through successive chunks. This both
+    avoids the per-forward single-chunk limit and preserves the memory
+    accumulation regime the model was trained under.
 
     Args:
-        model: Language model returning (logits, memory_states).
+        model: Titans model with ``config.chunk_size``.
         input_ids: Token IDs of shape (B, T).
-        vocab_size: Vocabulary size (for logit reshaping).
+        vocab_size: Vocabulary size (for target clamping).
+        states: Optional initial memory states; ``None`` means start fresh.
 
     Returns:
-        Per-token log-probs of shape (B, T-1) corresponding to predicting
-        each next token from the previous one.
+        Tuple of:
+        - Per-token log-probs of shape (B, T-1).
+        - Final memory states after processing the full sequence.
     """
-    logits, _, _ = model(input_ids)
-    logits = logits.float()  # fp32 for numerical stability
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
+
+    # Chunk input_ids, run model per-chunk, collect logits, then compute
+    # shifted log-probs over the concatenated logits.
+    chunks = input_ids.split(chunk_size, dim=1)
+    all_logits: list[torch.Tensor] = []
+    for ids_c in chunks:
+        logits, states, _ = model(ids_c, states=states)
+        all_logits.append(logits)
+
+    logits = torch.cat(all_logits, dim=1).float()  # (B, T, V) fp32 for stability
     # Shift: logits[:, :-1] predicts input_ids[:, 1:]
     log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (B, T-1, V)
     targets = input_ids[:, 1:].clamp(min=0, max=vocab_size - 1)  # (B, T-1)
     token_log_probs = log_probs.gather(
         dim=-1, index=targets.unsqueeze(-1)
     ).squeeze(-1)  # (B, T-1)
-    return token_log_probs
+    return token_log_probs, states
 
 
 def sum_log_probs_for_completion(
@@ -497,7 +515,9 @@ def compute_log_probs_for_generated(
     """Compute sum log-probs over the completion portion of each generated sequence.
 
     Processes each sample in the group separately to avoid GPU memory issues with
-    large batches.
+    large batches. Each sample is processed independently with a fresh memory
+    state, matching the RLVR rollout regime where each rollout begins from a
+    common initial memory.
 
     Args:
         model: Language model.
@@ -514,7 +534,9 @@ def compute_log_probs_for_generated(
 
     for s in range(num_samples):
         seqs = generated_ids[:, s, :]  # (B, T)
-        token_logps = compute_token_log_probs(model, seqs, vocab_size)  # (B, T-1)
+        token_logps, _ = compute_token_log_probs(
+            model, seqs, vocab_size, states=None
+        )  # (B, T-1)
         sum_logps = sum_log_probs_for_completion(token_logps, prompt_len)  # (B,)
         all_logps.append(sum_logps)
 
