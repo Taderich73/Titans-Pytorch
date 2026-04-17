@@ -112,6 +112,20 @@ class RotaryPositionEmbedding(nn.Module):
         k_rotated = self._apply_rotary(k, cos, sin)
         return q_rotated, k_rotated
 
+    def apply(self, x: torch.Tensor, seq_offset: int = 0) -> torch.Tensor:
+        """Apply rotary embeddings to a single tensor.
+
+        Avoids doubling work when the caller only needs one of (q, k).
+        """
+        if self.rotate_dim == 0:
+            return x
+        seq_len = x.shape[2]
+        if seq_offset + seq_len > self._max_seq_len:
+            self._build_cache(seq_offset + seq_len)
+        cos = self.cos_cached[seq_offset : seq_offset + seq_len]
+        sin = self.sin_cached[seq_offset : seq_offset + seq_len]
+        return self._apply_rotary(x, cos, sin)
+
     def _apply_rotary(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
@@ -221,8 +235,8 @@ class SlidingWindowAttention(nn.Module):
         v = _rearrange_to_heads(v, self.num_heads)
 
         if self.rope is not None:
-            q, _ = self.rope(q, q, seq_offset=prefix_len + seq_offset)
-            k, _ = self.rope(k, k, seq_offset=seq_offset)
+            q = self.rope.apply(q, seq_offset=prefix_len + seq_offset)
+            k = self.rope.apply(k, seq_offset=seq_offset)
 
         mode = self._select_sdpa_mode(seq_len, prefix_len, adaptive_mask)
         if mode == "is_causal":
