@@ -35,6 +35,32 @@ except ImportError:
     HAS_TRANSFORMERS = False
 
 
+def _save_final_memory(
+    path: str,
+    final_states,
+    *,
+    logger: logging.Logger,
+) -> None:
+    """Persist final_states to path, logging clearly when the list is empty.
+
+    Args:
+        path: Target .npz path.
+        final_states: List of memory states returned from generate().
+        logger: Module logger to report through.
+    """
+    if not final_states:
+        logger.warning(
+            "--save-memory=%s was set but generate() returned an empty list "
+            "of final states (no memory to save). Check that your model is "
+            "memory-bearing and that generate() threads states through.",
+            path,
+        )
+        return
+
+    save_memory_states(final_states, Path(path))
+    logger.info("Saved memory state to %s", path)
+
+
 def load_model(
     checkpoint_path: str, device: torch.device
 ) -> tuple[TitansMAC, TitansConfig]:
@@ -249,9 +275,8 @@ def main() -> None:
     output_text = tokenizer.decode(generated[0], skip_special_tokens=True)
     print(output_text)
 
-    if args.save_memory and final_states:
-        save_memory_states(final_states, Path(args.save_memory))
-        logger.info(f"Saved memory state to {args.save_memory}")
+    if args.save_memory:
+        _save_final_memory(args.save_memory, final_states, logger=logger)
 
 
 if __name__ == "__main__":
