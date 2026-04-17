@@ -54,9 +54,17 @@ from titans.memory_dump import save_memory_states
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "lora").
 try:
-    from scripts._common import chunked_forward, maybe_compile  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward, maybe_compile  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -780,10 +788,11 @@ def train(config: LoRATrainingConfig) -> None:
         )
 
     # --- 4. Optimizer — only LoRA parameters ---
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     # --- 5. Dataset and dataloader ---

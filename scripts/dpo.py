@@ -75,9 +75,17 @@ from titans.lora import (
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "dpo").
 try:
-    from scripts._common import chunked_forward, maybe_compile  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward, maybe_compile  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -1117,10 +1125,11 @@ def train(config: DPOConfig) -> None:
     else:
         trainable = list(model.parameters())
 
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         trainable,
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     # ------------------------------------------------------------------

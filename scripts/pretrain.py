@@ -50,9 +50,9 @@ from titans.memory_dump import save_memory_states
 
 # scripts/ is imported both as a namespace package and as a flat directory.
 try:
-    from scripts._common import maybe_compile  # type: ignore[import-not-found]
+    from scripts._common import make_optimizer, maybe_compile  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover
-    from _common import maybe_compile  # type: ignore[no-redef]
+    from _common import make_optimizer, maybe_compile  # type: ignore[no-redef]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -420,8 +420,11 @@ def train():
     )
 
     # Optimizer + scheduler
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
+    optimizer = make_optimizer(
+        model.parameters(),
+        lr=LR,
+        weight_decay=WEIGHT_DECAY,
+        device_type=accelerator.device.type,
     )
 
     # accelerator.prepare() wraps scheduler.step() so it only fires on real

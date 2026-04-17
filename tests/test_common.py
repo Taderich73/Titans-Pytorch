@@ -17,7 +17,7 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts._common import maybe_compile  # noqa: E402
+from scripts._common import make_optimizer, maybe_compile  # noqa: E402
 
 
 def test_maybe_compile_noop_on_cpu() -> None:
@@ -43,3 +43,27 @@ def test_maybe_compile_warns_and_skips_attn_res(caplog) -> None:
         )
     assert out is model
     assert any("attn_res" in r.message.lower() for r in caplog.records)
+
+
+def test_make_optimizer_cpu_defaults_to_foreach() -> None:
+    """On CPU, fused=True must NOT be requested."""
+    params = [torch.nn.Parameter(torch.randn(4, 4))]
+    opt = make_optimizer(params, lr=1e-3, weight_decay=0.1, device_type="cpu")
+    assert isinstance(opt, torch.optim.AdamW)
+    # foreach default is True on CPU; fused must NOT be set.
+    assert opt.defaults.get("fused") in (False, None)
+
+
+def test_make_optimizer_cuda_uses_fused() -> None:
+    """When device_type=='cuda', fused=True is requested."""
+    params = [torch.nn.Parameter(torch.randn(4, 4))]
+    # The _force_fused_flag test hook bypasses torch.cuda.is_available()
+    # so we can verify the fused kwarg is passed through on CPU runners.
+    opt = make_optimizer(
+        params,
+        lr=1e-3,
+        weight_decay=0.1,
+        device_type="cuda",
+        _force_fused_flag=True,
+    )
+    assert opt.defaults.get("fused") is True

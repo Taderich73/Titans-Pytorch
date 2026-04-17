@@ -12,7 +12,7 @@ build_titans_config, and create_model helpers.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import torch
 import torch.nn as nn
@@ -107,3 +107,46 @@ def maybe_compile(
         return model
     _log.info("Wrapping model with torch.compile(mode='default').")
     return torch.compile(model, mode="default")
+
+
+def make_optimizer(
+    params: Iterable[torch.nn.Parameter],
+    lr: float,
+    weight_decay: float,
+    device_type: str,
+    *,
+    betas: tuple[float, float] = (0.9, 0.95),
+    eps: float = 1e-8,
+    _force_fused_flag: bool = False,
+) -> torch.optim.AdamW:
+    """Return an AdamW optimizer with the fastest safe kernel.
+
+    On CUDA, pass ``fused=True`` (5-10% step-time improvement). On CPU or
+    MPS, fall back to the default (foreach) kernel.
+
+    Args:
+        params: Iterable of parameters to optimize.
+        lr: Peak learning rate.
+        weight_decay: Decoupled weight-decay coefficient.
+        device_type: ``accelerator.device.type`` (``"cuda"``, ``"cpu"``, ...).
+            Only ``"cuda"`` selects the fused kernel.
+        betas: Adam moment decay rates.
+        eps: Denominator epsilon.
+        _force_fused_flag: Test hook — forces ``fused=True`` regardless of
+            CUDA availability. Do not use in production code.
+
+    Returns:
+        A configured ``torch.optim.AdamW`` instance.
+    """
+    kwargs: dict = {
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "betas": betas,
+        "eps": eps,
+    }
+    use_fused = device_type == "cuda" and (
+        _force_fused_flag or torch.cuda.is_available()
+    )
+    if use_fused:
+        kwargs["fused"] = True
+    return torch.optim.AdamW(list(params), **kwargs)

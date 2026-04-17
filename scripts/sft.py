@@ -57,9 +57,17 @@ from titans.memory_dump import save_memory_states
 # a flat directory (when tests add scripts/ onto sys.path and import "sft").
 # Try the package-style import first; fall back to sibling-module import.
 try:
-    from scripts._common import chunked_forward, maybe_compile  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward, maybe_compile  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_optimizer,
+        maybe_compile,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -876,10 +884,11 @@ def train(config: SFTConfig) -> None:
     # ------------------------------------------------------------------
     # Optimizer and scheduler
     # ------------------------------------------------------------------
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         model.parameters(),
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     if config.max_steps > 0:
