@@ -147,14 +147,60 @@ def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
     assert native.checkpoint_config.ring_size == 4
 
 
+def test_safe_register_tolerates_already_used_error():
+    """_safe_register must swallow 'already used' ValueError from
+    transformers.AutoConfig.register / AutoModelForCausalLM.register.
+
+    This is the defensive guard for re-imports / reloads on transformers
+    versions that actually raise on duplicate registration.
+    """
+    from unittest.mock import patch
+    from titans.hf import _safe_register
+    from titans.hf.configuration import TitansMACConfig
+    from titans.hf.modeling import TitansMACForCausalLM
+
+    def raise_already_used(*args, **kwargs):
+        raise ValueError(
+            "'titans-mac' is already used by a Transformers config, "
+            "pick another name."
+        )
+
+    # Both register calls simulate the "already used" failure path.
+    with patch("transformers.AutoConfig.register", side_effect=raise_already_used), \
+         patch(
+             "transformers.AutoModelForCausalLM.register",
+             side_effect=raise_already_used,
+         ):
+        # Must NOT raise.
+        _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
+
+
+def test_safe_register_propagates_unrelated_valueerror():
+    """_safe_register must still raise for ValueErrors that aren't the
+    'already used' variety — narrow swallowing only."""
+    import pytest
+    from unittest.mock import patch
+    from titans.hf import _safe_register
+    from titans.hf.configuration import TitansMACConfig
+    from titans.hf.modeling import TitansMACForCausalLM
+
+    def raise_other(*args, **kwargs):
+        raise ValueError("Some unrelated validation failure")
+
+    with patch("transformers.AutoConfig.register", side_effect=raise_other):
+        with pytest.raises(ValueError, match="unrelated"):
+            _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
+
+
 def test_titans_hf_double_import_is_idempotent():
     """Re-importing titans.hf in the same process must not raise.
 
-    transformers.AutoConfig.register raises on duplicate registration; we
-    guard against it so long-running kernels / notebooks can reload safely.
+    Regression guard — on transformers versions where duplicate
+    registration raises, _safe_register swallows it. On versions
+    that silently tolerate (e.g., 5.5.4 via CONFIG_MAPPING._extra_content),
+    this is a no-op check.
     """
     import importlib
     import titans.hf
 
-    # Second import of the subpackage — must not raise.
     importlib.reload(titans.hf)
