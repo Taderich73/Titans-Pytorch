@@ -2,6 +2,12 @@
 
 > **Paper**: Kimi Team (2025). *Attention Residuals*. [arXiv:2603.15031](https://arxiv.org/abs/2603.15031)
 
+> **Paper alignment:** Kimi Team, 2025
+>
+> **Implementation status:** Faithful for depth-wise softmax residual; `AttnResMemoryGate` is a **novel extension**.
+>
+> **Details:** The depth-wise softmax residual (Eq. 2–6) is implemented verbatim. `AttnResMemoryGate` — which collapses the per-layer softmax weights into a **scalar importance** and feeds it into the neural-memory learning rate as a modulator — is not in the paper. The paper defines per-layer weights for residual mixing only; reusing a scalar summary of those weights as a memory-LR signal is a project-specific idea. Treat it as an experimental knob.
+
 ## Overview
 
 Standard residual connections accumulate all prior layer outputs with uniform unit weights. AttnRes replaces this with learned depth-wise softmax attention over prior representations, allowing each layer to selectively weight which earlier layers it draws from.
