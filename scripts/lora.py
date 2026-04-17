@@ -42,12 +42,10 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, IterableDataset
+from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
 
-from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
@@ -55,18 +53,34 @@ from titans.memory_dump import save_memory_states
 # a flat directory (when tests add scripts/ onto sys.path and import "lora").
 try:
     from scripts._common import (  # type: ignore[import-not-found]
+        base_argparse_parser,
+        build_titans_config,
         chunked_forward,
+        create_model,
+        format_chatml,
+        init_accelerator_and_logging,
+        loss_mask_to_zero_one,
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
+    from scripts._common import tokenize_chat as _tokenize_chat_canonical
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
+        base_argparse_parser,
+        build_titans_config,
         chunked_forward,
+        create_model,
+        format_chatml,
+        init_accelerator_and_logging,
+        loss_mask_to_zero_one,
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
+    from _common import tokenize_chat as _tokenize_chat_canonical  # type: ignore[no-redef]
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -96,22 +110,11 @@ except ImportError:
 HAS_DATASETS = importlib.util.find_spec("datasets") is not None
 HAS_WANDB = importlib.util.find_spec("wandb") is not None
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-_MODEL_CLASSES: dict[str, type[nn.Module]] = {
-    "mac": TitansMAC,
-    "mag": TitansMAG,
-    "mal": TitansMAL,
-    "lmm": TitansLMM,
-}
 
 
 @dataclass
@@ -131,6 +134,40 @@ class LoRATrainingConfig:
     num_memory_layers: int = 2
     memory_objective: str = "l2"
     huber_delta_init: float = 0.0
+
+    # TNT (Plan 3 additions — unblock --use-tnt flag)
+    use_tnt: bool = False
+    global_chunk_size: int = 2048
+    local_chunk_sizes: list[int] = field(default_factory=lambda: [8, 16])
+    local_shard_length: int = 2048
+    use_qk_projection: bool = True
+    tnt_stage: int = 1
+    finetune_local_chunk_sizes: list[int] | None = None
+
+    # Attention residual
+    use_attn_res: bool = False
+    num_attnres_blocks: int = 8
+    attnres_warmup_steps: int = 0
+    attnres_modulate_global_memory: bool = True
+    attnres_modulate_local_memory: bool = False
+
+    # Adaptive window
+    adaptive_window: bool = False
+    adaptive_window_min: int = 64
+    adaptive_window_max: int | None = None
+    adaptive_window_temperature: float = 10.0
+    adaptive_window_lambda: float = 0.01
+
+    # MCA
+    use_mca: bool = False
+    mca_insertion_layers: list[int] | None = None
+    mca_num_heads: int = 8
+    mca_gate_type: str = "scalar"
+    mca_gate_bias_init: float = -3.0
+
+    # Extras expected by build_titans_config
+    dropout: float = 0.0
+    use_conv: bool = False
 
     # Data
     data_path: str | None = None
@@ -192,28 +229,8 @@ class LoRATrainingConfig:
 
 
 # ---------------------------------------------------------------------------
-# Chat data utilities (self-contained, no shared utilities)
+# Backward-compatible wrappers around consolidated helpers
 # ---------------------------------------------------------------------------
-
-CHATML_BOS = "<|im_start|>"
-CHATML_EOS = "<|im_end|>"
-
-
-def format_chatml(messages: list[dict[str, str]]) -> str:
-    """Format a list of role/content dicts into a ChatML string.
-
-    Args:
-        messages: List of dicts with "role" and "content" keys.
-
-    Returns:
-        A single ChatML-formatted string.
-    """
-    parts: list[str] = []
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        parts.append(f"{CHATML_BOS}{role}\n{content}{CHATML_EOS}\n")
-    return "".join(parts)
 
 
 def tokenize_chat(
@@ -221,10 +238,12 @@ def tokenize_chat(
     tokenizer: PreTrainedTokenizerBase,
     max_seq_len: int,
 ) -> dict[str, list[int]]:
-    """Tokenize a ChatML conversation and produce input_ids + labels.
+    """Thin wrapper around scripts._common.tokenize_chat.
 
-    Labels use -100 for all prompt tokens so loss is only computed over
-    assistant turns.
+    Differs from the canonical helper by returning
+    ``{"input_ids", "labels"}`` in the historical lora format (labels
+    uses -100 sentinels instead of loss_mask). Assistant content tokens
+    are kept; everything else is -100.
 
     Args:
         messages: List of role/content dicts.
@@ -234,37 +253,17 @@ def tokenize_chat(
     Returns:
         Dict with keys "input_ids" and "labels" (both lists of ints).
     """
-    # Build labels: mask out non-assistant tokens
-    labels: list[int] = []
-    input_ids: list[int] = []
-
-    pos = 0
-    text_so_far = ""
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        turn_text = f"{CHATML_BOS}{role}\n{content}{CHATML_EOS}\n"
-        turn_ids = tokenizer.encode(turn_text, add_special_tokens=False)
-
-        if role == "assistant":
-            input_ids.extend(turn_ids)
-            labels.extend(turn_ids)
-        else:
-            input_ids.extend(turn_ids)
-            labels.extend([-100] * len(turn_ids))
-
-        text_so_far += turn_text
-        pos += len(turn_ids)
-
-    # Truncate to max_seq_len
-    input_ids = input_ids[:max_seq_len]
-    labels = labels[:max_seq_len]
-
-    return {"input_ids": input_ids, "labels": labels}
+    out = _tokenize_chat_canonical(messages, tokenizer, max_seq_len)
+    # Rewrite labels to use -100 sentinels in positions where loss_mask=0.
+    ids = out["input_ids"]
+    labels = [
+        tok if m == 1 else -100 for tok, m in zip(out["labels"], out["loss_mask"])
+    ]
+    return {"input_ids": ids, "labels": labels}
 
 
 def build_loss_mask(labels: list[int]) -> list[int]:
-    """Build a binary loss mask from a labels list.
+    """Backward-compatible: accept a labels list with -100 sentinels.
 
     Args:
         labels: Token labels with -100 for masked positions.
@@ -272,7 +271,7 @@ def build_loss_mask(labels: list[int]) -> list[int]:
     Returns:
         List of 0/1 integers where 1 = compute loss.
     """
-    return [0 if tok == -100 else 1 for tok in labels]
+    return loss_mask_to_zero_one(labels)
 
 
 # ---------------------------------------------------------------------------
@@ -493,41 +492,8 @@ def sft_collate_fn(
 
 
 # ---------------------------------------------------------------------------
-# Model construction
+# Dataset construction
 # ---------------------------------------------------------------------------
-
-
-def build_model(config: LoRATrainingConfig) -> nn.Module:
-    """Build a Titans model from LoRATrainingConfig.
-
-    Args:
-        config: Training configuration.
-
-    Returns:
-        An instantiated (but not yet LoRA-wrapped) Titans model.
-
-    Raises:
-        ValueError: If an unsupported model type is specified.
-    """
-    if config.model_type not in _MODEL_CLASSES:
-        raise ValueError(
-            f"Unknown model type '{config.model_type}'. "
-            f"Valid options: {sorted(_MODEL_CLASSES)}"
-        )
-    model_config = TitansConfig(
-        dim=config.dim,
-        num_heads=config.num_heads,
-        num_layers=config.num_layers,
-        vocab_size=config.vocab_size,
-        chunk_size=config.chunk_size,
-        window_size=config.window_size,
-        rope_proportion=config.rope_proportion,
-        num_persistent_tokens=config.num_persistent_tokens,
-        num_memory_layers=config.num_memory_layers,
-        memory_objective=config.memory_objective,
-        huber_delta_init=config.huber_delta_init,
-    )
-    return _MODEL_CLASSES[config.model_type](model_config)
 
 
 def _load_tokenizer(config: LoRATrainingConfig) -> PreTrainedTokenizerBase:
@@ -729,11 +695,8 @@ def train(config: LoRATrainingConfig) -> None:
             "Install with: pip install accelerate"
         )
 
-    accelerator = Accelerator(
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        mixed_precision=config.mixed_precision,
-        log_with="wandb" if config.wandb and HAS_WANDB else None,
-    )
+    bundle = init_accelerator_and_logging(config)
+    accelerator = bundle.accelerator
 
     if accelerator.is_main_process:
         logger.info(f"LoRA training config: {config}")
@@ -743,7 +706,8 @@ def train(config: LoRATrainingConfig) -> None:
     torch.manual_seed(config.seed)
 
     # --- 1. Build base model ---
-    model = build_model(config)
+    titans_config = build_titans_config(config)
+    model = create_model(config.model_type, titans_config)
 
     # --- 2. Load pretrained weights ---
     if config.init_weights is not None:
@@ -881,9 +845,8 @@ def train(config: LoRATrainingConfig) -> None:
             init_kwargs={"wandb": {"name": config.wandb_run_name}},
         )
 
-    checkpoint_dir = Path(config.checkpoint_dir)
-    if accelerator.is_main_process:
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_setup = setup_checkpoint_dir(config.checkpoint_dir, config.resume)
+    checkpoint_dir = ckpt_setup.output_dir
 
     global_step = 0
     start_epoch = 0
@@ -893,10 +856,8 @@ def train(config: LoRATrainingConfig) -> None:
     # ------------------------------------------------------------------
     # Resume from LoRA checkpoint
     # ------------------------------------------------------------------
-    if config.resume is not None:
-        resume_path = Path(config.resume)
-        if not resume_path.exists():
-            raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
+    if ckpt_setup.resume_path is not None:
+        resume_path = ckpt_setup.resume_path
         checkpoint = load_checkpoint(resume_path, weights_only=False)
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
@@ -1197,94 +1158,74 @@ def train(config: LoRATrainingConfig) -> None:
 
 def parse_args() -> LoRATrainingConfig:
     """Parse command-line arguments and return a LoRATrainingConfig."""
-    parser = argparse.ArgumentParser(
+    parser = base_argparse_parser(
         description="LoRA fine-tuning for Titans PyTorch models",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.set_defaults(
+        lr=1e-4,
+        weight_decay=0.01,
+        checkpoint_dir="checkpoints/lora",
+        save_every=5000,
+        wandb_project="titans-lora",
     )
 
-    # --- Model ---
-    model_group = parser.add_argument_group("Model")
-    model_group.add_argument(
-        "--model", type=str, default="mac", choices=list(_MODEL_CLASSES)
+    # LoRA-specific flags
+    lora_g = parser.add_argument_group("LoRA")
+    lora_g.add_argument("--lora-rank", type=int, default=8,
+                       help="LoRA rank r")
+    lora_g.add_argument("--lora-alpha", type=float, default=16.0,
+                       help="LoRA alpha (scale = alpha / rank)")
+    lora_g.add_argument("--lora-dropout", type=float, default=0.05,
+                       help="Dropout on LoRA input path")
+    lora_g.add_argument(
+        "--lora-targets", type=str, default="attn",
+        help="Comma-separated target groups: attn, ffn, memory, all",
     )
-    model_group.add_argument("--dim", type=int, default=512)
-    model_group.add_argument("--num-heads", type=int, default=8)
-    model_group.add_argument("--num-layers", type=int, default=12)
-    model_group.add_argument("--vocab-size", type=int, default=32000)
-    model_group.add_argument("--chunk-size", type=int, default=512)
-    model_group.add_argument("--window-size", type=int, default=512)
-    model_group.add_argument(
-        "--rope-proportion", type=float, default=1.0,
-        help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
-    )
-    model_group.add_argument("--num-persistent-tokens", type=int, default=16)
-    model_group.add_argument("--num-memory-layers", type=int, default=2)
-    model_group.add_argument(
-        "--memory-objective", type=str, default="l2", choices=["l2", "huber"]
+    lora_g.add_argument(
+        "--merge-and-save", type=str, default=None, metavar="PATH",
+        help="After training, merge LoRA into base weights and save to PATH",
     )
 
-    # --- Data ---
-    data_group = parser.add_argument_group("Data")
-    data_group.add_argument("--data-path", type=str, default=None,
-                            help="Path to JSONL file with 'messages' field per line")
-    data_group.add_argument(
+    # Data flags (LoRA-specific: JSONL data_path plus tokenizer/seq-len)
+    data_g = parser.add_argument_group("LoRA data")
+    data_g.add_argument(
+        "--data-path", type=str, default=None,
+        help="Path to JSONL file with 'messages' field per line",
+    )
+    data_g.add_argument(
         "--eval-data-path", type=str, default=None,
         help="Optional JSONL eval file (same schema as --data-path). "
              "If unset, periodic eval is skipped.",
     )
-    data_group.add_argument(
+    data_g.add_argument(
         "--dataset", type=str, default=None,
         help="HuggingFace dataset repo id to stream for training.",
     )
-    data_group.add_argument("--dataset-subset", type=str, default=None)
-    data_group.add_argument(
+    data_g.add_argument("--dataset-subset", type=str, default=None)
+    data_g.add_argument(
         "--eval-dataset", type=str, default=None,
         help="Optional HF dataset repo for eval. Defaults to --dataset when "
              "--eval-data-path is unset and --dataset is set.",
     )
-    data_group.add_argument("--eval-dataset-subset", type=str, default=None)
-    data_group.add_argument(
+    data_g.add_argument("--eval-dataset-subset", type=str, default=None)
+    data_g.add_argument(
         "--eval-split", type=str, default="test",
         help="Split to stream from the eval HF dataset (default: test).",
     )
-    data_group.add_argument(
+    data_g.add_argument(
         "--messages-field", type=str, default="messages",
         help="Field name containing the messages list in HF examples.",
     )
-    data_group.add_argument(
+    data_g.add_argument(
         "--train-on-all", action="store_true",
         help="Compute loss on all tokens instead of assistant-only.",
     )
-    data_group.add_argument("--tokenizer", type=str, default="gpt2")
-    data_group.add_argument("--seq-len", type=int, default=2048)
-    data_group.add_argument("--max-seq-len", type=int, default=2048)
+    data_g.add_argument("--tokenizer", type=str, default="gpt2")
+    data_g.add_argument("--seq-len", type=int, default=2048)
+    data_g.add_argument("--max-seq-len", type=int, default=2048)
 
-    # --- Training ---
-    train_group = parser.add_argument_group("Training")
-    train_group.add_argument(
-        "--init-weights", type=str, default=None,
-        help="Path to pretrained model state_dict (.pt) to load before LoRA wrapping"
-    )
-    train_group.add_argument("--epochs", type=int, default=1)
-    train_group.add_argument("--max-steps", type=int, default=-1)
-    train_group.add_argument("--batch-size", type=int, default=4)
-    train_group.add_argument(
-        "--gradient-accumulation-steps", type=int, default=8
-    )
-    train_group.add_argument("--lr", type=float, default=1e-4,
-                             help="Learning rate (default higher than SFT: 1e-4)")
-    train_group.add_argument("--weight-decay", type=float, default=0.01)
-    train_group.add_argument("--grad-clip", type=float, default=1.0)
-    train_group.add_argument("--warmup-ratio", type=float, default=0.03)
-    train_group.add_argument(
-        "--mixed-precision",
-        type=str,
-        default="no",
-        choices=["no", "fp16", "bf16"],
-    )
-
-    # --- Memory lifecycle ---
-    mem_group = parser.add_argument_group("memory lifecycle")
+    # Memory lifecycle
+    mem_group = parser.add_argument_group("Memory lifecycle")
     mem_group.add_argument(
         "--reset-memory-per-batch",
         action=argparse.BooleanOptionalAction,
@@ -1296,57 +1237,18 @@ def parse_args() -> LoRATrainingConfig:
         default=0,
     )
 
-    # --- LoRA ---
-    lora_group = parser.add_argument_group("LoRA")
-    lora_group.add_argument("--lora-rank", type=int, default=8,
-                            help="LoRA rank r")
-    lora_group.add_argument("--lora-alpha", type=float, default=16.0,
-                            help="LoRA alpha (scale = alpha / rank)")
-    lora_group.add_argument("--lora-dropout", type=float, default=0.05,
-                            help="Dropout on LoRA input path")
-    lora_group.add_argument(
-        "--lora-targets", type=str, default="attn",
-        help="Comma-separated target groups: attn, ffn, memory, all"
-    )
-    lora_group.add_argument(
-        "--merge-and-save", type=str, default=None, metavar="PATH",
-        help="After training, merge LoRA into base weights and save to PATH"
-    )
-
-    # --- Checkpointing ---
-    ckpt_group = parser.add_argument_group("Checkpointing")
-    ckpt_group.add_argument(
-        "--checkpoint-dir", type=str, default="checkpoints/lora"
-    )
-    ckpt_group.add_argument("--save-every", type=int, default=5000)
-    ckpt_group.add_argument(
-        "--save-format",
-        type=str,
-        default="pt",
-        choices=["pt", "safetensors"],
-    )
-    ckpt_group.add_argument("--eval-every", type=int, default=500)
-    ckpt_group.add_argument(
+    # Misc
+    parser.add_argument("--synthetic-samples", type=int, default=1000)
+    parser.add_argument("--eval-every", type=int, default=500)
+    parser.add_argument(
         "--eval-batches", type=int, default=50,
         help="Max batches per eval pass (caps wall-time when eval set is large).",
     )
-    ckpt_group.add_argument("--resume", type=str, default=None)
-
-    # --- Logging ---
-    log_group = parser.add_argument_group("Logging")
-    log_group.add_argument("--log-every", type=int, default=10)
-    log_group.add_argument("--wandb", action="store_true")
-    log_group.add_argument("--wandb-project", type=str, default="titans-lora")
-    log_group.add_argument("--wandb-run-name", type=str, default=None)
-
-    # --- Misc ---
-    misc_group = parser.add_argument_group("Misc")
-    misc_group.add_argument("--seed", type=int, default=42)
-    misc_group.add_argument("--synthetic-samples", type=int, default=1000)
 
     args = parser.parse_args()
 
     return LoRATrainingConfig(
+        # Architecture
         model_type=args.model,
         dim=args.dim,
         num_heads=args.num_heads,
@@ -1358,6 +1260,36 @@ def parse_args() -> LoRATrainingConfig:
         num_persistent_tokens=args.num_persistent_tokens,
         num_memory_layers=args.num_memory_layers,
         memory_objective=args.memory_objective,
+        huber_delta_init=args.huber_delta_init,
+        dropout=args.dropout,
+        use_conv=args.use_conv,
+        # TNT
+        use_tnt=args.use_tnt,
+        global_chunk_size=args.global_chunk_size,
+        local_chunk_sizes=args.local_chunk_sizes,
+        local_shard_length=args.local_shard_length,
+        use_qk_projection=args.use_qk_projection,
+        tnt_stage=args.tnt_stage,
+        finetune_local_chunk_sizes=args.finetune_local_chunk_sizes,
+        # Attn res
+        use_attn_res=args.use_attn_res,
+        num_attnres_blocks=args.num_attnres_blocks,
+        attnres_warmup_steps=args.attnres_warmup_steps,
+        attnres_modulate_global_memory=args.attnres_modulate_global_memory,
+        attnres_modulate_local_memory=args.attnres_modulate_local_memory,
+        # Adaptive window
+        adaptive_window=args.adaptive_window,
+        adaptive_window_min=args.adaptive_window_min,
+        adaptive_window_max=args.adaptive_window_max,
+        adaptive_window_temperature=args.adaptive_window_temperature,
+        adaptive_window_lambda=args.adaptive_window_lambda,
+        # MCA
+        use_mca=args.use_mca,
+        mca_insertion_layers=args.mca_insertion_layers,
+        mca_num_heads=args.mca_num_heads,
+        mca_gate_type=args.mca_gate_type,
+        mca_gate_bias_init=args.mca_gate_bias_init,
+        # Data
         data_path=args.data_path,
         eval_data_path=args.eval_data_path,
         dataset=args.dataset,
@@ -1370,8 +1302,10 @@ def parse_args() -> LoRATrainingConfig:
         tokenizer=args.tokenizer,
         seq_len=args.seq_len,
         max_seq_len=args.max_seq_len,
+        # Memory lifecycle
         reset_memory_per_batch=args.reset_memory_per_batch,
         state_carry_warmup_steps=args.state_carry_warmup_steps,
+        # Training
         init_weights=args.init_weights,
         epochs=args.epochs,
         max_steps=args.max_steps,
@@ -1382,21 +1316,25 @@ def parse_args() -> LoRATrainingConfig:
         grad_clip=args.grad_clip,
         warmup_ratio=args.warmup_ratio,
         mixed_precision=args.mixed_precision,
+        # LoRA
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         lora_targets=args.lora_targets,
         merge_and_save=args.merge_and_save,
+        # Checkpointing
         checkpoint_dir=args.checkpoint_dir,
         save_every=args.save_every,
         save_format=args.save_format,
         eval_every=args.eval_every,
         eval_batches=args.eval_batches,
         resume=args.resume,
+        # Logging
         log_every=args.log_every,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
+        # Misc
         seed=args.seed,
         synthetic_samples=args.synthetic_samples,
     )

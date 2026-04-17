@@ -576,3 +576,35 @@ class TestSetupCheckpointDir:
         target.mkdir()
         with pytest.raises(FileNotFoundError):
             setup_checkpoint_dir(str(target), resume_path=str(tmp_path / "missing.pt"))
+
+
+class TestLoraFeatureFlagsHonoured:
+    """Regression: lora.py used to silently drop feature flags. After
+    migration to build_titans_config, they must reach TitansConfig."""
+
+    def test_use_tnt_reaches_config(self) -> None:
+        from scripts.lora import LoRATrainingConfig, build_titans_config
+
+        cfg = LoRATrainingConfig()
+        # The dataclass must expose use_tnt (added as part of migration).
+        cfg.use_tnt = True
+        cfg.global_chunk_size = 1024
+        cfg.local_chunk_sizes = [4, 8]
+        cfg.local_shard_length = 1024
+        cfg.use_qk_projection = True
+        cfg.tnt_stage = 1
+        cfg.finetune_local_chunk_sizes = None
+        tc = build_titans_config(cfg)
+        assert tc.use_tnt is True
+
+    def test_use_attn_res_reaches_config(self) -> None:
+        from scripts.lora import LoRATrainingConfig, build_titans_config
+
+        cfg = LoRATrainingConfig()
+        cfg.use_attn_res = True
+        cfg.num_attnres_blocks = 4
+        cfg.attnres_warmup_steps = 0
+        cfg.attnres_modulate_global_memory = True
+        cfg.attnres_modulate_local_memory = False
+        tc = build_titans_config(cfg)
+        assert tc.use_attn_res is True
