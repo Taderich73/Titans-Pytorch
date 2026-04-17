@@ -3,6 +3,10 @@
 
 """Adaptive window sizing for sliding window attention (PyTorch).
 
+Paper alignment: N/A — novel extension. ``AdaptiveWindowPredictor`` is not
+specified by any reference paper; it is a project-specific learned
+soft-masking scheme documented in ``docs/adaptive_window_sizing.md``.
+
 Per-layer learned soft masking that replaces the hard boolean window
 boundary with a differentiable sigmoid falloff.
 """
