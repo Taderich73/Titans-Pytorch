@@ -112,6 +112,9 @@ class MemoryMLP(nn.Module):
         self.layers = nn.ModuleList(layers)
         self._init_weights(config.init_std)
 
+        self._layer_shapes = [tuple(layer.weight.shape) for layer in self.layers]
+        self._ref_dtype = self.layers[0].weight.dtype
+
     def _init_weights(self, std: float) -> None:
         for layer in self.layers:
             nn.init.normal_(layer.weight, std=std)
@@ -126,6 +129,13 @@ class MemoryMLP(nn.Module):
 
     def get_weights(self) -> list[torch.Tensor]:
         return [layer.weight.data.clone() for layer in self.layers]
+
+    def zero_weights_like(self, device: torch.device) -> list[torch.Tensor]:
+        """Return zero-initialized tensors matching each layer's weight shape."""
+        return [
+            torch.zeros(shape, dtype=self._ref_dtype, device=device)
+            for shape in self._layer_shapes
+        ]
 
     def get_base_weights(self) -> list[torch.Tensor]:
         """Return live weight parameter references (with autograd graph)."""
@@ -343,13 +353,13 @@ class NeuralLongTermMemory(nn.Module):
             raise ValueError(f"No derivative for activation: {self.config.activation}")
 
     def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
+        device = next(self.parameters()).device
         if self.config.delta_memory_param:
-            # Deltas start at zero — no corrections from base initially
-            base_weights = self.memory.get_weights()  # for shape/device only
-            weights = [torch.zeros_like(w) for w in base_weights]
+            # Deltas start at zero — allocate directly without cloning params
+            weights = self.memory.zero_weights_like(device)
         else:
-            weights = [w.detach().clone() for w in self.memory.get_weights()]
-        momentum = [torch.zeros_like(w) for w in weights]
+            weights = [layer.weight.detach().clone() for layer in self.memory.layers]
+        momentum = self.memory.zero_weights_like(device)
         return MemoryState(weights=weights, momentum=momentum)
 
     def _get_effective_weights(

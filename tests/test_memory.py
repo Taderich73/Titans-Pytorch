@@ -947,3 +947,43 @@ class TestDeepMemoryKStep:
         x = torch.randn(1, 8, 16)
         out, state, _ = memory(x)
         assert out.shape == x.shape
+
+
+def test_init_state_does_not_clone_weights() -> None:
+    """init_state should not call MemoryMLP.get_weights (which clones)."""
+    cfg = TitansConfig(
+        dim=32,
+        num_heads=4,
+        num_memory_layers=2,
+        memory_objective="l2",
+        chunk_size=16,
+    )
+    mem = NeuralLongTermMemory(cfg)
+    call_count = 0
+    orig = mem.memory.get_weights
+
+    def counting_get_weights() -> list[torch.Tensor]:
+        nonlocal call_count
+        call_count += 1
+        return orig()
+
+    mem.memory.get_weights = counting_get_weights  # type: ignore[assignment]
+    _ = mem.init_state(batch_size=2)
+    assert call_count == 0, "init_state must not clone via get_weights"
+
+
+def test_init_state_tensors_are_zero_and_correct_shape() -> None:
+    cfg = TitansConfig(
+        dim=32,
+        num_heads=4,
+        num_memory_layers=2,
+        memory_objective="l2",
+        chunk_size=16,
+    )
+    mem = NeuralLongTermMemory(cfg)
+    state = mem.init_state(batch_size=2)
+    assert len(state.weights) == 2
+    for w, m in zip(state.weights, state.momentum):
+        assert torch.all(w == 0)
+        assert torch.all(m == 0)
+        assert w.shape == m.shape
