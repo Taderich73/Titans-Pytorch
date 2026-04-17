@@ -132,6 +132,12 @@ class TitansConfig:
     activation: str = "silu"
     init_std: float = 0.02
 
+    # Deep-memory inner-loop steps per chunk (K in Plan 5).  Default 1
+    # preserves the legacy single-step behavior; raise to 8 (or higher)
+    # to approximate the paper's per-token inner loop.  Ignored for
+    # linear memory (num_memory_layers == 1).
+    num_memory_inner_steps: int = 1
+
     # Auto-checkpointing (disabled by default — zero overhead when False)
     auto_checkpoint: bool = False
     checkpoint_config: dict | None = None  # MemoryCheckpointConfig as dict or instance
@@ -179,6 +185,10 @@ class TitansConfig:
             raise ValueError(
                 f"memory_objective must be one of {valid_objectives}, "
                 f"got '{self.memory_objective}'"
+            )
+        if self.num_memory_inner_steps < 1:
+            raise ValueError(
+                f"num_memory_inner_steps must be >= 1, got {self.num_memory_inner_steps}"
             )
         if self.use_mca:
             for idx in self.mca_active_insertion_layers:
@@ -268,6 +278,7 @@ class TitansConfig:
                 else self.checkpoint_config
             ),
             "mac_per_position_memory_query": self.mac_per_position_memory_query,
+            "num_memory_inner_steps": self.num_memory_inner_steps,
         }
 
     @classmethod
