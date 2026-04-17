@@ -722,13 +722,11 @@ def train(config: SFTConfig) -> None:
     # Tokenizer
     # ------------------------------------------------------------------
     tokenizer = None
-    pad_id = 0
     if HAS_TRANSFORMERS:
         try:
             tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token_id = tokenizer.eos_token_id or 0
-            pad_id = tokenizer.pad_token_id
             if accelerator.is_main_process:
                 logger.info(f"Loaded tokenizer: {config.tokenizer}")
                 logger.info(f"Vocab size (tokenizer): {tokenizer.vocab_size}")

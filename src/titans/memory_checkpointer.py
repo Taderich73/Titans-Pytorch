@@ -386,7 +386,6 @@ class MemoryCheckpointer:
             return
 
         before_chunk = self._before_entry.metadata.get("chunk_index", 0)
-        during_chunk = self._during_entry.metadata.get("chunk_index", 0)
         after_chunks = [e.metadata.get("chunk_index", 0) for e in self._after_entries]
         duration = (after_chunks[-1] - before_chunk) if after_chunks else 0
 
