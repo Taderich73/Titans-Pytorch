@@ -40,7 +40,6 @@ from titans.models import (
     TitansMAC,
     TitansMAG,
     TitansMAL,
-    compile_model,
     process_chunk,
 )
 from titans.persistent import PersistentMemory
@@ -124,7 +123,6 @@ __all__ = [
     "TitansMAG",
     "TitansMAL",
     "TitansLMM",
-    "compile_model",
     "process_chunk",
     # LoRA
     "LoRALinear",
