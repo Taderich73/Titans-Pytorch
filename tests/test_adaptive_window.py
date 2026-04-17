@@ -95,3 +95,34 @@ class TestAdaptiveWindowIntegration:
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
         logits, states, _ = model(x)
         assert logits.shape == (2, 16, config.vocab_size)
+
+
+def test_adaptive_window_grid_is_cached() -> None:
+    from titans.adaptive_window import _adaptive_window_grid
+
+    _adaptive_window_grid.cache_clear()
+    g1 = _adaptive_window_grid(seq_len=32, device_str="cpu")
+    g2 = _adaptive_window_grid(seq_len=32, device_str="cpu")
+    assert g1 is g2  # identity => cache hit
+    info = _adaptive_window_grid.cache_info()
+    assert info.hits >= 1
+
+
+def test_adaptive_window_forward_numerical_parity() -> None:
+    from titans.adaptive_window import AdaptiveWindowPredictor
+    from titans.config import TitansConfig
+
+    torch.manual_seed(0)
+    cfg = TitansConfig(
+        dim=32,
+        num_heads=4,
+        adaptive_window_min=4,
+        adaptive_window_max=64,
+        adaptive_window_temperature=1.0,
+    )
+    pred = AdaptiveWindowPredictor(cfg).eval()
+    x = torch.randn(2, 16, 32)
+    mask_a, centers_a = pred(x)
+    mask_b, centers_b = pred(x)
+    assert torch.allclose(mask_a, mask_b)
+    assert torch.allclose(centers_a, centers_b)
