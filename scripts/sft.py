@@ -482,43 +482,6 @@ class SFTStreamingDataset(IterableDataset):
                 "loss_mask": torch.tensor(tokenized["loss_mask"], dtype=torch.float),
             }
 
-    def get_batch(
-        self, batch_size: int, pad_id: int = 0
-    ) -> dict[str, torch.Tensor]:
-        """Return a single padded batch (convenience method for non-DataLoader use).
-
-        Args:
-            batch_size: Number of examples to collect.
-            pad_id: Token id used for padding.
-
-        Returns:
-            Dict of ``input_ids``, ``labels``, ``loss_mask`` as 2-D tensors
-            of shape ``(batch_size, seq_len)`` where ``seq_len`` is the length
-            of the longest example in the batch.
-        """
-        samples: list[dict[str, torch.Tensor]] = []
-        for sample in self:
-            samples.append(sample)
-            if len(samples) >= batch_size:
-                break
-
-        if not samples:
-            raise StopIteration("Dataset exhausted")
-
-        max_len = max(s["input_ids"].size(0) for s in samples)
-
-        input_ids = torch.full((len(samples), max_len), pad_id, dtype=torch.long)
-        labels = torch.full((len(samples), max_len), -100, dtype=torch.long)
-        loss_mask = torch.zeros(len(samples), max_len, dtype=torch.float)
-
-        for i, s in enumerate(samples):
-            length = s["input_ids"].size(0)
-            input_ids[i, :length] = s["input_ids"]
-            labels[i, :length] = s["labels"]
-            loss_mask[i, :length] = s["loss_mask"]
-
-        return {"input_ids": input_ids, "labels": labels, "loss_mask": loss_mask}
-
 
 class SyntheticSFTDataset(Dataset):
     """Synthetic chat dataset for smoke-testing without a real corpus.
