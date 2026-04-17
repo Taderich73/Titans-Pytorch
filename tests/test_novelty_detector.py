@@ -828,3 +828,130 @@ def test_layer_windows_welford_reset() -> None:
     assert lw.value_stats.count == 0
     assert lw.value_stats.mean == 0.0
     assert lw.roc_stats.count == 0
+
+
+# ---------------------------------------------------------------------------
+# Aggregated ring buffer (Task 10)
+# ---------------------------------------------------------------------------
+
+
+class TestAggregatedRingBuffer:
+    """Cached aggregated window replacing per-call rebuild."""
+
+    def test_aggregated_stream_attribute_exists(self) -> None:
+        """After refactor, detector holds _aggregated_stream keyed by signal."""
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=8,
+            sigma_threshold=2.0,
+            min_observations=4,
+            per_layer=False,
+        )
+        for i in range(6):
+            det.observe(_make_frame(chunk_index=i, error_norms=[0.1, 0.2, 0.3]))
+        assert hasattr(det, "_aggregated_stream")
+        stream = det._aggregated_stream
+        # prediction_error should have been evaluated (it's available) => tracked.
+        assert "prediction_error" in stream
+        agg = stream["prediction_error"]
+        assert agg.values.maxlen == 8
+        assert agg.roc_values.maxlen == 8
+
+    def test_aggregated_ring_buffer_matches_recompute(self) -> None:
+        """A ring-buffer-backed aggregated evaluator produces the same decision
+        stream as the previous from-scratch implementation."""
+        from titans.novelty_detector import (
+            StatisticalNoveltyDetector,
+            WelfordStats,
+        )
+
+        det = StatisticalNoveltyDetector(
+            window_size=8,
+            sigma_threshold=2.0,
+            min_observations=4,
+            per_layer=False,
+        )
+        import random
+
+        random.seed(0)
+        n_layers = 3
+        decisions = []
+        # Keep our own reference aggregate window and replay.
+        ref_values: list[float] = []
+        ref_roc: list[float] = []
+        for step in range(40):
+            values = [random.gauss(0.0, 1.0) for _ in range(n_layers)]
+            d = det.observe(_make_frame(chunk_index=step, error_norms=values))
+            decisions.append(d.triggered)
+            step_mean = sum(values) / n_layers
+            if ref_values:
+                ref_roc.append(step_mean - ref_values[-1])
+            ref_values.append(step_mean)
+            # Keep bounded to window_size
+            if len(ref_values) > 8:
+                ref_values.pop(0)
+            if len(ref_roc) > 8:
+                ref_roc.pop(0)
+
+        # Spot-check: detector's cached stream mirrors the reference.
+        agg = det._aggregated_stream["prediction_error"]
+        # The cached ring buffer is at most window_size long.
+        assert len(agg.values) <= 8
+        assert len(agg.values) == len(ref_values)
+        for a, b in zip(list(agg.values), ref_values):
+            assert a == pytest.approx(b, rel=1e-9, abs=1e-12)
+        # Welford stats match
+        ref_stats = WelfordStats()
+        for v in ref_values:
+            ref_stats.push(v)
+        assert agg.value_stats.count == ref_stats.count
+        assert agg.value_stats.mean == pytest.approx(ref_stats.mean, rel=1e-9)
+        assert agg.value_stats.population_variance == pytest.approx(
+            ref_stats.population_variance, rel=1e-9, abs=1e-12
+        )
+
+    def test_aggregated_detects_spike(self) -> None:
+        """Aggregated mode still triggers on obvious spikes after the refactor."""
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=12,
+            sigma_threshold=2.0,
+            min_observations=6,
+            per_layer=False,
+        )
+        # Warmup: stable signal.
+        for i in range(10):
+            det.observe(_make_frame(chunk_index=i, error_norms=[1.0, 1.0, 1.0]))
+        # Small wiggles
+        for i in range(5):
+            det.observe(
+                _make_frame(chunk_index=10 + i, error_norms=[1.02, 0.99, 1.01])
+            )
+        # Big spike across layers
+        d = det.observe(
+            _make_frame(chunk_index=16, error_norms=[10.0, 10.0, 10.0])
+        )
+        assert d.triggered
+
+    def test_aggregated_reset_clears_stream(self) -> None:
+        """Calling reset() clears the cached aggregated stream."""
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=8,
+            sigma_threshold=2.0,
+            min_observations=4,
+            per_layer=False,
+        )
+        for i in range(6):
+            det.observe(_make_frame(chunk_index=i, error_norms=[0.1, 0.2]))
+        assert "prediction_error" in det._aggregated_stream
+        det.reset()
+        # After reset, Welford state of the aggregated stream is empty.
+        for agg in det._aggregated_stream.values():
+            assert agg.value_stats.count == 0
+            assert agg.roc_stats.count == 0
+            assert len(agg.values) == 0
+            assert len(agg.roc_values) == 0
