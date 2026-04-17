@@ -455,7 +455,6 @@ class NeuralLongTermMemory(nn.Module):
                 k, v, state, alpha, theta, eta, delta=delta_val
             )
         else:
-            grads = self._compute_gradients(k, v, state.weights, delta=delta_val)
             # Shared deep-memory weights require batch-scalar gate values for
             # the weight update.  Per-sample gates preserve their shape during
             # the loss/gradient computation (they enter via error scaling); for
@@ -464,14 +463,86 @@ class NeuralLongTermMemory(nn.Module):
             alpha_scalar = alpha.mean()
             theta_scalar = theta.mean()
             eta_scalar = eta.mean()
-            new_momentum = [
-                eta_scalar * m - theta_scalar * g
-                for m, g in zip(state.momentum, grads)
-            ]
-            new_weights = [
-                (1 - alpha_scalar) * w + s
-                for w, s in zip(state.weights, new_momentum)
-            ]
+
+            K = int(self.config.num_memory_inner_steps)
+            if K == 1:
+                # Legacy single-step path (exact backward-compat for K=1).
+                grads = self._compute_gradients(
+                    k, v, state.weights, delta=delta_val
+                )
+                new_momentum = [
+                    eta_scalar * m - theta_scalar * g
+                    for m, g in zip(state.momentum, grads)
+                ]
+                new_weights = [
+                    (1 - alpha_scalar) * w + s
+                    for w, s in zip(state.weights, new_momentum)
+                ]
+            else:
+                # K-step inner loop approximating per-token online updates
+                # (paper §3.2).  Split the chunk into K roughly-equal
+                # sub-chunks and run one analytical gradient + momentum
+                # update per sub-chunk.  The first K-1 steps run under
+                # no_grad (analytical grads; no retained autograd graph).
+                # The final step is re-done WITH autograd so the outer-loop
+                # gate projections (alpha, theta, eta) receive gradient
+                # from the LM loss via the retained effective-weights path.
+                seq_len = k.shape[1]
+                bounds = [
+                    int(round(seq_len * i / K)) for i in range(K + 1)
+                ]
+                # Rewind the first K-1 updates under no_grad with detached
+                # gates so no autograd graph is retained across steps.
+                prev_w = [w for w in state.weights]
+                prev_m = [m for m in state.momentum]
+                alpha_d = alpha_scalar.detach()
+                theta_d = theta_scalar.detach()
+                eta_d = eta_scalar.detach()
+                with torch.no_grad():
+                    for i in range(K - 1):
+                        lo_i, hi_i = bounds[i], bounds[i + 1]
+                        if hi_i <= lo_i:
+                            continue
+                        k_sub = k[:, lo_i:hi_i, :]
+                        v_sub = v[:, lo_i:hi_i, :]
+                        grads = self._compute_gradients(
+                            k_sub, v_sub, prev_w, delta=delta_val,
+                        )
+                        prev_m = [
+                            eta_d * m - theta_d * g
+                            for m, g in zip(prev_m, grads)
+                        ]
+                        prev_w = [
+                            (1 - alpha_d) * w + s
+                            for w, s in zip(prev_w, prev_m)
+                        ]
+                # Final step WITH autograd on the gates.  prev_w / prev_m
+                # carry no graph (detached), but alpha_scalar, theta_scalar,
+                # eta_scalar do — so gate projections receive gradient from
+                # the returned new_weights / new_momentum.
+                lo, hi = bounds[K - 1], bounds[K]
+                if hi > lo:
+                    k_final = k[:, lo:hi, :]
+                    v_final = v[:, lo:hi, :]
+                    grads = self._compute_gradients(
+                        k_final, v_final, prev_w, delta=delta_val,
+                    )
+                    new_momentum = [
+                        eta_scalar * m - theta_scalar * g
+                        for m, g in zip(prev_m, grads)
+                    ]
+                    new_weights = [
+                        (1 - alpha_scalar) * w + s
+                        for w, s in zip(prev_w, new_momentum)
+                    ]
+                else:
+                    # Degenerate final sub-chunk: still route through gates
+                    # so their autograd graph is attached to new_state.
+                    new_momentum = [eta_scalar * m for m in prev_m]
+                    new_weights = [
+                        (1 - alpha_scalar) * w + s
+                        for w, s in zip(prev_w, new_momentum)
+                    ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
         if retrieve_after_update:

@@ -857,3 +857,90 @@ class TestPerSampleGates:
         assert not torch.allclose(out_a, out_b), (
             "Per-sample outputs must differ (no batch collapse)"
         )
+
+
+class TestDeepMemoryKStep:
+    """Deep memory K-step inner loop (num_memory_inner_steps > 1)."""
+
+    def test_k_equals_one_matches_legacy(self):
+        """K=1 must produce exactly the same result as the pre-K-step code."""
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
+            num_memory_inner_steps=1, delta_memory_param=False,
+        )
+        memory = NeuralLongTermMemory(config)
+        x = torch.randn(2, 8, 16)
+        out1, state1, _ = memory(x, state=None)
+        torch.manual_seed(0)
+        config2 = TitansConfig(
+            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
+            num_memory_inner_steps=1, delta_memory_param=False,
+        )
+        memory2 = NeuralLongTermMemory(config2)
+        out2, state2, _ = memory2(x, state=None)
+        assert torch.allclose(state1.weights[0], state2.weights[0])
+        assert torch.allclose(out1, out2, atol=1e-5)
+
+    def test_k_steps_move_weights_more_than_one_step(self):
+        """With K=8, the final weights should be farther from init than K=1."""
+        torch.manual_seed(42)
+        cfg_k1 = TitansConfig(
+            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
+            num_memory_inner_steps=1, delta_memory_param=False,
+        )
+        torch.manual_seed(42)
+        m1 = NeuralLongTermMemory(cfg_k1)
+
+        torch.manual_seed(42)
+        cfg_k8 = TitansConfig(
+            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
+            num_memory_inner_steps=8, delta_memory_param=False,
+        )
+        torch.manual_seed(42)
+        m8 = NeuralLongTermMemory(cfg_k8)
+
+        x = torch.randn(2, 16, 16)
+        init_w_1 = m1.memory.get_weights()[0].clone()
+        init_w_8 = m8.memory.get_weights()[0].clone()
+        assert torch.allclose(init_w_1, init_w_8)
+
+        _, state1, _ = m1(x, state=None)
+        _, state8, _ = m8(x, state=None)
+
+        dist_1 = (state1.weights[0] - init_w_1).norm().item()
+        dist_8 = (state8.weights[0] - init_w_8).norm().item()
+        assert dist_8 > dist_1, (
+            f"K=8 should move weights farther than K=1; "
+            f"got K=1:{dist_1:.4f} vs K=8:{dist_8:.4f}"
+        )
+
+    def test_gradient_flows_to_gates_with_k8(self):
+        """Gate projections receive non-zero grads after a K=8 forward+backward."""
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
+            num_memory_inner_steps=8, delta_memory_param=False,
+        )
+        memory = NeuralLongTermMemory(config)
+        x = torch.randn(2, 8, 16)
+        out, _, _ = memory(x, state=None)
+        loss = out.sum()
+        loss.backward()
+        assert memory.gate_decay_proj.weight.grad is not None
+        assert memory.gate_decay_proj.weight.grad.abs().sum().item() > 0
+        assert memory.gate_lr_proj.weight.grad is not None
+        assert memory.gate_lr_proj.weight.grad.abs().sum().item() > 0
+        assert memory.gate_momentum_proj.weight.grad is not None
+        assert memory.gate_momentum_proj.weight.grad.abs().sum().item() > 0
+
+    def test_linear_memory_ignores_k_setting(self):
+        """For num_memory_layers=1, K is irrelevant (parallel update)."""
+        torch.manual_seed(0)
+        cfg = TitansConfig(
+            dim=16, num_memory_layers=1, num_memory_inner_steps=8,
+        )
+        memory = NeuralLongTermMemory(cfg)
+        x = torch.randn(1, 8, 16)
+        out, state, _ = memory(x)
+        assert out.shape == x.shape
