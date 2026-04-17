@@ -80,6 +80,13 @@ from titans.lora import (
     wrap_lora_layers,
 )
 
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "rlvr").
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -302,12 +309,15 @@ def compute_token_log_probs(
     chunk_size = base_model.config.chunk_size
 
     # Chunk input_ids, run model per-chunk, collect logits, then compute
-    # shifted log-probs over the concatenated logits.
-    chunks = input_ids.split(chunk_size, dim=1)
+    # shifted log-probs over the concatenated logits. detach_between=False
+    # because downstream log-probs must remain in the autograd graph for
+    # policy-gradient backward passes.
     all_logits: list[torch.Tensor] = []
-    for ids_c in chunks:
-        logits, states, _ = model(ids_c, states=states)
+    for logits, _ids_c, new_states in chunked_forward(
+        model, input_ids, chunk_size, states=states, detach_between=False
+    ):
         all_logits.append(logits)
+        states = new_states
 
     logits = torch.cat(all_logits, dim=1).float()  # (B, T, V) fp32 for stability
     # Shift: logits[:, :-1] predicts input_ids[:, 1:]

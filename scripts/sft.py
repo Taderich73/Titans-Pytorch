@@ -52,6 +52,14 @@ from titans import TitansConfig, TitansMAC, TitansMAG, TitansMAL, TitansLMM
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "sft").
+# Try the package-style import first; fall back to sibling-module import.
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -658,7 +666,6 @@ def evaluate(
             if i >= max_batches:
                 break
 
-            id_chunks = batch["input_ids"].split(chunk_size, dim=1)
             lbl_chunks = batch["labels"].split(chunk_size, dim=1)
             msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
@@ -667,8 +674,17 @@ def evaluate(
                 0.0, device=batch["input_ids"].device
             )
 
-            for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
-                logits, memory_states, _ = model(ids_c, states=memory_states)
+            chunk_iter = chunked_forward(
+                model,
+                batch["input_ids"],
+                chunk_size,
+                states=memory_states,
+                detach_between=True,
+            )
+            for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+                chunk_iter, lbl_chunks, msk_chunks
+            ):
+                memory_states = new_states
                 logits_flat = logits.reshape(-1, vocab_size)
                 labels_flat = lbl_c.reshape(-1)
                 mask_flat = msk_c.reshape(-1).float()
@@ -678,12 +694,6 @@ def evaluate(
                 )
                 batch_loss_num = batch_loss_num + (per_token * mask_flat).sum()
                 batch_tokens_num = batch_tokens_num + mask_flat.sum()
-
-                if memory_states is not None:
-                    memory_states = [
-                        s.detach() if s is not None else None
-                        for s in memory_states
-                    ]
 
             # Gather across processes
             batch_loss = (
@@ -995,9 +1005,9 @@ def train(config: SFTConfig) -> None:
 
             with accelerator.accumulate(model):
                 chunk_size = config.chunk_size
-                id_chunks = batch["input_ids"].split(chunk_size, dim=1)
                 lbl_chunks = batch["labels"].split(chunk_size, dim=1)
                 msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
+                num_chunks = len(lbl_chunks)
 
                 # Aggregate numerator/denominator across chunks so the final
                 # reported loss equals the masked-token-weighted mean CE
@@ -1009,8 +1019,18 @@ def train(config: SFTConfig) -> None:
                     0.0, device=batch["input_ids"].device
                 )
 
-                for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
-                    logits, memory_states, _ = model(ids_c, states=memory_states)
+                chunk_iter = chunked_forward(
+                    model,
+                    batch["input_ids"],
+                    chunk_size,
+                    states=memory_states,
+                    detach_between=True,
+                )
+                for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+                    chunk_iter, lbl_chunks, msk_chunks
+                ):
+                    # Truncated BPTT: helper already detached new_states.
+                    memory_states = new_states
 
                     logits_flat = logits.reshape(-1, config.vocab_size)
                     labels_flat = lbl_c.reshape(-1)
@@ -1031,15 +1051,8 @@ def train(config: SFTConfig) -> None:
                     chunk_loss = chunk_loss_num / chunk_tokens.clamp(min=1.0)
                     loss_accum_for_backward = loss_accum_for_backward + chunk_loss
 
-                    # Truncated BPTT: detach state between chunks.
-                    if memory_states is not None:
-                        memory_states = [
-                            s.detach() if s is not None else None
-                            for s in memory_states
-                        ]
-
                 loss = total_loss_num / total_tokens.clamp(min=1.0)
-                backward_loss = loss_accum_for_backward / max(len(id_chunks), 1)
+                backward_loss = loss_accum_for_backward / max(num_chunks, 1)
 
                 accelerator.backward(backward_loss)
 

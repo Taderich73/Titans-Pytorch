@@ -71,6 +71,13 @@ from titans.lora import (
     wrap_lora_layers,
 )
 
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "dpo").
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -445,7 +452,6 @@ def compute_log_probs(
     base_model = model.module if hasattr(model, "module") else model
     chunk_size = base_model.config.chunk_size
 
-    id_chunks = input_ids.split(chunk_size, dim=1)
     lbl_chunks = labels.split(chunk_size, dim=1)
     msk_chunks = loss_mask.split(chunk_size, dim=1)
 
@@ -453,8 +459,15 @@ def compute_log_probs(
     sum_logps = torch.zeros(batch_size, device=input_ids.device)
     lengths = torch.zeros(batch_size, device=input_ids.device)
 
-    for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
-        logits, states, _ = model(ids_c, states=states)
+    # detach_between=False: DPO backward needs gradients to flow through
+    # the full fused (prompt, response) sequence.
+    chunk_iter = chunked_forward(
+        model, input_ids, chunk_size, states=states, detach_between=False
+    )
+    for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+        chunk_iter, lbl_chunks, msk_chunks
+    ):
+        states = new_states
         logits = logits.float()  # fp32 for numerical stability
         log_probs = F.log_softmax(logits, dim=-1)
         lbl_clamped = lbl_c.clamp(min=0, max=vocab_size - 1)

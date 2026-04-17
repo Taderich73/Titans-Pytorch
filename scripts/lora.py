@@ -49,6 +49,13 @@ from tqdm import tqdm
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
+
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "lora").
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -924,9 +931,9 @@ def train(config: LoRATrainingConfig) -> None:
 
             with accelerator.accumulate(model):
                 chunk_size = config.chunk_size
-                id_chunks = batch["input_ids"].split(chunk_size, dim=1)
                 lbl_chunks = batch["labels"].split(chunk_size, dim=1)
                 msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
+                num_chunks = len(lbl_chunks)
 
                 total_loss_num = torch.tensor(
                     0.0, device=batch["input_ids"].device
@@ -938,10 +945,19 @@ def train(config: LoRATrainingConfig) -> None:
                     0.0, device=batch["input_ids"].device
                 )
 
-                for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
-                    logits, memory_states, _ = model(
-                        ids_c, states=memory_states
-                    )
+                chunk_iter = chunked_forward(
+                    model,
+                    batch["input_ids"],
+                    chunk_size,
+                    states=memory_states,
+                    detach_between=True,
+                )
+                for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+                    chunk_iter, lbl_chunks, msk_chunks
+                ):
+                    # Truncated BPTT: helper already detached new_states.
+                    memory_states = new_states
+
                     logits_flat = logits.reshape(-1, vocab_size)
                     labels_flat = lbl_c.reshape(-1)
                     mask_flat = msk_c.reshape(-1).float()
@@ -958,14 +974,8 @@ def train(config: LoRATrainingConfig) -> None:
                         backward_accum + chunk_num / chunk_tok.clamp(min=1.0)
                     )
 
-                    if memory_states is not None:
-                        memory_states = [
-                            s.detach() if s is not None else None
-                            for s in memory_states
-                        ]
-
                 loss = total_loss_num / total_tokens.clamp(min=1.0)
-                backward_loss = backward_accum / max(len(id_chunks), 1)
+                backward_loss = backward_accum / max(num_chunks, 1)
                 accelerator.backward(backward_loss)
 
                 if accelerator.sync_gradients:
