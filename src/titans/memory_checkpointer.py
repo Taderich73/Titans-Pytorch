@@ -6,7 +6,7 @@
 Provides the high-level orchestrator that ties together:
 - :class:`StatisticalNoveltyDetector` for anomaly detection,
 - A FIFO ring buffer of :class:`CheckpointEntry` snapshots,
-- A four-state machine (MONITORING → TRIGGERED → CAPTURING_AFTER → COOLDOWN),
+- A three-state machine (MONITORING → CAPTURING_AFTER → COOLDOWN),
 - Disk I/O for transition records and optional gzip-compressed signal logs.
 """
 
@@ -48,14 +48,12 @@ class CheckpointerState(enum.Enum):
 
     Attributes:
         MONITORING: Normal operation; ring buffer fills; detector is armed.
-        TRIGGERED: Spike detected; immediately transitions to CAPTURING_AFTER.
         CAPTURING_AFTER: Collecting post-transition snapshots.
         COOLDOWN: Transition written; ignoring further triggers for a fixed
             number of chunks.
     """
 
     MONITORING = "monitoring"
-    TRIGGERED = "triggered"
     CAPTURING_AFTER = "capturing_after"
     COOLDOWN = "cooldown"
 
@@ -341,8 +339,6 @@ class MemoryCheckpointer:
             decision: The trigger decision from the detector.
             chunk_index: Current chunk index.
         """
-        self.state = CheckpointerState.TRIGGERED
-
         # Select calmest "before" entry from ring buffer
         self._before_entry = self._select_calmest_entry()
 

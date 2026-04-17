@@ -455,3 +455,15 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
     assert meta["trigger"]["signal_source"] == "weight_delta", (
         f"signal_source was truncated: {meta['trigger']['signal_source']!r}"
     )
+
+
+def test_checkpointer_state_enum_has_no_triggered():
+    """TRIGGERED was set then immediately overwritten in the same method, so
+    it was never observable externally. Remove it from the enum."""
+    from titans.memory_checkpointer import CheckpointerState
+    names = {s.name for s in CheckpointerState}
+    assert "TRIGGERED" not in names, (
+        "Dead CheckpointerState.TRIGGERED still present"
+    )
+    # Expected surviving states:
+    assert {"MONITORING", "CAPTURING_AFTER", "COOLDOWN"} <= names
