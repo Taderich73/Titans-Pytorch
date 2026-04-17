@@ -4,10 +4,26 @@
 """
 Neural Long-term Memory Module for Titans (PyTorch Implementation).
 
+Paper alignment: Titans (Behrouz et al., 2024) + Titans Revisited (2025)
+    — Faithful for core update equations; chunk-level gates are a deliberate
+    simplification endorsed by Titans Revisited. Deep-memory inner K-step loop
+    restored in Plan 5.
+
 Key equations from the paper:
     Memory update: M_t = (1 - alpha_t) * M_{t-1} + S_t
     Surprise: S_t = eta_t * S_{t-1} - theta_t * grad(loss(M_{t-1}; x_t))
     Loss: loss(M; x) = ||M(k) - v||^2
+
+Deliberate deviations from the paper:
+    - Gates (alpha, eta, theta) are computed per chunk rather than per token.
+      See docs/configuration_guide.md "Paper Origin Tags" and per_chunk_decay.
+    - Persistent-memory initialization is Gaussian(std=init_std); papers silent.
+    - Cross-batch memory sharing at train time is a local choice; papers silent.
+
+Novel extensions (not in any reference paper):
+    - delta_memory_param (base W + delta-W decomposition for inner-loop stability)
+    - memory_grad_clip / memory_error_clip
+    - memory_objective="huber" (see docs/yaad_huber_bias.md)
 """
 
 from __future__ import annotations
