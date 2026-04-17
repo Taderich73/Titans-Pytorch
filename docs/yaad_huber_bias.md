@@ -2,6 +2,12 @@
 
 > **Paper**: Behrouz, A., Razaviyayn, M., Zhong, P., & Mirrokni, V. (2025). *It's All Connected: A Journey Through Test-Time Memorization, Attentional Bias, Retention, and Online Optimization*. [arXiv:2504.13173](https://arxiv.org/abs/2504.13173)
 
+> **Paper alignment:** Behrouz et al., 2025 (Miras / Yaad)
+>
+> **Implementation status:** Novel extension on top of the paper's concept.
+>
+> **Details:** The Miras paper introduces Huber attentional bias as a variant of the memory objective. The specific form here — a per-chunk parallel Huber loss with configurable `huber_delta`, integrated into the inner-loop update alongside the project's memory gradient / error clipping and delta-memory parameterization — is the project's own formulation. Activated via `memory_objective="huber"`. Treat the exact numerical behavior as project-local rather than paper-faithful.
+
 ## Overview
 
 Yaad is a variant from the **Miras** framework that replaces the standard L2 attentional bias with a **Huber loss** for memory updates. This makes the surprise-driven memory update robust to outlier tokens.
