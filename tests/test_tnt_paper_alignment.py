@@ -287,3 +287,197 @@ class TestPerTokenResetCadence:
         assert segments == [(0, 1, False), (1, 4, True), (4, 7, True)], (
             f"unexpected segments: {segments}"
         )
+
+
+class TestPredictionErrorExport:
+    """Task 7: NLTM.forward exposes inner-loop prediction-error norm."""
+
+    def test_forward_returns_prediction_error_when_requested(self, device):
+        from titans.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=1,
+            num_persistent_tokens=0,
+            chunk_size=8,
+            window_size=8,
+            max_seq_len=64,
+            vocab_size=64,
+        )
+        nltm = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, config.dim, device=device)
+        out, state, gate, pred_err = nltm(x, return_signal_frame=True)
+        assert pred_err is not None
+        assert pred_err.dim() == 1  # per-layer scalar (one layer here)
+        assert pred_err.shape[0] == 1
+        assert pred_err.item() >= 0.0
+        assert out.shape == (2, 8, config.dim)
+
+    def test_forward_default_does_not_return_prediction_error(self, device):
+        from titans.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=1,
+            num_persistent_tokens=0,
+            chunk_size=8,
+            window_size=8,
+            max_seq_len=64,
+            vocab_size=64,
+        )
+        nltm = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, config.dim, device=device)
+        # Existing 3-tuple contract must be preserved by default.
+        result = nltm(x)
+        assert len(result) == 3
+
+    def test_forward_return_pred_error_deep_memory(self, device):
+        from titans.memory import NeuralLongTermMemory
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_layers=2,
+            num_memory_layers=2,  # deep path
+            num_persistent_tokens=0,
+            chunk_size=8,
+            window_size=8,
+            max_seq_len=64,
+            vocab_size=64,
+        )
+        nltm = NeuralLongTermMemory(config).to(device)
+        x = torch.randn(2, 8, config.dim, device=device)
+        out, state, gate, pred_err = nltm(x, return_signal_frame=True)
+        assert pred_err is not None
+        assert pred_err.dim() == 1
+        assert pred_err.shape[0] == 1  # one scalar for deep inner-loop
+        assert pred_err.item() >= 0.0
+
+
+class TestPredictionErrorWiring:
+    """Task 8: MemoryCheckpointer plumbs prediction_errors into SignalFrame."""
+
+    def test_on_chunk_commit_accepts_prediction_errors(self, tmp_path, device):
+        from titans.checkpoint_types import (
+            GateSnapshot,
+            MemoryCheckpointConfig,
+        )
+        from titans.memory import MemoryState
+        from titans.memory_checkpointer import MemoryCheckpointer
+
+        cfg = MemoryCheckpointConfig(
+            checkpoint_dir=str(tmp_path),
+            window_size=4,
+            sigma_threshold=2.0,
+            min_observations=2,
+            ring_size=4,
+            after_capture_count=1,
+            cooldown_chunks=1,
+            signal_log_enabled=True,
+            signal_log_max_frames=100,
+            signal_log_format="jsonl",
+            keep_last_n_transitions=5,
+        )
+        cp = MemoryCheckpointer(cfg)
+
+        def make_state(val: float) -> MemoryState:
+            return MemoryState(
+                weights=[torch.full((4, 4), val, device=device)],
+                momentum=[torch.zeros(4, 4, device=device)],
+            )
+
+        def make_gates(chunk_index: int) -> GateSnapshot:
+            return GateSnapshot(
+                alpha=[torch.tensor(0.1)],
+                theta=[torch.tensor(0.1)],
+                eta=[torch.tensor(0.1)],
+                delta=None,
+                input_activation_norm=1.0,
+                chunk_index=chunk_index,
+            )
+
+        # Seed prev_state.
+        cp.on_chunk_commit([make_state(1.0)], [make_gates(0)], chunk_index=0)
+        # Commit with a known prediction error.
+        cp.on_chunk_commit(
+            [make_state(1.5)],
+            [make_gates(1)],
+            chunk_index=1,
+            prediction_errors=[[7.5]],
+        )
+        cp.flush()
+
+        import gzip
+        import json
+
+        log_files = sorted((tmp_path / "signal_log").glob("*.jsonl.gz"))
+        assert log_files, "no signal log written"
+        frames: list[dict] = []
+        for lf in log_files:
+            with gzip.open(lf, "rt") as fh:
+                frames.extend(json.loads(line) for line in fh if line.strip())
+        assert frames, "signal log is empty"
+        last = frames[-1]
+        assert last["prediction_error_norms"] == [7.5]
+
+    def test_on_chunk_commit_defaults_pred_errors_to_none(self, tmp_path, device):
+        """Legacy callers that omit prediction_errors still get zero-filled
+        primary signal (falls back to cascade)."""
+        from titans.checkpoint_types import (
+            GateSnapshot,
+            MemoryCheckpointConfig,
+        )
+        from titans.memory import MemoryState
+        from titans.memory_checkpointer import MemoryCheckpointer
+
+        cfg = MemoryCheckpointConfig(
+            checkpoint_dir=str(tmp_path),
+            window_size=4,
+            sigma_threshold=2.0,
+            min_observations=2,
+            ring_size=4,
+            after_capture_count=1,
+            cooldown_chunks=1,
+            signal_log_enabled=True,
+            signal_log_max_frames=100,
+            signal_log_format="jsonl",
+            keep_last_n_transitions=5,
+        )
+        cp = MemoryCheckpointer(cfg)
+
+        def make_state(val: float) -> MemoryState:
+            return MemoryState(
+                weights=[torch.full((4, 4), val, device=device)],
+                momentum=[torch.zeros(4, 4, device=device)],
+            )
+
+        def make_gates(ci: int) -> GateSnapshot:
+            return GateSnapshot(
+                alpha=[torch.tensor(0.1)],
+                theta=[torch.tensor(0.1)],
+                eta=[torch.tensor(0.1)],
+                delta=None,
+                input_activation_norm=1.0,
+                chunk_index=ci,
+            )
+
+        cp.on_chunk_commit([make_state(1.0)], [make_gates(0)], chunk_index=0)
+        cp.on_chunk_commit([make_state(1.2)], [make_gates(1)], chunk_index=1)
+        cp.flush()
+
+        import gzip
+        import json
+
+        log_files = sorted((tmp_path / "signal_log").glob("*.jsonl.gz"))
+        assert log_files
+        frames: list[dict] = []
+        for lf in log_files:
+            with gzip.open(lf, "rt") as fh:
+                frames.extend(json.loads(line) for line in fh if line.strip())
+        assert frames
+        # Zero-filled fallback when no prediction_errors provided.
+        assert frames[-1]["prediction_error_norms"] == [0.0]

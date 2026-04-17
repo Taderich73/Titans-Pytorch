@@ -205,6 +205,7 @@ class MemoryCheckpointer:
         committed_state: list[MemoryState | TNTMemoryState],
         gates: list[GateSnapshot | None],
         chunk_index: int,
+        prediction_errors: list[list[float]] | None = None,
     ) -> None:
         """Process one committed chunk.
 
@@ -212,6 +213,10 @@ class MemoryCheckpointer:
             committed_state: Per-block memory states (one per model block).
             gates: Per-block gate snapshots (may contain ``None`` entries).
             chunk_index: Global chunk index.
+            prediction_errors: Optional per-block per-layer prediction-error
+                norms from the NLTM inner-loop. When ``None``, the signal
+                builder falls back to zeros (legacy behaviour) and the
+                novelty detector cascades past the primary signal.
         """
         self._total_chunks += 1
 
@@ -222,7 +227,12 @@ class MemoryCheckpointer:
         # Build signal frame (requires a previous state)
         frame: SignalFrame | None = None
         if self._prev_states is not None and gate is not None:
-            frame = self._build_frame(self._prev_states[0], current, gate, chunk_index)
+            frame = self._build_frame(
+                self._prev_states[0], current, gate, chunk_index,
+                prediction_error_norms=(
+                    prediction_errors[0] if prediction_errors else None
+                ),
+            )
         elif self._prev_states is not None and gate is None:
             # Build a minimal frame without gate signals when gate is absent
             frame = None  # skip this chunk if gates unavailable
@@ -528,6 +538,7 @@ class MemoryCheckpointer:
         new_state: MemoryState | TNTMemoryState,
         gates: GateSnapshot,
         chunk_index: int,
+        prediction_error_norms: list[float] | None = None,
     ) -> SignalFrame:
         """Build a :class:`SignalFrame` from consecutive states.
 
@@ -536,6 +547,9 @@ class MemoryCheckpointer:
             new_state: Memory state from the current chunk.
             gates: Gate snapshot for the current chunk.
             chunk_index: Current chunk index.
+            prediction_error_norms: Optional per-layer prediction-error norms
+                from the NLTM inner-loop. When ``None``, the builder fills
+                zeros (legacy fallback).
 
         Returns:
             A fully-populated :class:`SignalFrame`.
@@ -545,4 +559,5 @@ class MemoryCheckpointer:
             new_state=new_state,
             gates=gates,
             chunk_index=chunk_index,
+            prediction_error_norms=prediction_error_norms,
         )
