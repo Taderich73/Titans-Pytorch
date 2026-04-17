@@ -56,12 +56,14 @@ from titans.memory_dump import save_memory_states
 try:
     from scripts._common import (  # type: ignore[import-not-found]
         chunked_forward,
+        make_dataloader,
         make_optimizer,
         maybe_compile,
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
         chunked_forward,
+        make_dataloader,
         make_optimizer,
         maybe_compile,
     )
@@ -798,11 +800,14 @@ def train(config: LoRATrainingConfig) -> None:
     # --- 5. Dataset and dataloader ---
     dataset = build_dataset(config)
     use_collate = isinstance(dataset, (JSONLChatDataset, HFChatStreamingDataset))
-    dataloader = DataLoader(
+    is_streaming = isinstance(dataset, IterableDataset)
+    dataloader = make_dataloader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=not isinstance(dataset, IterableDataset),
-        num_workers=0,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
+        shuffle=not is_streaming,
+        streaming=is_streaming,
         drop_last=True,
         collate_fn=sft_collate_fn if use_collate else None,
     )

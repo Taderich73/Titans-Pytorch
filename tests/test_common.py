@@ -17,7 +17,11 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts._common import make_optimizer, maybe_compile  # noqa: E402
+from scripts._common import (  # noqa: E402
+    make_dataloader,
+    make_optimizer,
+    maybe_compile,
+)
 
 
 def test_maybe_compile_noop_on_cpu() -> None:
@@ -67,3 +71,58 @@ def test_make_optimizer_cuda_uses_fused() -> None:
         _force_fused_flag=True,
     )
     assert opt.defaults.get("fused") is True
+
+
+def test_make_dataloader_multiworker_flags_cuda() -> None:
+    """Multi-worker DataLoader enables pin_memory and persistent_workers on CUDA."""
+    from torch.utils.data import TensorDataset
+
+    ds = TensorDataset(torch.arange(128))
+    dl = make_dataloader(
+        ds,
+        batch_size=8,
+        num_workers=4,
+        device_type="cuda",
+        shuffle=True,
+    )
+    assert dl.num_workers == 4
+    assert dl.pin_memory is True
+    assert dl.persistent_workers is True
+
+
+def test_make_dataloader_streaming_forces_zero_workers() -> None:
+    """Streaming datasets force num_workers=0 (unsafe with iterable)."""
+
+    class FakeStream:  # no __len__, no __getitem__
+        def __iter__(self):
+            yield torch.zeros(4)
+
+    ds = FakeStream()
+    dl = make_dataloader(
+        ds,
+        batch_size=1,
+        num_workers=4,
+        device_type="cuda",
+        shuffle=False,
+        streaming=True,
+    )
+    assert dl.num_workers == 0
+    assert dl.pin_memory is True  # pin_memory still OK without workers
+
+
+def test_make_dataloader_zero_workers_no_persistent() -> None:
+    """num_workers=0 must not set persistent_workers/prefetch_factor."""
+    from torch.utils.data import TensorDataset
+
+    ds = TensorDataset(torch.arange(32))
+    dl = make_dataloader(
+        ds,
+        batch_size=4,
+        num_workers=0,
+        device_type="cpu",
+        shuffle=False,
+    )
+    assert dl.num_workers == 0
+    assert dl.pin_memory is False
+    # persistent_workers default is False when num_workers=0.
+    assert dl.persistent_workers is False

@@ -50,9 +50,17 @@ from titans.memory_dump import save_memory_states
 
 # scripts/ is imported both as a namespace package and as a flat directory.
 try:
-    from scripts._common import make_optimizer, maybe_compile  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover
-    from _common import make_optimizer, maybe_compile  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -412,10 +420,12 @@ def train():
         logger.warning(f"Could not load dataset ({e}), falling back to synthetic")
         dataset = SyntheticDataset(VOCAB_SIZE, SEQ_LEN)
 
-    dataloader = DataLoader(
+    dataloader = make_dataloader(
         dataset,
         batch_size=BATCH_SIZE,
-        num_workers=0,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
+        streaming=isinstance(dataset, IterableDataset),
         drop_last=True,
     )
 

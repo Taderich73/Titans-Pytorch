@@ -77,12 +77,14 @@ from titans.lora import (
 try:
     from scripts._common import (  # type: ignore[import-not-found]
         chunked_forward,
+        make_dataloader,
         make_optimizer,
         maybe_compile,
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
         chunked_forward,
+        make_dataloader,
         make_optimizer,
         maybe_compile,
     )
@@ -1108,11 +1110,13 @@ def train(config: DPOConfig) -> None:
         )
 
     is_iterable = isinstance(train_dataset, IterableDataset)
-    train_dataloader = DataLoader(
+    train_dataloader = make_dataloader(
         train_dataset,
         batch_size=config.batch_size,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
         shuffle=not is_iterable,
-        num_workers=0,
+        streaming=is_iterable,
         drop_last=True,
         collate_fn=dpo_collate_fn if use_streaming else None,
     )
