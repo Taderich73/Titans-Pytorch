@@ -125,14 +125,6 @@ class MemoryMLP(nn.Module):
         for layer in self.layers:
             nn.init.normal_(layer.weight, std=std)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = x
-        for i, layer in enumerate(self.layers):
-            h = layer(h)
-            if i < len(self.layers) - 1:
-                h = self.activation(h)
-        return h
-
     def forward_with_weights(self, x: torch.Tensor, weights: list[torch.Tensor]) -> torch.Tensor:
         h = x
         for i, w in enumerate(weights):
