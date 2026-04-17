@@ -986,3 +986,101 @@ class TestMAGGating:
         block = MAGBlock(config, layer_idx=0)
         assert not hasattr(block, "gate_norm_attn")
         assert not hasattr(block, "gate_norm_mem")
+
+
+class TestMALParallelSum:
+    """MAL = attention and memory in parallel on the SAME normed input."""
+
+    def test_attention_uses_pre_memory_normed_input(self):
+        """Attention input must NOT include mem_out (paper Eq. 30)."""
+        from titans.config import TitansConfig
+        from titans.models import MALBlock
+
+        torch.manual_seed(0)
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MALBlock(config, layer_idx=0)
+        h = torch.randn(1, 8, 16)
+
+        captured_attn_input = []
+        orig_forward = block.attention.forward
+
+        def capture(x, prefix=None, seq_offset=0, adaptive_mask=None):
+            captured_attn_input.append(x.detach().clone())
+            return orig_forward(
+                x, prefix=prefix, seq_offset=seq_offset, adaptive_mask=adaptive_mask
+            )
+
+        block.attention.forward = capture  # type: ignore[assignment]
+        _ = block.core_forward(h)
+
+        # Attention input should equal norm1(h), NOT norm2(h + mem_out)
+        normed1 = block.norm1(h)
+        assert torch.allclose(captured_attn_input[0], normed1, atol=1e-5), (
+            "MAL attention must receive norm(h), not norm(h + mem_out)"
+        )
+
+    def test_core_out_is_parallel_sum(self):
+        """core_out = attn_out + mem_out with no internal residual double-count."""
+        from titans.config import TitansConfig
+        from titans.models import MALBlock
+
+        torch.manual_seed(1)
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MALBlock(config, layer_idx=0)
+        block.eval()  # disable dropout for deterministic comparison
+        h = torch.randn(1, 8, 16)
+        core_out, _, _ = block.core_forward(h)
+        # Recompute parallel decomposition manually
+        normed = block.norm1(h)
+        persistent = block.persistent(1)
+        if persistent is not None:
+            mem_input = torch.cat([persistent, normed], dim=1)
+        else:
+            mem_input = normed
+        mem_out_full, _, _ = block.memory(mem_input, state=None)
+        if persistent is not None:
+            mem_out = mem_out_full[:, persistent.shape[1] :, :]
+        else:
+            mem_out = mem_out_full
+        # Attention sees normed (pre-memory)
+        attn_out = block.attention(normed, prefix=persistent)
+        expected = attn_out + mem_out
+        assert torch.allclose(core_out, expected, atol=1e-5), (
+            f"core_out must equal attn_out + mem_out; max diff "
+            f"{(core_out - expected).abs().max()}"
+        )
+
+    def test_no_norm3_module(self):
+        """norm3 should be removed; norm1 (shared x̃) and norm2 (FFN) remain."""
+        from titans.config import TitansConfig
+        from titans.models import MALBlock
+
+        config = TitansConfig(
+            dim=16,
+            num_heads=4,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            chunk_size=8,
+            window_size=8,
+        )
+        block = MALBlock(config, layer_idx=0)
+        # Post-fix, norm1 (shared) and norm2 (FFN) exist; norm3 is gone.
+        assert hasattr(block, "norm1")
+        assert hasattr(block, "norm2")
+        assert not hasattr(block, "norm3"), (
+            "After parallel-sum rewrite, norm3 is no longer needed"
+        )

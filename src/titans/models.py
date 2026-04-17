@@ -518,13 +518,17 @@ class TitansMAG(nn.Module):
 
 
 class MALBlock(nn.Module):
-    """Memory as Layer Block (Titans Eq. 29-31).
+    """Memory as Layer Block (Titans Eq. 29-31 — parallel sum).
 
-    Architecture:
-    1. mem_out = M([persistent || norm1(h)]) — memory first
-    2. h_mid = h + mem_out — internal residual
-    3. attn_out = SW-Attn(norm2(h_mid), prefix=persistent) — attention second
-    4. core_out = mem_out + attn_out
+    Architecture per paper:
+      x̃ = norm1(h)                                  (Eq. 29)
+      y  = SW-Attn(x̃, prefix=persistent)            (Eq. 30)
+      z  = M([persistent || x̃])                    (Eq. 31)
+      core_out = y + z
+
+    Attention and memory are computed in parallel on the SAME normalized
+    input; there is no internal residual from mem_out into the attention
+    input (which would double-count the memory contribution).
     """
 
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
@@ -541,10 +545,11 @@ class MALBlock(nn.Module):
         self.attention = SlidingWindowAttention(config)
         self.ffn = FeedForward(config)
 
-        # norm1=memory, norm2=attention, norm3=FFN
+        # Paper Eq. 29: x̃ = norm1(h) — shared by memory AND attention.
+        # norm2 is the FFN input norm.  (Former norm2/norm3 split is gone
+        # because attention no longer sees a memory-enriched residual.)
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
-        self.norm3 = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
@@ -581,8 +586,21 @@ class MALBlock(nn.Module):
 
         persistent = self.persistent(batch_size)
 
-        # Eq. 29-30: Memory layer first
+        # Eq. 29: x̃ = norm1(h) — shared by both branches.
         normed = self.norm1(h)
+
+        # Eq. 30: y = SW-Attn(x̃, prefix=persistent).  Attention sees the
+        # raw normed input — NOT h + mem_out — so memory doesn't leak into
+        # the attention pathway twice.
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
+
+        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
+        if self.dropout is not None:
+            attn_out = self.dropout(attn_out)
+
+        # Eq. 31: z = M([persistent || x̃])
         if persistent is not None:
             mem_input = torch.cat([persistent, normed], dim=1)
         else:
@@ -597,24 +615,13 @@ class MALBlock(nn.Module):
         if self.dropout is not None:
             mem_out = self.dropout(mem_out)
 
-        # Internal residual: attention sees h + mem contribution
-        h_mid = h + mem_out
-
-        # Eq. 31: Attention on memory-enriched representation
-        normed_mid = self.norm2(h_mid)
-        adaptive_mask = None
-        if hasattr(self, "window_predictor"):
-            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed_mid)
-
-        attn_out = self.attention(normed_mid, prefix=persistent, adaptive_mask=adaptive_mask)
-        if self.dropout is not None:
-            attn_out = self.dropout(attn_out)
-
-        core_out = mem_out + attn_out
+        # Paper Eq. 31 closure: o = y + z (parallel sum).
+        core_out = attn_out + mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
-        normed = self.norm3(h)
+        # FFN uses norm2 now (norm3 was removed with the parallel-sum rewrite).
+        normed = self.norm2(h)
         ffn_out = self.ffn(normed)
         if self.dropout is not None:
             ffn_out = self.dropout(ffn_out)
