@@ -1131,7 +1131,12 @@ def train(config: SFTConfig) -> None:
                         },
                     )
                     logger.info(f"Saved checkpoint: step {global_step}")
-                    if memory_states is not None:
+                    should_save_memory = (
+                        not config.reset_memory_per_batch
+                        and memory_states is not None
+                        and any(s is not None for s in memory_states)
+                    )
+                    if should_save_memory:
                         mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
                         save_memory_states(memory_states, mem_path)
                         logger.info(f"Saved memory states: step {global_step}")
@@ -1163,7 +1168,12 @@ def train(config: SFTConfig) -> None:
             },
         )
         logger.info(f"SFT training complete. Final checkpoint: {paths[0]}")
-        if memory_states is not None:
+        should_save_memory = (
+            not config.reset_memory_per_batch
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        )
+        if should_save_memory:
             mem_path = checkpoint_dir / "memory_final.npz"
             save_memory_states(memory_states, mem_path)
 
