@@ -544,3 +544,47 @@ class TestStatisticalNoveltyDetector:
         assert "drop" in result.reason.lower(), (
             f"Expected drop direction in reason; got {result.reason!r}"
         )
+
+    def test_evaluate_aggregated_picks_drop_when_drop_is_larger(self) -> None:
+        """Aggregated evaluation also ranks by |z| and preserves direction.
+
+        Mirror of the per-layer test but with per_layer=False. The aggregated
+        path (_evaluate_aggregated) must apply the same abs(z) comparison
+        between signed spike z and magnitude drop z, and label the winning
+        direction in the reason.
+        """
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=False
+        )
+
+        # Prime two layers (aggregated = mean) with jittered histories so
+        # both the aggregated value window and aggregated roc window have
+        # nonzero variance.
+        jitter_pattern = [0.3, -0.2, 0.15, -0.25, 0.1, -0.15, 0.2, -0.3, 0.25, -0.1]
+        for i in range(30):
+            j = jitter_pattern[i % len(jitter_pattern)]
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[1.0 + j, 5.0 + j],
+                )
+            )
+
+        # Aggregated previous mean ~ (1.0 + 5.0) / 2 = 3.0.
+        # New values [1.6, 0.01] aggregate to ~0.805, a sharp cliff down
+        # relative to the jittered ~3.0 baseline -> strongly negative RoC z.
+        # The spike check on the aggregated scalar sees value 0.805 vs
+        # baseline 3.0 -> negative signed z, which _z_score_spike filters out
+        # (it only returns positive z above +sigma). So the winning signal is
+        # the drop, and the reason must mention "drop".
+        result = det.observe(
+            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
+        )
+
+        assert result.triggered is True
+        assert result.signal_source == "prediction_error"
+        assert "drop" in result.reason.lower(), (
+            f"Expected drop direction in reason; got {result.reason!r}"
+        )
