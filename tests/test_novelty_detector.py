@@ -669,3 +669,162 @@ class TestNoveltyCascadePriority:
         assert decision.signal_source == "weight_delta", (
             f"Expected weight_delta fallback, got {decision.signal_source}"
         )
+
+
+# ---------------------------------------------------------------------------
+# WelfordStats (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestWelfordStats:
+    """Online mean + variance that mirrors the bounded deque windows."""
+
+    def test_population_variance_matches_from_scratch(self) -> None:
+        """Welford must give identical mean/variance to a naive recompute."""
+        import math
+
+        from titans.novelty_detector import WelfordStats
+
+        data = [3.1, 2.7, 5.0, -1.4, 0.0, 8.2, 2.2, -3.3, 7.9, 1.0]
+        stats = WelfordStats()
+        for x in data:
+            stats.push(x)
+        mean = sum(data) / len(data)
+        var = sum((x - mean) ** 2 for x in data) / len(data)
+        assert stats.count == len(data)
+        assert math.isclose(stats.mean, mean, rel_tol=1e-12, abs_tol=1e-12)
+        assert math.isclose(
+            stats.population_variance, var, rel_tol=1e-10, abs_tol=1e-12
+        )
+
+    def test_push_with_evict_matches_ring_window(self) -> None:
+        """After evictions, stats must match the bounded-deque view."""
+        import math
+        from collections import deque
+
+        from titans.novelty_detector import WelfordStats
+
+        stats = WelfordStats()
+        buf: deque[float] = deque(maxlen=4)
+        for x in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, -2.0, 10.0]:
+            buf.append(x)
+            stats.push_with_evict(x, window_max=4)
+        ref_mean = sum(buf) / len(buf)
+        ref_var = sum((v - ref_mean) ** 2 for v in buf) / len(buf)
+        assert stats.count == len(buf)
+        assert math.isclose(stats.mean, ref_mean, rel_tol=1e-10, abs_tol=1e-12)
+        assert math.isclose(
+            stats.population_variance, ref_var, rel_tol=1e-10, abs_tol=1e-12
+        )
+
+    def test_empty_stats_are_zero(self) -> None:
+        """Newly-constructed stats report zero mean/variance with count 0."""
+        from titans.novelty_detector import WelfordStats
+
+        stats = WelfordStats()
+        assert stats.count == 0
+        assert stats.mean == 0.0
+        assert stats.population_variance == 0.0
+
+    def test_push_with_evict_below_capacity_no_evict(self) -> None:
+        """Push below window_max should never evict."""
+        import math
+
+        from titans.novelty_detector import WelfordStats
+
+        stats = WelfordStats()
+        for x in [1.0, 2.0, 3.0]:
+            stats.push_with_evict(x, window_max=4)
+        assert stats.count == 3
+        assert math.isclose(stats.mean, 2.0)
+
+    def test_evict_all_then_push_stays_accurate(self) -> None:
+        """After full eviction cycle, Welford state stays consistent."""
+        import math
+        from collections import deque
+
+        from titans.novelty_detector import WelfordStats
+
+        stats = WelfordStats()
+        buf: deque[float] = deque(maxlen=3)
+        sequence = [1.0, 2.0, 3.0, 100.0, 100.0, 100.0]
+        for x in sequence:
+            buf.append(x)
+            stats.push_with_evict(x, window_max=3)
+        ref_mean = sum(buf) / len(buf)
+        ref_var = sum((v - ref_mean) ** 2 for v in buf) / len(buf)
+        assert math.isclose(stats.mean, ref_mean, rel_tol=1e-10)
+        assert math.isclose(stats.population_variance, ref_var, rel_tol=1e-10)
+
+
+def test_novelty_detector_spike_still_fires_with_welford() -> None:
+    """The detector must still trigger on large spikes after Welford migration."""
+    from titans.novelty_detector import StatisticalNoveltyDetector
+
+    det = StatisticalNoveltyDetector(
+        window_size=8,
+        sigma_threshold=2.0,
+        min_observations=4,
+        per_layer=True,
+    )
+    # Stable warmup
+    for i in range(6):
+        det.observe(_make_frame(chunk_index=i, error_norms=[1.0]))
+    # Small wiggles + huge spike
+    seq = [1.1, 0.9, 1.05, 0.95, 10.0]
+    triggers = []
+    for i, v in enumerate(seq):
+        d = det.observe(_make_frame(chunk_index=6 + i, error_norms=[v]))
+        triggers.append(d.triggered)
+    assert triggers[-1], "Expected final large spike to trigger"
+
+
+def test_layer_windows_welford_matches_deque_reference() -> None:
+    """Welford stats on _LayerWindows must match from-scratch computation."""
+    import math
+
+    from titans.novelty_detector import StatisticalNoveltyDetector
+
+    det = StatisticalNoveltyDetector(
+        window_size=16,
+        sigma_threshold=2.0,
+        min_observations=4,
+        per_layer=True,
+    )
+    values = [1.0, 1.1, 1.0, 0.9, 1.05, 1.02, 0.98, 1.01, 5.0]
+    for i, v in enumerate(values):
+        det.observe(_make_frame(chunk_index=i, error_norms=[v]))
+
+    lw = det._windows["prediction_error"][0]
+    ref_values = list(lw.values)
+    ref_mean = sum(ref_values) / len(ref_values)
+    ref_var = sum((x - ref_mean) ** 2 for x in ref_values) / len(ref_values)
+    assert math.isclose(lw.value_stats.mean, ref_mean, rel_tol=1e-10)
+    assert math.isclose(
+        lw.value_stats.population_variance, ref_var, rel_tol=1e-10
+    )
+
+    roc_values = list(lw.roc_values)
+    if roc_values:
+        ref_roc_mean = sum(roc_values) / len(roc_values)
+        ref_roc_var = sum(
+            (x - ref_roc_mean) ** 2 for x in roc_values
+        ) / len(roc_values)
+        assert math.isclose(lw.roc_stats.mean, ref_roc_mean, rel_tol=1e-10)
+        assert math.isclose(
+            lw.roc_stats.population_variance, ref_roc_var, rel_tol=1e-10
+        )
+
+
+def test_layer_windows_welford_reset() -> None:
+    """Reset must clear Welford state alongside the deques."""
+    from titans.novelty_detector import _LayerWindows
+
+    lw = _LayerWindows(window_size=4)
+    for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        lw.push(v)
+    assert lw.value_stats.count == 4
+    lw.reset()
+    assert lw.value_stats.count == 0
+    assert lw.value_stats.mean == 0.0
+    assert lw.roc_stats.count == 0
