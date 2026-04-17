@@ -67,7 +67,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import IterableDataset
 from tqdm import tqdm
 
 from titans.checkpoint import load_checkpoint, save_checkpoint
@@ -112,7 +112,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.pat
 # ---------------------------------------------------------------------------
 
 try:
-    from accelerate import Accelerator
+    from accelerate import Accelerator  # noqa: F401
 
     HAS_ACCELERATE = True
 except ImportError:

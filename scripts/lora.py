@@ -57,7 +57,6 @@ try:
         build_titans_config,
         chunked_forward,
         create_model,
-        format_chatml,
         init_accelerator_and_logging,
         loss_mask_to_zero_one,
         make_dataloader,
@@ -72,7 +71,6 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.pat
         build_titans_config,
         chunked_forward,
         create_model,
-        format_chatml,
         init_accelerator_and_logging,
         loss_mask_to_zero_one,
         make_dataloader,
@@ -93,7 +91,7 @@ from titans.lora import (
 # ---------------------------------------------------------------------------
 
 try:
-    from accelerate import Accelerator
+    from accelerate import Accelerator  # noqa: F401
 
     HAS_ACCELERATE = True
 except ImportError:

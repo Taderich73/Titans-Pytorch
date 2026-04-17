@@ -49,7 +49,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
-from titans import TitansConfig
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
@@ -58,14 +57,10 @@ from titans.memory_dump import save_memory_states
 # Try the package-style import first; fall back to sibling-module import.
 try:
     from scripts._common import (  # type: ignore[import-not-found]
-        CHATML_IM_END as IM_END,
-        CHATML_IM_START as IM_START,
         base_argparse_parser,
-        build_loss_mask,
         build_titans_config,
         chunked_forward,
         create_model,
-        format_chatml,
         init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
@@ -75,14 +70,10 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
-        CHATML_IM_END as IM_END,
-        CHATML_IM_START as IM_START,
         base_argparse_parser,
-        build_loss_mask,
         build_titans_config,
         chunked_forward,
         create_model,
-        format_chatml,
         init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
@@ -96,7 +87,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.pat
 # ---------------------------------------------------------------------------
 
 try:
-    from accelerate import Accelerator
+    from accelerate import Accelerator  # noqa: F401
 
     HAS_ACCELERATE = True
 except ImportError:
