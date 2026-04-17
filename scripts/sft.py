@@ -965,16 +965,54 @@ def train(config: SFTConfig) -> None:
                 break
 
             with accelerator.accumulate(model):
-                logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
+                chunk_size = config.chunk_size
+                id_chunks = batch["input_ids"].split(chunk_size, dim=1)
+                lbl_chunks = batch["labels"].split(chunk_size, dim=1)
+                msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
-                logits_flat = logits.view(-1, config.vocab_size)
-                labels_flat = batch["labels"].view(-1)
-                mask_flat = batch["loss_mask"].view(-1).float()
+                # Aggregate numerator/denominator across chunks so the final
+                # reported loss equals the masked-token-weighted mean CE
+                # over the full sequence (matches a single-shot reference
+                # when seq_len <= chunk_size).
+                total_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
+                total_tokens = torch.tensor(0.0, device=batch["input_ids"].device)
+                loss_accum_for_backward = torch.tensor(
+                    0.0, device=batch["input_ids"].device
+                )
 
-                per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-                loss = (per_token * mask_flat).sum() / mask_flat.sum().clamp(min=1.0)
+                for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
+                    logits, memory_states, _ = model(ids_c, states=memory_states)
 
-                accelerator.backward(loss)
+                    logits_flat = logits.reshape(-1, config.vocab_size)
+                    labels_flat = lbl_c.reshape(-1)
+                    mask_flat = msk_c.reshape(-1).float()
+
+                    per_token = F.cross_entropy(
+                        logits_flat, labels_flat, reduction="none"
+                    )
+                    chunk_loss_num = (per_token * mask_flat).sum()
+                    chunk_tokens = mask_flat.sum()
+
+                    total_loss_num = total_loss_num + chunk_loss_num.detach()
+                    total_tokens = total_tokens + chunk_tokens.detach()
+
+                    # Per-chunk backward would be more memory-efficient but
+                    # changes accumulation semantics; keep full-graph backward
+                    # here to match pretrain.py's loss-averaging behavior.
+                    chunk_loss = chunk_loss_num / chunk_tokens.clamp(min=1.0)
+                    loss_accum_for_backward = loss_accum_for_backward + chunk_loss
+
+                    # Truncated BPTT: detach state between chunks.
+                    if memory_states is not None:
+                        memory_states = [
+                            s.detach() if s is not None else None
+                            for s in memory_states
+                        ]
+
+                loss = total_loss_num / total_tokens.clamp(min=1.0)
+                backward_loss = loss_accum_for_backward / max(len(id_chunks), 1)
+
+                accelerator.backward(backward_loss)
 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
@@ -993,7 +1031,7 @@ def train(config: SFTConfig) -> None:
                 ]
 
             loss_val = loss.item()
-            masked_tokens = mask_flat.sum().item()
+            masked_tokens = total_tokens.item()
             epoch_loss += loss_val * masked_tokens
             epoch_tokens += masked_tokens
 
