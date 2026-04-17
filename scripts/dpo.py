@@ -336,7 +336,7 @@ def dpo_loss(
     ref_chosen_logps: torch.Tensor,
     ref_rejected_logps: torch.Tensor,
     beta: float = 0.1,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Standard DPO loss (Rafailov et al., 2023).
 
     Loss = -logsigmoid(beta * ((pi_chosen - ref_chosen) - (pi_rejected - ref_rejected)))
@@ -353,13 +353,14 @@ def dpo_loss(
         beta: KL penalty coefficient.
 
     Returns:
-        Tuple of (loss scalar, rewards tensor of shape (batch,)).
+        Tuple of (loss, chosen_rewards, rejected_rewards) where each reward
+        is beta * log(pi / pi_ref) for its respective response. Reward
+        tensors have shape (batch,) and are detached from autograd.
     """
     chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
     rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
-    rewards = chosen_rewards - rejected_rewards
-    loss = -F.logsigmoid(rewards).mean()
-    return loss, rewards.detach()
+    loss = -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
+    return loss, chosen_rewards.detach(), rejected_rewards.detach()
 
 
 def simpo_loss(
@@ -369,7 +370,7 @@ def simpo_loss(
     rejected_lengths: torch.Tensor,
     beta: float = 2.0,
     gamma: float = 0.5,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """SimPO loss — reference-free, length-normalized (Meng et al., 2024).
 
     Loss = -logsigmoid(beta * (chosen_logps/chosen_len - rejected_logps/rejected_len) - gamma)
@@ -387,13 +388,18 @@ def simpo_loss(
         gamma: Target reward margin.
 
     Returns:
-        Tuple of (loss scalar, length-normalized reward differences of shape (batch,)).
+        Tuple of (loss, chosen_rewards, rejected_rewards) where the rewards
+        are length-normalized per-response terms. The ``gamma`` target margin
+        is folded into ``rejected_rewards`` so their difference matches the
+        SimPO objective. Reward tensors have shape (batch,) and are detached
+        from autograd.
     """
     chosen_norm = policy_chosen_logps / chosen_lengths.float().clamp(min=1)
     rejected_norm = policy_rejected_logps / rejected_lengths.float().clamp(min=1)
-    rewards = beta * (chosen_norm - rejected_norm) - gamma
-    loss = -F.logsigmoid(rewards).mean()
-    return loss, rewards.detach()
+    chosen_rewards = beta * chosen_norm
+    rejected_rewards = beta * rejected_norm + gamma
+    loss = -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
+    return loss, chosen_rewards.detach(), rejected_rewards.detach()
 
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1241,7 @@ def train(config: DPOConfig) -> None:
                 # Reference forward passes (DPO only)
                 # ----------------------------------------------------------
                 if is_simpo:
-                    loss, rewards = simpo_loss(
+                    loss, chosen_rewards, rejected_rewards = simpo_loss(
                         policy_chosen_logps,
                         policy_rejected_logps,
                         chosen_lengths,
@@ -1284,7 +1290,7 @@ def train(config: DPOConfig) -> None:
                                 config.vocab_size,
                             )
 
-                    loss, rewards = dpo_loss(
+                    loss, chosen_rewards, rejected_rewards = dpo_loss(
                         policy_chosen_logps,
                         policy_rejected_logps,
                         ref_chosen_logps,
@@ -1309,16 +1315,13 @@ def train(config: DPOConfig) -> None:
             # Metrics
             # ------------------------------------------------------------------
             loss_val = loss.item()
-            # rewards: shape (B,) — mean chosen vs mean rejected reward
-            if is_simpo:
-                # SimPO rewards are length-normalized differences
-                batch_chosen_reward = rewards.mean().item()
-                batch_rejected_reward = 0.0  # not separately tracked for SimPO
-            else:
-                # DPO rewards: (chosen - ref_chosen) - (rejected - ref_rejected)
-                # We log the mean reward difference
-                batch_chosen_reward = rewards.clamp(min=0).mean().item()
-                batch_rejected_reward = rewards.clamp(max=0).abs().mean().item()
+            # chosen_rewards / rejected_rewards: shape (B,) — per-response
+            # beta * log(pi / pi_ref) (DPO) or length-normalized reward with
+            # gamma margin folded into the rejected term (SimPO). Logging the
+            # per-response means lets us track chosen and rejected signals
+            # independently instead of collapsing them into a sign-split diff.
+            batch_chosen_reward = chosen_rewards.mean().item()
+            batch_rejected_reward = rejected_rewards.mean().item()
 
             epoch_loss += loss_val
             epoch_chosen_rewards += batch_chosen_reward
