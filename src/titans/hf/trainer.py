@@ -68,9 +68,9 @@ class TitansChunkMixin:
 
         chunks = input_ids.split(chunk_size, dim=1)
         label_chunks = labels.split(chunk_size, dim=1)
-        num_chunks = len(chunks)
 
-        total_loss = torch.tensor(0.0, device=input_ids.device)
+        total_loss_num = torch.tensor(0.0, device=input_ids.device)
+        total_loss_tokens = torch.tensor(0.0, device=input_ids.device)
         states = self._memory_states
         last_outputs = None
 
@@ -80,13 +80,21 @@ class TitansChunkMixin:
                 labels=chunk_labels,
                 memory_states=states,
             )
-            total_loss = total_loss + outputs.loss / num_chunks
+            # Token-weighted accumulation: HF causal-LM losses are
+            # mean-over-valid-tokens (ignoring -100). Multiplying by the
+            # valid-token count restores the correct per-chunk mass so a
+            # ragged last chunk is not overweighted by 1/num_chunks.
+            n_tok = (chunk_labels != -100).float().sum()
+            total_loss_num = total_loss_num + outputs.loss * n_tok
+            total_loss_tokens = total_loss_tokens + n_tok
             states = outputs.past_key_values
             last_outputs = outputs
 
             # Truncated BPTT: detach at chunk boundary
             if states is not None:
                 states = [s.detach() if s is not None else None for s in states]
+
+        total_loss = total_loss_num / total_loss_tokens.clamp(min=1.0)
 
         # Memory state lifecycle
         self._memory_states = states
