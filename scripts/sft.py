@@ -707,7 +707,10 @@ def evaluate(
             total_tokens += batch_tokens
 
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
     model.train()
     if total_tokens == 0:
@@ -1023,7 +1026,10 @@ def train(config: SFTConfig) -> None:
 
             # Detach memory states to prevent BPTT across batch boundaries
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
             loss_val = loss.item()
             masked_tokens = mask_flat.sum().item()

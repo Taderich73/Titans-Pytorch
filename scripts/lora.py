@@ -943,7 +943,10 @@ def train(config: LoRATrainingConfig) -> None:
                 optimizer.zero_grad()
 
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
             loss_val = loss.item()
             epoch_loss += loss_val
