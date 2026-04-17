@@ -18,21 +18,22 @@ def _detach_guarded(memory_states):
 
 
 def test_detach_guarded_passes_through_none():
-    fake = torch.ones(2, 3, requires_grad=True)
+    real = torch.ones(2, 3, requires_grad=True)
 
     class FakeState:
         def detach(self):
             return "detached"
 
-    mixed = [FakeState(), None, FakeState()]
+    mixed = [real, None, FakeState()]
     out = _detach_guarded(mixed)
-    assert out[0] == "detached"
+    assert torch.equal(out[0], real) and not out[0].requires_grad
     assert out[1] is None
     assert out[2] == "detached"
 
 
 def test_sft_and_lora_use_guarded_pattern():
-    """Static check: the target lines must contain the guard `if s is not None`."""
+    """Static check: the target lines must contain the guard `if s is not None`
+    AND must NOT contain the unguarded form."""
     import re
     from pathlib import Path
 
@@ -41,10 +42,16 @@ def test_sft_and_lora_use_guarded_pattern():
         root / "scripts" / "sft.py",
         root / "scripts" / "lora.py",
     ]
-    pat = re.compile(r"\[s\.detach\(\) for s in memory_states\]")
+    unguarded_pat = re.compile(r"\[s\.detach\(\) for s in memory_states\]")
+    guarded_pat = re.compile(
+        r"s\.detach\(\)\s+if\s+s\s+is\s+not\s+None\s+else\s+None"
+    )
     for p in targets:
         txt = p.read_text()
-        assert not pat.search(txt), (
+        assert not unguarded_pat.search(txt), (
             f"{p} contains an unguarded detach comprehension — add "
             f"'if s is not None'"
+        )
+        assert guarded_pat.search(txt), (
+            f"{p} is missing the guarded detach pattern — regression?"
         )
