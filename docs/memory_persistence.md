@@ -1,5 +1,11 @@
 # Memory State Persistence
 
+> **Paper alignment:** Titans (Behrouz et al., 2024)
+>
+> **Implementation status:** Deviation (deliberate) — the paper is silent on initialization and on between-session persistence; both are local engineering choices.
+>
+> **Details:** Persistent memory weights are Gaussian-initialized with `std * init_std` at model construction. The papers do not specify a distribution or scale for this initialization, so the choice is project-local and deliberately conservative. Session-to-session persistence via `save_memory_states` / `load_memory_states` is also project-local — Titans the paper evaluates in-session only.
+
 The Titans architecture's memory module updates its weights during inference (test-time learning). By default these learned states exist only in RAM. Memory persistence lets you save and reload them across sessions.
 
 ## API
@@ -14,7 +20,7 @@ from titans.memory_dump import save_memory_states
 save_memory_states(states, "my_memory.npz")
 ```
 
-### `load_memory_states(path, device=None, *, reset_for_inference=True)`
+### `load_memory_states(path, device=None, *, reset_for_inference=False)`
 Deserialize memory states from a `.npz` file. Validates structure and raises `ValueError` on shape/key mismatches. Logs a warning for any loaded tensor whose Frobenius norm is near-zero (indicating decay collapse).
 
 ```python
@@ -24,7 +30,7 @@ states = load_memory_states("my_memory.npz")
 logits, states = model(input_ids, states=states)
 ```
 
-When `reset_for_inference=True` (the default), TNT local step counters and Q-K projections are zeroed to prevent local memories from being silently wiped on the first forward pass.
+When `reset_for_inference=True`, TNT local step counters and Q-K projections are zeroed to prevent local memories from being silently wiped on the first forward pass. The default is `False` so training-resume paths preserve live TNT state; inference callers should pass `reset_for_inference=True` explicitly.
 
 ## CLI Usage
 
