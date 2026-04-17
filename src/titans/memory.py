@@ -359,6 +359,7 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | torch.Tensor = 1.0,
         memory_gate: torch.Tensor | None = None,
         return_keys: bool = False,
+        return_q: bool = False,
         retrieve_after_update: bool = True,
     ) -> tuple:
         """Forward with optional retrieval source.
@@ -585,10 +586,18 @@ class NeuralLongTermMemory(nn.Module):
                     weight_bits=self.config.memory_state_weight_bits,
                     momentum_bits=self.config.memory_state_momentum_bits,
                 )
+            if return_keys and return_q:
+                return output, returned_state, gate_snapshot, k, q
+            if return_q:
+                return output, returned_state, gate_snapshot, q
             if return_keys:
                 return output, returned_state, gate_snapshot, k
             return output, returned_state, gate_snapshot
 
+        if return_keys and return_q:
+            return output, None, gate_snapshot, k, q
+        if return_q:
+            return output, None, gate_snapshot, q
         if return_keys:
             return output, None, gate_snapshot, k
         return output, None, gate_snapshot

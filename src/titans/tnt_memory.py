@@ -107,11 +107,30 @@ class LocalMemory(nn.Module):
         return state, step_counter
 
     def forward(
-        self, x: torch.Tensor, state: MemoryState | None = None,
-        lr_scale: float | torch.Tensor = 1.0, return_keys: bool = False,
-    ) -> tuple[torch.Tensor, MemoryState] | tuple[torch.Tensor, MemoryState, torch.Tensor]:
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None = None,
+        lr_scale: float | torch.Tensor = 1.0,
+        return_keys: bool = False,
+        return_q: bool = False,
+    ) -> tuple:
+        """Forward a chunk through local memory.
+
+        When both ``return_keys`` and ``return_q`` are True, returns
+        ``(output, new_state, keys, q)`` so :class:`HierarchicalMemory` can
+        run the efficient per-position QK projection. ``q`` is the
+        L2-normalised, post-conv, post-SiLU query tensor that
+        :class:`NeuralLongTermMemory` already computes internally; exposing
+        it avoids a second projection pass through ``proj_q``.
+        """
         if state is None:
             state = self.init_state(x.shape[0])
+        if return_keys and return_q:
+            output, new_state, _gate, k, q = self.memory(
+                x, state=state, lr_scale=lr_scale,
+                return_keys=True, return_q=True,
+            )
+            return output, new_state, k, q
         if return_keys:
             output, new_state, _gate_snapshot, keys = self.memory(
                 x, state=state, lr_scale=lr_scale, return_keys=True
@@ -194,6 +213,8 @@ class HierarchicalMemory(nn.Module):
         new_step_counters = []
         local_outs = []
 
+        use_per_position = self.config.tnt_qk_projection == "per_position"
+
         for i, local_mem in enumerate(self.local_memories):
             local_state, counter = local_mem.maybe_reset(
                 state.local_states[i],
@@ -206,23 +227,45 @@ class HierarchicalMemory(nn.Module):
             else:
                 qk_carry = state.qk_projections[i]
 
-            needs_keys = local_mem.qk_proj is not None
-            if needs_keys:
+            has_qk = local_mem.qk_proj is not None
+
+            if has_qk and use_per_position:
+                # Paper Eq. 7: per-position projection inside the chunk.
+                # Pull (k, q) out of NLTM; project queries causally; then
+                # re-retrieve local memory with the projected queries.
+                local_out_unprojected, new_local_state, normed_keys, normed_q = local_mem(
+                    x, state=local_state, lr_scale=local_lr_scale,
+                    return_keys=True, return_q=True,
+                )
+                del local_out_unprojected  # discarded: we re-retrieve below
+                projected_q, new_carry = local_mem.qk_proj(
+                    normed_q, normed_keys, qk_carry,
+                )
+                # Retrieve with projected queries using the UPDATED memory
+                # weights (matches paper Eq. 15: M_t^(i) · q_t applied to W^(i)_t).
+                effective = local_mem.memory._get_effective_weights(
+                    new_local_state.weights, detach_base=False,
+                )
+                retrieved = local_mem.memory.memory.forward_with_weights(
+                    projected_q, effective,
+                )
+                local_out = local_mem.memory.proj_out(retrieved)
+                new_qk_projections.append(new_carry)
+            elif has_qk:
+                # Legacy chunk-mean path: single carry applied uniformly.
                 local_out, new_local_state, normed_keys = local_mem(
                     x, state=local_state, lr_scale=local_lr_scale, return_keys=True,
                 )
+                new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
+                new_qk_projections.append(new_carry)
             else:
                 local_out, new_local_state = local_mem(
                     x, state=local_state, lr_scale=local_lr_scale,
                 )
+                new_qk_projections.append(qk_carry)
+
             local_outs.append(local_out)
             new_local_states.append(new_local_state)
-
-            if needs_keys:
-                new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
-                new_qk_projections.append(new_carry)
-            else:
-                new_qk_projections.append(qk_carry)
 
             new_step_counters.append(counter + seq_len)
 
@@ -244,7 +287,18 @@ class HierarchicalMemory(nn.Module):
         return output, new_state, None
 
     def retrieve(self, queries: torch.Tensor, state: TNTMemoryState) -> torch.Tensor:
-        """Hierarchical retrieval per Eq. 15."""
+        """Hierarchical retrieval per Eq. 15.
+
+        For ``tnt_qk_projection == "per_position"``, the forward-time
+        retrieval is already paper-exact; this ad-hoc ``retrieve`` is a
+        best-effort projection using the committed per-chunk carry as a
+        single operator (useful for out-of-trajectory lookups such as
+        inference-time memory probing).
+
+        For ``tnt_qk_projection == "chunk_mean"``, the same operator is
+        applied — this is the legacy behaviour that the config flag
+        preserves for checkpoints trained under the old semantics.
+        """
         global_out = self.global_memory.retrieve(queries, state.global_state)
 
         output = global_out
