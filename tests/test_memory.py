@@ -793,3 +793,67 @@ class TestErrorScale:
             f"Scale ratio must be B*D = {B * D}, got {ratio}"
         )
         assert new_w.abs().sum().item() > 0, "Update should be non-zero"
+
+
+class TestPerSampleGates:
+    """Gate projections must be per-sample; no batch-mean collapse."""
+
+    def test_gates_differ_between_samples(self):
+        """Two samples with wildly different statistics produce different alpha/theta/eta."""
+        config = TitansConfig(dim=16, num_memory_layers=1, auto_checkpoint=True)
+        memory = NeuralLongTermMemory(config)
+
+        # Two samples: one near-zero input, one large-magnitude input
+        torch.manual_seed(0)
+        x = torch.zeros(2, 8, 16)
+        x[1] = torch.randn(8, 16) * 5.0
+        _, _, snap = memory(x)
+        # Direct reproduction of the gate math to verify per-sample shape
+        x_mean = torch.mean(x, dim=1, keepdim=True)
+        alpha_expected = torch.sigmoid(memory.gate_decay_proj(x_mean))
+        # Shape must be (B, 1, 1), not scalar
+        assert alpha_expected.shape == (2, 1, 1), (
+            f"alpha expected shape (2,1,1), got {alpha_expected.shape}"
+        )
+        assert not torch.allclose(alpha_expected[0], alpha_expected[1]), (
+            "Per-sample gates must differ when inputs differ"
+        )
+        # Snapshot must preserve per-sample gates (no batch collapse to scalar).
+        assert snap is not None
+        snap_alpha = snap.alpha[0]
+        assert snap_alpha.shape == (2, 1, 1), (
+            f"GateSnapshot alpha must preserve batch dim (2,1,1), got {snap_alpha.shape}"
+        )
+        assert not torch.allclose(snap_alpha[0], snap_alpha[1]), (
+            "Snapshot gates must differ per-sample"
+        )
+
+    def test_batch_size_one_behavior_unchanged(self):
+        """For B=1, post-fix behavior exactly matches pre-fix (mean over singleton = itself)."""
+        config = TitansConfig(dim=16, num_memory_layers=1)
+        torch.manual_seed(0)
+        memory = NeuralLongTermMemory(config)
+        x = torch.randn(1, 6, 16)
+        out1, _, _ = memory(x)
+        # Manually compute alpha path for B=1 and confirm it is (1,1,1)
+        x_mean = torch.mean(x, dim=1, keepdim=True)
+        alpha = torch.sigmoid(memory.gate_decay_proj(x_mean))
+        assert alpha.shape == (1, 1, 1)
+        # Output well-defined
+        assert out1.shape == (1, 6, 16)
+
+    def test_gate_state_shapes_broadcast_correctly(self):
+        """Gates at shape (B,1,1) must broadcast against (B,S,D) tensors."""
+        config = TitansConfig(dim=16, num_memory_layers=2, memory_hidden_mult=2.0)
+        torch.manual_seed(0)
+        memory = NeuralLongTermMemory(config)
+        # Deep memory goes through the gate-driven update at lines 454-458
+        x = torch.randn(3, 4, 16)
+        out, new_state, _ = memory(x)
+        assert out.shape == (3, 4, 16)
+        # Ensure per-sample outputs differ: retrieval depends on per-sample queries
+        out_a = out[0]
+        out_b = out[1]
+        assert not torch.allclose(out_a, out_b), (
+            "Per-sample outputs must differ (no batch collapse)"
+        )

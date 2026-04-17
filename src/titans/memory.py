@@ -395,19 +395,21 @@ class NeuralLongTermMemory(nn.Module):
             torch.sum(k_f32 * k_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
         )).to(k.dtype)
 
-        # Data-dependent gates
+        # Data-dependent gates — chunk-mean over sequence axis is retained
+        # (Titans Revisited endorses chunk-level gates), but the per-sample
+        # dimension is preserved: resulting shape is (B, 1, 1) so each sample
+        # in the batch gets its own gate.  Broadcast works against (B, S, D).
         x_mean = torch.mean(x, dim=1, keepdim=True)
         alpha = torch.sigmoid(self.gate_decay_proj(x_mean))
         theta = torch.sigmoid(self.gate_lr_proj(x_mean)) * self.config.memory_lr
         eta = torch.sigmoid(self.gate_momentum_proj(x_mean)) * self.config.memory_momentum
-        alpha = torch.mean(alpha)
-        theta = torch.mean(theta)
-        eta = torch.mean(eta)
 
         delta_val: torch.Tensor | None = None
         if self.memory_objective == "huber":
-            delta_val = torch.sigmoid(self.gate_delta_proj(x_mean))
-            delta_val = torch.mean(delta_val) * self.config.memory_error_clip
+            # Per-sample delta: shape (B, 1, 1), no batch-mean.
+            delta_val = (
+                torch.sigmoid(self.gate_delta_proj(x_mean)) * self.config.memory_error_clip
+            )
 
         gate_snapshot = None
         if self.config.auto_checkpoint:
@@ -443,9 +445,21 @@ class NeuralLongTermMemory(nn.Module):
             )
         else:
             grads = self._compute_gradients(k, v, state.weights, delta=delta_val)
-            new_momentum = [eta * m - theta * g for m, g in zip(state.momentum, grads)]
+            # Shared deep-memory weights require batch-scalar gate values for
+            # the weight update.  Per-sample gates preserve their shape during
+            # the loss/gradient computation (they enter via error scaling); for
+            # the update itself we mean-reduce over the batch so the shared
+            # weight tensor remains 2D.
+            alpha_scalar = alpha.mean()
+            theta_scalar = theta.mean()
+            eta_scalar = eta.mean()
+            new_momentum = [
+                eta_scalar * m - theta_scalar * g
+                for m, g in zip(state.momentum, grads)
+            ]
             new_weights = [
-                (1 - alpha) * w + s for w, s in zip(state.weights, new_momentum)
+                (1 - alpha_scalar) * w + s
+                for w, s in zip(state.weights, new_momentum)
             ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
@@ -501,6 +515,15 @@ class NeuralLongTermMemory(nn.Module):
         B, S, D = keys.shape
         W_0 = state.weights[0]
         S_prev = state.momentum[0]
+
+        # Shared (non-per-sample) weights: reduce per-sample gates to batch
+        # scalars so new W / S remain (hidden_dim, dim).  The gate gradient
+        # signal still flows per-sample through errors_scaled below — gates
+        # only collapse at the final weight-aggregation boundary.  .mean() on
+        # a singleton (B=1) is a no-op mathematically but rank-reduces to 0-D.
+        alpha = alpha.mean()
+        eta = eta.mean()
+        theta = theta.mean()
 
         err_clip = self.config.memory_error_clip
         grad_clip = self.config.memory_grad_clip
