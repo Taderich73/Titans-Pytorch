@@ -96,11 +96,18 @@ class QuantizedTensor:
     shape: torch.Size
     bits: int
 
-    def dequantize(self) -> torch.Tensor:
-        """Reconstruct the approximate float32 tensor.
+    def dequantize(self, dtype: torch.dtype | None = None) -> torch.Tensor:
+        """Reconstruct the approximate floating-point tensor.
+
+        Args:
+            dtype: Optional target dtype. Default is ``torch.float32`` (backwards-
+                compatible). Pass ``torch.bfloat16`` or ``torch.float16`` to avoid
+                upcasting inside autocast regions (where the caller is already
+                operating in a reduced-precision dtype).
 
         Returns:
-            Float32 tensor with the same shape as the original.
+            Floating-point tensor with the same shape as the original. The dtype
+            is ``torch.float32`` by default, or ``dtype`` if provided.
         """
         numel = 1
         for s in self.shape:
@@ -111,7 +118,10 @@ class QuantizedTensor:
         else:
             int_vals = self.data.float()
 
-        return (int_vals * self.scale + self.zero_point).reshape(self.shape)
+        out = (int_vals * self.scale + self.zero_point).reshape(self.shape)
+        if dtype is not None and dtype != out.dtype:
+            out = out.to(dtype)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -194,15 +204,24 @@ class QuantizedMemoryState:
     weights: list[QuantizedTensor]
     momentum: list[QuantizedTensor | torch.Tensor]
 
-    def dequantize(self) -> MemoryState:
+    def dequantize(self, dtype: torch.dtype | None = None) -> MemoryState:
         """Reconstruct the full-precision ``MemoryState``.
 
+        Args:
+            dtype: Optional target dtype for the dequantized weight and momentum
+                tensors. Default is ``torch.float32`` (backwards-compatible).
+                Pass the caller's compute dtype (e.g. ``torch.bfloat16``) to
+                avoid a silent upcast inside autocast regions.
+
         Returns:
-            A ``MemoryState`` with float32 weights and momentum tensors.
+            A ``MemoryState`` with weight and momentum tensors at the requested
+            dtype (fp32 by default).
         """
-        dq_weights = [w.dequantize() for w in self.weights]
+        dq_weights = [w.dequantize(dtype=dtype) for w in self.weights]
         dq_momentum = [
-            m.dequantize() if isinstance(m, QuantizedTensor) else m.float()
+            m.dequantize(dtype=dtype)
+            if isinstance(m, QuantizedTensor)
+            else (m.to(dtype) if dtype is not None else m.float())
             for m in self.momentum
         ]
         return MemoryState(weights=dq_weights, momentum=dq_momentum)

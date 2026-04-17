@@ -363,7 +363,9 @@ class NeuralLongTermMemory(nn.Module):
             from titans.quantize_state import QuantizedMemoryState
 
             if isinstance(state, QuantizedMemoryState):
-                state = state.dequantize()
+                # Pass the caller's compute dtype so the dequantized tensors
+                # don't silently upcast inside bf16/fp16 autocast regions.
+                state = state.dequantize(dtype=x.dtype)
 
         k = self.proj_k(x)
         v = self.proj_v(x)
