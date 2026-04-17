@@ -86,7 +86,7 @@ class TitansChunkMixin:
 
             # Truncated BPTT: detach at chunk boundary
             if states is not None:
-                states = [s.detach() for s in states]
+                states = [s.detach() if s is not None else None for s in states]
 
         # Memory state lifecycle
         self._memory_states = states

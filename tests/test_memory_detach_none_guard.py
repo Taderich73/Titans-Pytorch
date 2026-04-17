@@ -1,8 +1,8 @@
 """Verify the memory-detach list comprehension pattern handles None entries.
 
-Training scripts iterate `[s.detach() for s in memory_states]` at chunk
-boundaries; if any layer returns None (configurable), the unguarded version
-crashes with AttributeError.
+Training and inference scripts iterate `[s.detach() for s in memory_states]`
+at chunk boundaries; if any layer returns None (configurable), the unguarded
+version crashes with AttributeError.
 """
 from __future__ import annotations
 
@@ -31,9 +31,10 @@ def test_detach_guarded_passes_through_none():
     assert out[2] == "detached"
 
 
-def test_sft_and_lora_use_guarded_pattern():
-    """Static check: the target lines must contain the guard `if s is not None`
-    AND must NOT contain the unguarded form."""
+def test_all_training_scripts_use_guarded_pattern():
+    """Static check: every training/inference script that threads memory
+    state must use the guarded detach form and must NOT contain the
+    unguarded form for `memory_states` or `states` iterators."""
     import re
     from pathlib import Path
 
@@ -41,10 +42,18 @@ def test_sft_and_lora_use_guarded_pattern():
     targets = [
         root / "scripts" / "sft.py",
         root / "scripts" / "lora.py",
+        root / "scripts" / "inference.py",
+        root / "src" / "titans" / "hf" / "modeling.py",
+        root / "src" / "titans" / "hf" / "trainer.py",
     ]
-    unguarded_pat = re.compile(r"\[s\.detach\(\) for s in memory_states\]")
+    # Match unguarded comprehensions that iterate over memory_states or states.
+    # Narrow to those iterator names to avoid false positives from unrelated
+    # detach comprehensions (e.g., dataclass .detach() methods in memory.py).
+    unguarded_pat = re.compile(
+        r"\[[a-zA-Z_]+\.detach\(\) for [a-zA-Z_]+ in (?:memory_states|states)\]"
+    )
     guarded_pat = re.compile(
-        r"s\.detach\(\)\s+if\s+s\s+is\s+not\s+None\s+else\s+None"
+        r"\.detach\(\)\s+if\s+[a-zA-Z_]+\s+is\s+not\s+None\s+else\s+None"
     )
     for p in targets:
         txt = p.read_text()

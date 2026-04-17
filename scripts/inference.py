@@ -102,12 +102,16 @@ def generate(
     # Prefill: process full prompt, updating memory per-chunk (handled by model)
     logits, states, gate_snapshots = model(generated, states=states)
     if states is not None:
-        states = [s.detach() for s in states]
+        states = [s.detach() if s is not None else None for s in states]
 
     # committed_states: memory after the last full chunk was processed
     # We restore from this each step so partial-buffer re-processing
     # doesn't compound memory updates
-    committed_states = [s.detach() for s in states] if states else None
+    committed_states = (
+        [s.detach() if s is not None else None for s in states]
+        if states
+        else None
+    )
     buffer_start = generated.shape[1]  # where the decode buffer begins
     chunk_idx = 0
 
@@ -130,8 +134,13 @@ def generate(
             # Full chunk ready — process and commit memory update
             chunk = buffer[:, :chunk_size]
             logits, states, gate_snapshots = model(chunk, states=committed_states)
-            states = [s.detach() for s in states]
-            committed_states = [s.detach() for s in states]
+            if states is not None:
+                states = [s.detach() if s is not None else None for s in states]
+            committed_states = (
+                [s.detach() if s is not None else None for s in states]
+                if states is not None
+                else None
+            )
             buffer_start += chunk_size
 
             if checkpointer is not None:
@@ -145,12 +154,14 @@ def generate(
             if buffer_len > chunk_size:
                 remainder = buffer[:, chunk_size:]
                 logits, states, gate_snapshots = model(remainder, states=committed_states)
-                states = [s.detach() for s in states]
+                if states is not None:
+                    states = [s.detach() if s is not None else None for s in states]
         else:
             # Partial buffer — re-feed from committed state so memory
             # only sees these tokens once when the chunk completes
             logits, states, gate_snapshots = model(buffer, states=committed_states)
-            states = [s.detach() for s in states]
+            if states is not None:
+                states = [s.detach() if s is not None else None for s in states]
 
     if checkpointer is not None:
         checkpointer.flush()
