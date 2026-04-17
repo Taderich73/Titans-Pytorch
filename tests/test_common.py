@@ -670,3 +670,24 @@ class TestPretrainMigrationSmoke:
             timeout=30,
         )
         assert r.returncode == 0
+
+
+class TestInferenceMigrationSmoke:
+    """Smoke: inference.py still imports and exposes shared helpers."""
+
+    def test_imports(self) -> None:
+        from scripts import inference
+
+        assert callable(inference.main) or callable(
+            getattr(inference, "load_model", None)
+        )
+
+    def test_help_exits_zero(self) -> None:
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "scripts/inference.py", "--help"],
+            capture_output=True,
+            timeout=30,
+        )
+        assert r.returncode == 0
