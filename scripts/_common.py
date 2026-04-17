@@ -11,10 +11,13 @@ build_titans_config, and create_model helpers.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 
 import torch
 import torch.nn as nn
+
+_log = logging.getLogger(__name__)
 
 
 def chunked_forward(
@@ -59,3 +62,48 @@ def chunked_forward(
                 s.detach() if s is not None else None for s in states
             ]
         yield logits, chunk_ids, states
+
+
+def maybe_compile(
+    model: nn.Module,
+    *,
+    enabled: bool,
+    device_type: str,
+    use_attn_res: bool,
+) -> nn.Module:
+    """Conditionally wrap ``model`` with ``torch.compile``.
+
+    Guardrails:
+    - Disabled unless ``enabled and device_type == "cuda"``.
+    - Auto-disable + warn when ``use_attn_res`` is True (``process_chunk``
+      contains Python control flow that Dynamo graph-breaks; see the
+      source-level note in ``src/titans/models.py:process_chunk``).
+
+    Args:
+        model: The module to (optionally) compile. Usually the post-
+            ``accelerator.prepare`` model on its target device.
+        enabled: Opt-in flag (e.g. parsed from ``COMPILE=1``). Callers
+            should default to ``False``.
+        device_type: ``accelerator.device.type`` (``"cuda"``, ``"cpu"``,
+            ``"mps"``, ...). Only ``"cuda"`` gets compiled.
+        use_attn_res: ``config.use_attn_res``. When True we skip compile
+            and log a warning instead of producing a noisy broken graph.
+
+    Returns:
+        Either the wrapped ``torch.compile`` model or the original model
+        unchanged.
+    """
+    if not enabled:
+        return model
+    if device_type != "cuda":
+        _log.info("torch.compile requested but device=%s; skipping.", device_type)
+        return model
+    if use_attn_res:
+        _log.warning(
+            "torch.compile skipped: use_attn_res=True is compile-hostile "
+            "(process_chunk has Python control flow that graph-breaks "
+            "Dynamo). Refactor tracked separately."
+        )
+        return model
+    _log.info("Wrapping model with torch.compile(mode='default').")
+    return torch.compile(model, mode="default")

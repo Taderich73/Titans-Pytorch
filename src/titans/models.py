@@ -86,7 +86,24 @@ def process_chunk(
     config: TitansConfig,
     _step_count: int = 0,
 ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
-    """Process a single chunk through all blocks."""
+    """Process a single chunk through all blocks.
+
+    torch.compile incompatibility (``use_attn_res=True`` path only): the
+    AttnRes branch below contains Python control flow that Dynamo
+    graph-breaks, including:
+      * ``sub_idx % S == 0`` dynamic modulo checks that determine when a
+        ``partial_block`` flushes into ``completed_blocks``.
+      * List mutation (``completed_blocks.append``) interleaved with
+        tensor ops, forcing Dynamo to bail out of tensor-graph tracing.
+      * Per-step conditional branching on ``partial_block is None`` and
+        ``block.has_mca``.
+
+    ``scripts/_common.maybe_compile`` auto-disables ``torch.compile`` when
+    ``config.use_attn_res`` is True so this path continues to run eagerly.
+    The standard residual path (``use_attn_res=False``) is
+    compile-compatible. A refactor to a pure-tensor AttnRes formulation is
+    tracked as a separate follow-up.
+    """
     new_states = []
     gate_snapshots = []
 

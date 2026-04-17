@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,9 +54,9 @@ from titans.memory_dump import save_memory_states
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "lora").
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import chunked_forward, maybe_compile  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import chunked_forward, maybe_compile  # type: ignore[no-redef]
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -850,6 +851,14 @@ def train(config: LoRATrainingConfig) -> None:
         model, optimizer, dataloader, scheduler = accelerator.prepare(
             model, optimizer, dataloader, scheduler
         )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
+    )
 
     if config.wandb and HAS_WANDB and accelerator.is_main_process:
         accelerator.init_trackers(

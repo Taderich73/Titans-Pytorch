@@ -48,6 +48,12 @@ from titans import TitansConfig, TitansMAC
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
+# scripts/ is imported both as a namespace package and as a flat directory.
+try:
+    from scripts._common import maybe_compile  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover
+    from _common import maybe_compile  # type: ignore[no-redef]
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -453,6 +459,14 @@ def train():
         model, optimizer, dataloader, scheduler
     )
     _log_mem("after accelerator.prepare")
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
+    )
 
     # Instrument each block with memory snapshots around core_forward and
     # around the memory module's forward call. No-op when PROFILE_MEMORY is

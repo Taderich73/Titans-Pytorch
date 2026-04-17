@@ -56,6 +56,7 @@ import importlib
 import importlib.util
 import logging
 import math
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -83,9 +84,9 @@ from titans.lora import (
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "rlvr").
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import chunked_forward, maybe_compile  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import chunked_forward, maybe_compile  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -1470,6 +1471,14 @@ def train(config: RLVRConfig) -> None:
     # ------------------------------------------------------------------
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, scheduler
+    )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
     )
 
     # ------------------------------------------------------------------
