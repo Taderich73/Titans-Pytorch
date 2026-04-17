@@ -2,6 +2,17 @@
 
 > **Paper**: Li, S., Bick, A., Lucchi, A., & Behrouz, A. (2025). *TNT: Improving Chunkwise Training for Test-Time Memorization*. [arXiv:2511.07343](https://arxiv.org/pdf/2511.07343)
 
+> **Paper alignment:** Li et al., 2025 (TNT)
+>
+> **Implementation status:** Faithful — three deviations were fixed in Plan 6.
+>
+> **Details:** Three gaps were closed to match the paper exactly:
+> 1. **Learnable `W_init`** (§4.1.1) — the initial local-memory state is now an `nn.Parameter` that receives gradients. Previously it was assigned via `.data`, which silently froze it.
+> 2. **Per-position causal Q-K projection** (App. C) — the projection is now a per-position prefix-sum scan (linear-attention style). Previously a chunk-mean was used, which leaks future information within a chunk and violates causality.
+> 3. **Reset cadence** (Eq. 6) — local memory now resets at every token index `t ≡ 0 (mod S_L)`. Previously it only reset at chunk boundaries, so resets near the middle of a chunk were missed.
+>
+> **Interaction with AttnRes:** When `use_tnt=True` and `use_attn_res=True`, the `AttnResMemoryGate` described in `docs/attention_residuals.md` modulates the TNT local memory's learning rate. That gate is a project-specific addition — see the AttnRes doc.
+
 ## Overview
 
 TNT extends Titans blocks with a hierarchical memory system that separates long-range context from fine-grained detail. Instead of a single `NeuralLongTermMemory`, each layer maintains:
