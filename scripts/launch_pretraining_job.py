@@ -25,6 +25,12 @@ from pathlib import Path
 
 from huggingface_hub import HfApi, get_token
 
+# Default commit pin for the titans package. Bump this when a new titans
+# feature lands or HF Jobs silently installs stale code via its content-
+# hashed uv cache. The --help text is derived from this constant at runtime
+# so the two can't drift.
+DEFAULT_TITANS_SHA = "98b038e"
+
 
 def _apply_override(script: str, const: str, value: object) -> str:
     """Replace a constant assignment in the script via regex.
@@ -166,17 +172,16 @@ def main():
     diag.add_argument(
         "--titans-sha",
         type=str,
-        default="98b038e",
+        default=DEFAULT_TITANS_SHA,
         help=(
-            "Pin the titans package to a specific git commit SHA, branch, or "
-            "tag. The launcher injects this into the script's `titans @ "
-            "git+https://...` dependency line so uv re-resolves and "
+            "Pin the titans package to a specific git commit SHA, branch, "
+            "or tag. The launcher injects this into the script's `titans "
+            "@ git+https://...` dependency line so uv re-resolves and "
             "reinstalls when the SHA changes (uv caches environments by "
-            "content hash, and an unpinned dependency line hashes the same "
-            "across runs even when origin/main has moved). Pass a short SHA "
-            "to force a fresh install of a specific commit, or 'main' to "
-            "track the branch tip. Default is the latest known good commit "
-            "(e309d70, tip of the chunk-activation-checkpointing fix)."
+            "content hash, and an unpinned dependency line hashes the "
+            "same across runs even when origin/main has moved). Pass a "
+            "short SHA to force a fresh install of a specific commit, or "
+            f"'main' to track the branch tip. Default: {DEFAULT_TITANS_SHA}."
         ),
     )
     diag.add_argument(
