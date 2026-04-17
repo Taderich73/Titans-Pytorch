@@ -1347,9 +1347,8 @@ def train(config: DPOConfig) -> None:
                         "train/avg_loss": avg_loss,
                         "train/lr": lr_val,
                         "train/chosen_reward": batch_chosen_reward,
+                        "train/rejected_reward": batch_rejected_reward,
                     }
-                    if not is_simpo:
-                        log_dict["train/rejected_reward"] = batch_rejected_reward
                     accelerator.log(log_dict, step=global_step)
 
             # ----------------------------------------------------------
