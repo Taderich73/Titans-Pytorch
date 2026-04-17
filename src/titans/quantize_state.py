@@ -1,10 +1,21 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Memory state quantization for Titans inference.
+"""Baseline asymmetric min-max integer quantization (int4/int8) for memory state.
 
-Provides QuantizedTensor and QuantizedMemoryState for reducing memory
-footprint of persistent state between chunks.
+This is NOT TurboQuant. See ``todos/papers/TurboQuant.pdf`` for the rotation +
+Max-Lloyd codebook + QJL residual scheme that would achieve the paper's
+distortion bounds. The scheme implemented here is a simple per-tensor asymmetric
+min-max quantizer: it has no random rotation matrix, no Max-Lloyd codebook, and
+no QJL residual sign. It is suitable for compressing persistent Titans memory
+state between chunks during long inference runs, but it should not be confused
+with a paper-quality weight quantizer with tight distortion guarantees.
+
+Provides ``QuantizedTensor`` and ``QuantizedMemoryState`` for reducing the
+memory footprint of persistent state between chunks.
+
+Only bit-widths 4 and 8 are supported. 1-, 2-, and 3-bit modes (as explored in
+the TurboQuant paper) are not implemented in this baseline.
 """
 
 from __future__ import annotations
@@ -104,7 +115,11 @@ class QuantizedTensor:
 
 
 # ---------------------------------------------------------------------------
-# quantize_tensor
+# quantize_tensor — baseline per-tensor asymmetric min-max
+#
+# Per-tensor scale + zero-point; no random rotation; no codebook. Good enough
+# for memory-state compression during long runs; NOT a substitute for
+# weight-quantization schemes with tight distortion bounds.
 # ---------------------------------------------------------------------------
 
 def quantize_tensor(x: torch.Tensor, bits: int) -> QuantizedTensor:
@@ -155,7 +170,10 @@ def quantize_tensor(x: torch.Tensor, bits: int) -> QuantizedTensor:
 
 
 # ---------------------------------------------------------------------------
-# QuantizedMemoryState
+# QuantizedMemoryState — baseline container for quantized memory tensors
+#
+# Mirrors MemoryState; each field holds a QuantizedTensor (or plain float
+# tensor for momentum when momentum_bits=None). No TurboQuant primitives.
 # ---------------------------------------------------------------------------
 
 @dataclass
