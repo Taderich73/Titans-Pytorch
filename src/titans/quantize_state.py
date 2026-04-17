@@ -313,3 +313,125 @@ def get_momentum(state: MemoryState | QuantizedMemoryState) -> list[torch.Tensor
             for m in state.momentum
         ]
     return [m.float() for m in state.momentum]
+
+
+# ---------------------------------------------------------------------------
+# Flatten / unflatten for safetensors round-trip
+# ---------------------------------------------------------------------------
+
+_QT_FIELDS: tuple[str, ...] = ("data", "scale", "zero_point", "shape", "bits")
+
+
+def _flatten_qt(qt: QuantizedTensor, prefix: str) -> dict[str, torch.Tensor]:
+    """Flatten a single :class:`QuantizedTensor` into a dict of plain tensors.
+
+    ``shape`` and ``bits`` are encoded as int64 tensors so the caller ends up
+    with a dict whose values are all ``torch.Tensor`` instances — a hard
+    requirement of the safetensors file format.
+    """
+    shape_t = torch.tensor(list(qt.shape), dtype=torch.int64)
+    bits_t = torch.tensor(qt.bits, dtype=torch.int64)
+    return {
+        f"{prefix}.data": qt.data,
+        f"{prefix}.scale": qt.scale,
+        f"{prefix}.zero_point": qt.zero_point,
+        f"{prefix}.shape": shape_t,
+        f"{prefix}.bits": bits_t,
+    }
+
+
+def _unflatten_qt(flat: dict[str, torch.Tensor], prefix: str) -> QuantizedTensor:
+    """Reconstruct a :class:`QuantizedTensor` from the flat dict produced by
+    :func:`_flatten_qt`."""
+    shape = torch.Size(flat[f"{prefix}.shape"].tolist())
+    bits = int(flat[f"{prefix}.bits"].item())
+    return QuantizedTensor(
+        data=flat[f"{prefix}.data"],
+        scale=flat[f"{prefix}.scale"],
+        zero_point=flat[f"{prefix}.zero_point"],
+        shape=shape,
+        bits=bits,
+    )
+
+
+def flatten_quantized_state(
+    state: QuantizedMemoryState,
+    *,
+    prefix: str = "mem",
+) -> dict[str, torch.Tensor]:
+    """Flatten a :class:`QuantizedMemoryState` into a dict of plain tensors.
+
+    Keys follow the pattern ``{prefix}.weights.{i}.{field}`` and
+    ``{prefix}.momentum.{i}.{field}``, where ``field`` is one of
+    ``data``, ``scale``, ``zero_point``, ``shape``, ``bits`` for a
+    quantized entry, or a single ``tensor`` key for an unquantized
+    float momentum entry. An extra ``{prefix}.meta.sizes`` int64 tensor
+    records ``[len(weights), len(momentum)]`` so the flat dict is
+    self-describing.
+
+    Args:
+        state: The quantized state to flatten.
+        prefix: Key prefix applied to every entry in the returned dict.
+
+    Returns:
+        Dict mapping string keys to :class:`torch.Tensor` values. All values
+        are plain ``torch.Tensor`` (never dataclasses, lists, or scalars).
+    """
+    out: dict[str, torch.Tensor] = {}
+    out[f"{prefix}.meta.sizes"] = torch.tensor(
+        [len(state.weights), len(state.momentum)], dtype=torch.int64
+    )
+
+    for i, w in enumerate(state.weights):
+        out.update(_flatten_qt(w, f"{prefix}.weights.{i}"))
+
+    for i, m in enumerate(state.momentum):
+        if isinstance(m, QuantizedTensor):
+            out.update(_flatten_qt(m, f"{prefix}.momentum.{i}"))
+        else:
+            # Plain float tensor (momentum_bits=None path).
+            out[f"{prefix}.momentum.{i}.tensor"] = m
+
+    return out
+
+
+def unflatten_quantized_state(
+    flat: dict[str, torch.Tensor],
+    *,
+    prefix: str = "mem",
+) -> QuantizedMemoryState:
+    """Inverse of :func:`flatten_quantized_state`.
+
+    Args:
+        flat: Dict produced by :func:`flatten_quantized_state`.
+        prefix: Key prefix used when the dict was built.
+
+    Returns:
+        Reconstructed :class:`QuantizedMemoryState`.
+
+    Raises:
+        KeyError: If the meta entry is missing (indicates the dict wasn't
+            produced by :func:`flatten_quantized_state` with the given prefix).
+    """
+    sizes = flat[f"{prefix}.meta.sizes"].tolist()
+    num_weights, num_momentum = int(sizes[0]), int(sizes[1])
+
+    weights: list[QuantizedTensor] = [
+        _unflatten_qt(flat, f"{prefix}.weights.{i}") for i in range(num_weights)
+    ]
+
+    momentum: list[QuantizedTensor | torch.Tensor] = []
+    for i in range(num_momentum):
+        qt_key = f"{prefix}.momentum.{i}.data"
+        tensor_key = f"{prefix}.momentum.{i}.tensor"
+        if qt_key in flat:
+            momentum.append(_unflatten_qt(flat, f"{prefix}.momentum.{i}"))
+        elif tensor_key in flat:
+            momentum.append(flat[tensor_key])
+        else:
+            raise KeyError(
+                f"unflatten_quantized_state: no entry for momentum index {i} "
+                f"under prefix {prefix!r}"
+            )
+
+    return QuantizedMemoryState(weights=weights, momentum=momentum)
