@@ -647,33 +647,50 @@ def evaluate(
     total_loss = 0.0
     total_tokens = 0
     memory_states = None
+    chunk_size = accelerator.unwrap_model(model).config.chunk_size
 
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             if i >= max_batches:
                 break
 
-            logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
-            logits_flat = logits.view(-1, vocab_size)
-            labels_flat = batch["labels"].view(-1)
-            mask_flat = batch["loss_mask"].view(-1).float()
+            id_chunks = batch["input_ids"].split(chunk_size, dim=1)
+            lbl_chunks = batch["labels"].split(chunk_size, dim=1)
+            msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
-            per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-            batch_loss = (per_token * mask_flat).sum()
-            batch_tokens = mask_flat.sum()
+            batch_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
+            batch_tokens_num = torch.tensor(
+                0.0, device=batch["input_ids"].device
+            )
+
+            for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
+                logits, memory_states, _ = model(ids_c, states=memory_states)
+                logits_flat = logits.reshape(-1, vocab_size)
+                labels_flat = lbl_c.reshape(-1)
+                mask_flat = msk_c.reshape(-1).float()
+
+                per_token = F.cross_entropy(
+                    logits_flat, labels_flat, reduction="none"
+                )
+                batch_loss_num = batch_loss_num + (per_token * mask_flat).sum()
+                batch_tokens_num = batch_tokens_num + mask_flat.sum()
+
+                if memory_states is not None:
+                    memory_states = [
+                        s.detach() if s is not None else None
+                        for s in memory_states
+                    ]
 
             # Gather across processes
-            batch_loss = accelerator.gather(batch_loss.unsqueeze(0)).sum().item()
-            batch_tokens = accelerator.gather(batch_tokens.unsqueeze(0)).sum().item()
+            batch_loss = (
+                accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
+            )
+            batch_tokens = (
+                accelerator.gather(batch_tokens_num.unsqueeze(0)).sum().item()
+            )
 
             total_loss += batch_loss
             total_tokens += batch_tokens
-
-            if memory_states is not None:
-                memory_states = [
-                    s.detach() if s is not None else None
-                    for s in memory_states
-                ]
 
     model.train()
     if total_tokens == 0:

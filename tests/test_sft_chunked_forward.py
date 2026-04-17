@@ -117,3 +117,55 @@ def test_sft_train_uses_chunked_step() -> None:
         "sft.py must chunk input_ids along the sequence dimension "
         "(see scripts/pretrain.py:578)"
     )
+
+
+def test_sft_evaluate_uses_chunked_loop() -> None:
+    """Verify sft.py evaluate() chunks the input."""
+    import pathlib
+
+    src = pathlib.Path("scripts/sft.py").read_text()
+
+    # Locate the evaluate function body and assert the chunk split appears
+    # after the `def evaluate(` line.
+    assert "def evaluate(" in src
+    eval_start = src.index("def evaluate(")
+    eval_end = src.index("def train(", eval_start)
+    eval_body = src[eval_start:eval_end]
+    assert ".split(chunk_size, dim=1)" in eval_body, (
+        "evaluate() must chunk input_ids"
+    )
+
+
+def test_sft_eval_numerical_equivalence_single_chunk() -> None:
+    """When seq_len == chunk_size, chunked eval loss must match single-shot."""
+    import torch.nn.functional as F
+
+    torch.manual_seed(0)
+    chunk_size = 16
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+    batch_size = 2
+    input_ids = torch.randint(0, 32, (batch_size, chunk_size))
+    labels = torch.randint(0, 32, (batch_size, chunk_size))
+    loss_mask = torch.ones(batch_size, chunk_size)
+
+    # Single-shot reference
+    with torch.no_grad():
+        logits, _, _ = model(input_ids, states=None)
+        per_token = F.cross_entropy(
+            logits.reshape(-1, 32), labels.reshape(-1), reduction="none"
+        )
+        ref_num = (per_token * loss_mask.reshape(-1)).sum()
+        ref_tok = loss_mask.sum()
+
+    # Chunked path via the same helper used in Task 1
+    with torch.no_grad():
+        loss_chunked, _ = _sft_chunked_step(
+            model, input_ids, labels, loss_mask, None, vocab_size=32
+        )
+
+    torch.testing.assert_close(
+        loss_chunked,
+        ref_num / ref_tok,
+        rtol=1e-5,
+        atol=1e-5,
+    )
