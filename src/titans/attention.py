@@ -220,12 +220,13 @@ class SlidingWindowAttention(nn.Module):
             # fully-masked positions after softmax.
             neg_inf = torch.finfo(x.dtype).min
             nonzero = adaptive_mask > 0
+            # Single where: log on nonzero entries, -inf on zeros. Clamp guards
+            # fp16 subnormals; nonzero entries dominate, zeros get exactly -inf.
             additive = torch.where(
                 nonzero,
                 torch.log(adaptive_mask.clamp(min=1e-8)),
-                torch.zeros_like(adaptive_mask),
+                torch.full_like(adaptive_mask, neg_inf),
             )
-            additive = additive.masked_fill(~nonzero, neg_inf)
 
             if prefix_len > 0:
                 prefix_attn = torch.zeros(
