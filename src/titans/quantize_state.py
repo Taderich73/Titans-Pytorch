@@ -155,7 +155,10 @@ def quantize_tensor(x: torch.Tensor, bits: int) -> QuantizedTensor:
     max_val = float(2**bits - 1)  # 15.0 for 4-bit, 255.0 for 8-bit
 
     val_range = x_max - x_min
-    # Avoid division by zero for constant tensors
+    # Constant tensor (x_max == x_min): fall back to scale=1/max_val so the
+    # round+clamp below produces zeros. Correctness for this branch comes
+    # from adding zero_point (= x_min) back in dequantize, not from the
+    # divide guard itself -- without the guard we'd get NaN from 0/0.
     if val_range.item() == 0.0:
         val_range = torch.tensor(1.0, dtype=torch.float32, device=x.device)
 
