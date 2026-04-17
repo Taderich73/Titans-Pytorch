@@ -195,3 +195,31 @@ def make_dataloader(
     if not streaming:
         kwargs["shuffle"] = shuffle
     return DataLoader(dataset, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# ChatML constants and formatting
+# ---------------------------------------------------------------------------
+
+CHATML_IM_START = "<|im_start|>"
+CHATML_IM_END = "<|im_end|>"
+
+
+def format_chatml(messages: list[dict[str, str]]) -> str:
+    """Format a list of message dicts into a ChatML string.
+
+    Args:
+        messages: List of dicts with ``role`` and ``content`` keys. Missing
+            ``role`` defaults to ``user``; missing ``content`` defaults to
+            the empty string.
+
+    Returns:
+        A single string with all turns formatted in ChatML markup,
+        including a trailing newline after each ``<|im_end|>``.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(f"{CHATML_IM_START}{role}\n{content}{CHATML_IM_END}\n")
+    return "".join(parts)

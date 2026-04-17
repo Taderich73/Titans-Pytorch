@@ -17,11 +17,49 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import pytest  # noqa: E402
+
 from scripts._common import (  # noqa: E402
+    CHATML_IM_END,
+    CHATML_IM_START,
+    format_chatml,
     make_dataloader,
     make_optimizer,
     maybe_compile,
 )
+
+
+class TestFormatChatML:
+    """Tests for ``format_chatml``."""
+
+    def test_single_user_turn(self) -> None:
+        out = format_chatml([{"role": "user", "content": "hi"}])
+        assert out == f"{CHATML_IM_START}user\nhi{CHATML_IM_END}\n"
+
+    def test_three_turn_dialog(self) -> None:
+        msgs = [
+            {"role": "system", "content": "be nice"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        out = format_chatml(msgs)
+        expected = (
+            f"{CHATML_IM_START}system\nbe nice{CHATML_IM_END}\n"
+            f"{CHATML_IM_START}user\nhi{CHATML_IM_END}\n"
+            f"{CHATML_IM_START}assistant\nhello{CHATML_IM_END}\n"
+        )
+        assert out == expected
+
+    def test_missing_role_defaults_to_user(self) -> None:
+        out = format_chatml([{"content": "hello"}])
+        assert f"{CHATML_IM_START}user\nhello{CHATML_IM_END}" in out
+
+    def test_empty_messages(self) -> None:
+        assert format_chatml([]) == ""
+
+    def test_constants_match_chatml_spec(self) -> None:
+        assert CHATML_IM_START == "<|im_start|>"
+        assert CHATML_IM_END == "<|im_end|>"
 
 
 def test_maybe_compile_noop_on_cpu() -> None:
