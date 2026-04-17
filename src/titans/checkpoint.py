@@ -60,14 +60,18 @@ def _save_pt(
 
 
 def _save_safetensors(
-    state_dict: dict[str, torch.Tensor],
+    state_dict: dict[str, Any],
     path: Path,
     metadata: dict[str, Any] | None,
 ) -> list[Path]:
     """Save a checkpoint in safetensors format with optional metadata sidecar.
 
+    Values may be :class:`torch.Tensor` instances, or
+    :class:`titans.quantize_state.QuantizedMemoryState` instances which are
+    flattened into per-field tensors using the supplied key as the prefix.
+
     Args:
-        state_dict: Model state dict to save.
+        state_dict: Mapping of keys to tensors or ``QuantizedMemoryState``.
         path: Stem path (without extension).
         metadata: Optional metadata dict saved as a ``.meta.pt`` sidecar.
 
@@ -82,13 +86,19 @@ def _save_safetensors(
             "Install with: pip install safetensors"
         ) from exc
 
+    from titans.quantize_state import QuantizedMemoryState, flatten_quantized_state
+
     sf_path = path.with_suffix(".safetensors")
-    # safetensors requires contiguous tensors; clone shared tensors to avoid
-    # duplicate-memory errors (e.g. tied embed/head weights)
-    seen: dict[int, str] = {}
-    prepared: dict[str, torch.Tensor] = {}
+
+    # Expand QuantizedMemoryState values first so the seen/contiguous pass
+    # below only has to deal with torch.Tensor instances.
+    expanded: dict[str, torch.Tensor] = {}
     for k, v in state_dict.items():
-        if not isinstance(v, torch.Tensor):
+        if isinstance(v, QuantizedMemoryState):
+            expanded.update(flatten_quantized_state(v, prefix=k))
+        elif isinstance(v, torch.Tensor):
+            expanded[k] = v
+        else:
             raise TypeError(
                 f"_save_safetensors: entry {k!r} is a "
                 f"{type(v).__name__}, not a torch.Tensor. "
@@ -97,6 +107,12 @@ def _save_safetensors(
                 "composite, call .dequantize() first or save in 'pt' "
                 "format."
             )
+
+    # safetensors requires contiguous tensors; clone shared tensors to avoid
+    # duplicate-memory errors (e.g. tied embed/head weights)
+    seen: dict[int, str] = {}
+    prepared: dict[str, torch.Tensor] = {}
+    for k, v in expanded.items():
         data_ptr = v.data_ptr()
         if data_ptr in seen:
             prepared[k] = v.clone().contiguous()
@@ -144,7 +160,7 @@ def _save_safetensors(
 
 
 def save_checkpoint(
-    state_dict: dict[str, torch.Tensor],
+    state_dict: dict[str, Any],
     path: str | Path,
     *,
     format: str = "pt",
@@ -153,7 +169,10 @@ def save_checkpoint(
     """Save a model checkpoint in the specified format.
 
     Args:
-        state_dict: Model state dict to save.
+        state_dict: Mapping of keys to ``torch.Tensor`` values. When
+            ``format='safetensors'``, values may additionally be
+            ``titans.quantize_state.QuantizedMemoryState`` instances, which
+            are flattened into per-field tensors using the key as prefix.
         path: Stem path **without** extension. The appropriate extension is
             appended based on *format*.
         format: ``"pt"`` for PyTorch native or ``"safetensors"``.

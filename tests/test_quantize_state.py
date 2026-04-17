@@ -142,3 +142,29 @@ def test_quantized_state_round_trips_via_safetensors(tmp_path) -> None:
         torch.testing.assert_close(a, b)
     for a, b in zip(dq_before.momentum, dq_after.momentum, strict=True):
         torch.testing.assert_close(a, b)
+
+
+def test_save_safetensors_accepts_quantized_memory_state_directly(tmp_path) -> None:
+    pytest.importorskip("safetensors")
+
+    from titans.checkpoint import load_checkpoint, save_checkpoint
+    from titans.quantize_state import unflatten_quantized_state
+
+    state = _make_memory_state_fixture()
+    q_state = quantize_memory_state(state, weight_bits=8, momentum_bits=4)
+
+    # Wrap the QuantizedMemoryState under a string key alongside a normal
+    # tensor to confirm mixed payloads work.
+    payload = {"mem": q_state, "step": torch.tensor([42], dtype=torch.int64)}
+
+    save_checkpoint(payload, tmp_path / "ckpt", format="safetensors")
+
+    loaded = load_checkpoint(tmp_path / "ckpt.safetensors")
+    restored = unflatten_quantized_state(loaded["model"], prefix="mem")
+
+    assert loaded["model"]["step"].tolist() == [42]
+
+    dq_before = q_state.dequantize()
+    dq_after = restored.dequantize()
+    for a, b in zip(dq_before.weights, dq_after.weights, strict=True):
+        torch.testing.assert_close(a, b)
