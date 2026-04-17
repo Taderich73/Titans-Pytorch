@@ -354,15 +354,17 @@ def generate_rollouts(
     eos_token_id: int | None = None,
     pad_token_id: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Generate multiple completions per prompt via temperature sampling.
+    """Generate rollouts with memory-aware prefill->buffer->commit decoding.
 
-    Runs ``num_samples`` independent forward passes (one per sample), each
-    generating up to ``max_new_tokens`` tokens. All outputs are padded to the
-    same length.
+    Mirrors the inference.py generation pattern: prefill the prompt once
+    per sample to produce an initial committed memory state, then
+    autoregressively decode, re-feeding the since-commit buffer each step
+    from the committed state so memory sees each completed chunk exactly
+    once.
 
     Args:
-        model: Language model (must accept ``(input_ids,)`` and return
-            ``(logits, states)``).
+        model: Titans model with ``config.chunk_size``. Must accept
+            ``(input_ids, states=...)`` and return ``(logits, states, _)``.
         input_ids: Prompt token IDs of shape (B, prompt_len). Must be on the
             correct device already.
         max_new_tokens: Maximum tokens to generate per sample.
@@ -380,6 +382,9 @@ def generate_rollouts(
           the generated completion (post-prompt) tokens only.
     """
     model.eval()
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
+
     batch_size, prompt_len = input_ids.shape
     device = input_ids.device
 
@@ -393,8 +398,44 @@ def generate_rollouts(
         # Track which sequences have hit EOS
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
+        # ---- Prefill: chunk the prompt through the model, accumulating
+        # memory at each chunk. ----
+        prompt_chunks = input_ids.split(chunk_size, dim=1)
+        states = None
+        logits = None
+        for ids_c in prompt_chunks:
+            logits, states, _ = model(ids_c, states=states)
+            if states is not None:
+                states = [
+                    s.detach() if s is not None else None for s in states
+                ]
+
+        committed_states = (
+            [s.detach() if s is not None else None for s in states]
+            if states is not None
+            else None
+        )
+        # buffer_start = index in `tokens` where the decode buffer begins.
+        # After prefill the last committed chunk ended at the largest
+        # multiple of chunk_size <= prompt_len.
+        prefilled_committed = (prompt_len // chunk_size) * chunk_size
+        buffer_start = prefilled_committed
+
+        # If prompt_len is not a multiple of chunk_size, there's a
+        # partial buffer of prompt tokens already. Re-run it from
+        # committed_states so the next-token logits are valid.
+        if buffer_start < prompt_len:
+            buf = tokens[:, buffer_start:]
+            logits, states, _ = model(buf, states=committed_states)
+            if states is not None:
+                states = [
+                    s.detach() if s is not None else None for s in states
+                ]
+        # else: `logits` from the final prompt_chunks iteration is valid
+        # and committed_states == states already.
+
+        # ---- Decode loop ----
         for _ in range(max_new_tokens):
-            logits, _, _ = model(tokens)
             next_logits = logits[:, -1, :].float() / max(temperature, 1e-8)
             # Multinomial sampling
             probs = F.softmax(next_logits, dim=-1)
@@ -406,6 +447,34 @@ def generate_rollouts(
             completion_logps = completion_logps + token_logp * (~finished).float()
 
             tokens = torch.cat([tokens, next_token], dim=-1)  # (B, T+1)
+
+            buffer = tokens[:, buffer_start:]
+            buffer_len = buffer.shape[1]
+
+            if buffer_len >= chunk_size:
+                # Full chunk ready — process and commit memory update
+                chunk = buffer[:, :chunk_size]
+                logits, states, _ = model(chunk, states=committed_states)
+                states = (
+                    [s.detach() if s is not None else None for s in states]
+                    if states is not None
+                    else None
+                )
+                committed_states = (
+                    [s.detach() if s is not None else None for s in states]
+                    if states is not None
+                    else None
+                )
+                buffer_start += chunk_size
+                if buffer_len > chunk_size:
+                    remainder = buffer[:, chunk_size:]
+                    logits, states, _ = model(
+                        remainder, states=committed_states
+                    )
+            else:
+                # Partial buffer — re-feed from committed state so memory
+                # only sees these tokens once when the chunk completes
+                logits, states, _ = model(buffer, states=committed_states)
 
             if eos_token_id is not None:
                 finished = finished | (next_token.squeeze(-1) == eos_token_id)

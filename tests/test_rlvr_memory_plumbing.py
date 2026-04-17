@@ -22,6 +22,7 @@ _spec.loader.exec_module(_rlvr_mod)
 
 compute_token_log_probs = _rlvr_mod.compute_token_log_probs
 compute_log_probs_for_generated = _rlvr_mod.compute_log_probs_for_generated
+generate_rollouts = _rlvr_mod.generate_rollouts
 
 
 def _tiny_mac(chunk_size: int = 8) -> TitansMAC:
@@ -121,3 +122,67 @@ def test_compute_log_probs_for_generated_passes_states_through() -> None:
 
     assert logps.shape == (batch_size, num_samples)
     assert torch.isfinite(logps).all()
+
+
+def test_generate_rollouts_uses_prefill_pattern() -> None:
+    """generate_rollouts must implement prefill->buffer->commit over chunks."""
+    import pathlib
+
+    src = pathlib.Path(_RLVR_PATH).read_text()
+    # After Task 9, generate_rollouts should have a committed_states concept
+    # matching inference.py:102-153.
+    gen_start = src.index("def generate_rollouts(")
+    gen_end = src.index("\ndef ", gen_start + 1)
+    body = src[gen_start:gen_end]
+
+    assert "committed_states" in body, (
+        "generate_rollouts must commit memory at chunk boundaries "
+        "(mirror inference.py:102-153)"
+    )
+    assert "buffer_start" in body, "Must track decode buffer start position"
+
+
+def test_generate_rollouts_produces_expected_shape() -> None:
+    torch.manual_seed(0)
+    chunk_size = 8
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+    batch_size = 1
+    prompt_len = chunk_size
+    max_new = 4
+    num_samples = 2
+    prompt = torch.randint(1, 32, (batch_size, prompt_len))
+
+    generated_ids, completion_lp = generate_rollouts(
+        model,
+        prompt,
+        max_new_tokens=max_new,
+        temperature=0.7,
+        num_samples=num_samples,
+        eos_token_id=None,
+        pad_token_id=0,
+    )
+
+    assert generated_ids.shape[0] == batch_size
+    assert generated_ids.shape[1] == num_samples
+    assert generated_ids.shape[2] >= prompt_len + max_new
+    assert completion_lp.shape == (batch_size, num_samples)
+
+
+def test_generate_rollouts_long_prompt_does_not_crash() -> None:
+    """Prompt longer than chunk_size must chunk during prefill."""
+    torch.manual_seed(0)
+    chunk_size = 8
+    model = _tiny_mac(chunk_size=chunk_size).eval()
+    batch_size = 1
+    prompt_len = chunk_size * 3 + 2  # spans 4 chunks
+    prompt = torch.randint(1, 32, (batch_size, prompt_len))
+
+    generated_ids, completion_lp = generate_rollouts(
+        model,
+        prompt,
+        max_new_tokens=4,
+        temperature=0.7,
+        num_samples=1,
+    )
+
+    assert torch.isfinite(completion_lp).all()
