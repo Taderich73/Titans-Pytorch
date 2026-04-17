@@ -649,3 +649,24 @@ class TestRLVRMigrationSmoke:
             timeout=30,
         )
         assert r.returncode == 0
+
+
+class TestPretrainMigrationSmoke:
+    """Smoke: pretrain.py still imports and exposes shared helpers."""
+
+    def test_imports(self) -> None:
+        from scripts import pretrain
+
+        assert callable(pretrain.create_model) or callable(
+            getattr(pretrain, "build_model", None)
+        )
+
+    def test_parse_args_help_exits_zero(self) -> None:
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "scripts/pretrain.py", "--help"],
+            capture_output=True,
+            timeout=30,
+        )
+        assert r.returncode == 0

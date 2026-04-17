@@ -40,23 +40,33 @@ sys.stderr.reconfigure(line_buffering=True)
 import numpy as np
 import torch
 import torch.nn.functional as F
-from accelerate import Accelerator
-from torch.utils.data import DataLoader, Dataset, IterableDataset
+from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
 
-from titans import TitansConfig, TitansMAC
+from titans import TitansConfig
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
 # scripts/ is imported both as a namespace package and as a flat directory.
+# ``build_titans_config`` is re-exported from the shared helper module so
+# external callers (and the migration smoke tests) can discover the
+# canonical config builder on pretrain.py. pretrain.py itself still
+# constructs its TitansConfig directly because it hard-codes the feature
+# groups rather than flowing them through a duck-typed cfg namespace.
 try:
     from scripts._common import (  # type: ignore[import-not-found]
+        build_titans_config,  # noqa: F401 — re-exported for API parity
+        create_model,
+        init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
         maybe_compile,
     )
 except ModuleNotFoundError:  # pragma: no cover
     from _common import (  # type: ignore[no-redef]
+        build_titans_config,  # noqa: F401 — re-exported for API parity
+        create_model,
+        init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
         maybe_compile,
@@ -364,15 +374,29 @@ class SyntheticDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
+def _build_accel_cfg():
+    """Return a lightweight object with the attributes
+    ``init_accelerator_and_logging`` needs.
+
+    pretrain.py is driven by module-level constants (no argparse), so we
+    synthesize the shim here rather than at parse time.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+        mixed_precision=MIXED_PRECISION,
+        wandb=False,
+    )
+
+
 def train():
     token = os.environ.get("HF_TOKEN")
     if not token and PUSH_CHECKPOINTS:
         logger.warning("HF_TOKEN not found — checkpoints will NOT be pushed to Hub")
 
-    accelerator = Accelerator(
-        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-        mixed_precision=MIXED_PRECISION,
-    )
+    bundle = init_accelerator_and_logging(_build_accel_cfg())
+    accelerator = bundle.accelerator
 
     if accelerator.is_main_process:
         logger.info(f"Device: {accelerator.device}")
@@ -401,7 +425,7 @@ def train():
         memory_objective="huber",
         adaptive_window=True,
     )
-    model = TitansMAC(config)
+    model = create_model("mac", config)
     num_params = sum(p.numel() for p in model.parameters())
     if accelerator.is_main_process:
         logger.info(f"Parameters: {num_params:,}")
@@ -821,7 +845,40 @@ def train():
         logger.info(f"Training complete — {global_step} steps")
 
 
+def _parse_args() -> None:
+    """Minimal argparse shim for pretrain.
+
+    pretrain.py is configured via module-level constants (DIM, LR, ...).
+    This shim only exists so ``scripts/pretrain.py --help`` prints the
+    shared Titans flag surface and exits 0, matching the migration
+    smoke-test contract used by the other training scripts.
+
+    Unknown args are ignored (nothing here drives runtime behaviour;
+    edit the module-level constants above to change a run).
+    """
+    try:
+        from scripts._common import base_argparse_parser  # type: ignore[import-not-found]
+    except ModuleNotFoundError:  # pragma: no cover
+        from _common import base_argparse_parser  # type: ignore[no-redef]
+
+    parser = base_argparse_parser(
+        description=(
+            "Titans pretraining on HuggingFace Jobs. "
+            "Configuration is driven by module-level constants (DIM, LR, "
+            "BATCH_SIZE, MAX_STEPS, ...) — command-line flags are accepted "
+            "for --help compatibility with the shared training-script CLI "
+            "surface but are ignored at runtime."
+        )
+    )
+    parser.set_defaults(
+        checkpoint_dir="checkpoints/pretrain",
+        wandb_project="titans-pretrain",
+    )
+    parser.parse_known_args()
+
+
 if __name__ == "__main__":
+    _parse_args()
     try:
         train()
     except Exception as e:
