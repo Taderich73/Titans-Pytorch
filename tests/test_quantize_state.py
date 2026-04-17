@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 import torch
 
 from titans.quantize_state import quantize_memory_state, quantize_tensor
@@ -113,3 +114,31 @@ def test_flatten_handles_unquantized_momentum() -> None:
         assert isinstance(m_orig, torch.Tensor)
         assert isinstance(m_rest, torch.Tensor)
         torch.testing.assert_close(m_rest, m_orig)
+
+
+# ---------------------------------------------------------------------------
+# Round-trip via titans.checkpoint
+# ---------------------------------------------------------------------------
+
+
+def test_quantized_state_round_trips_via_safetensors(tmp_path) -> None:
+    pytest.importorskip("safetensors")
+
+    from titans.checkpoint import load_checkpoint, save_checkpoint
+    from titans.quantize_state import flatten_quantized_state, unflatten_quantized_state
+
+    state = _make_memory_state_fixture()
+    q_state = quantize_memory_state(state, weight_bits=8, momentum_bits=4)
+
+    flat = flatten_quantized_state(q_state, prefix="mem")
+    save_checkpoint(flat, tmp_path / "ckpt", format="safetensors")
+
+    loaded = load_checkpoint(tmp_path / "ckpt.safetensors")
+    restored = unflatten_quantized_state(loaded["model"], prefix="mem")
+
+    dq_before = q_state.dequantize()
+    dq_after = restored.dequantize()
+    for a, b in zip(dq_before.weights, dq_after.weights, strict=True):
+        torch.testing.assert_close(a, b)
+    for a, b in zip(dq_before.momentum, dq_after.momentum, strict=True):
+        torch.testing.assert_close(a, b)
