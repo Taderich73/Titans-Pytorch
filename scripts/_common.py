@@ -11,6 +11,7 @@ build_titans_config, and create_model helpers.
 
 from __future__ import annotations
 
+import argparse
 import logging
 from collections.abc import Iterable, Iterator
 from typing import Any
@@ -515,3 +516,159 @@ def create_model(variant: str, config: TitansConfig) -> nn.Module:
             f"Unknown variant: {variant!r}. Options: {sorted(MODEL_CLASSES)}"
         )
     return MODEL_CLASSES[variant](config)
+
+
+# ---------------------------------------------------------------------------
+# base_argparse_parser
+# ---------------------------------------------------------------------------
+
+
+def base_argparse_parser(description: str) -> argparse.ArgumentParser:
+    """Return an ``argparse.ArgumentParser`` pre-populated with the flags
+    every Titans training/inference script shares.
+
+    Calling scripts add script-specific flags by calling
+    ``parser.add_argument(...)`` or
+    ``parser.add_argument_group(...).add_argument(...)`` on the returned parser.
+
+    Groups:
+        - "Model architecture": --model, --dim, --num-heads, --num-layers,
+          --vocab-size, --chunk-size, --window-size, --rope-proportion,
+          --num-persistent-tokens, --num-memory-layers, --memory-objective,
+          --huber-delta-init, --dropout, --use-conv
+        - "TNT / hierarchical memory": --use-tnt, --global-chunk-size,
+          --local-chunk-sizes, --local-shard-length, --use-qk-projection,
+          --tnt-stage, --finetune-local-chunk-sizes
+        - "Attention residual": --use-attn-res, --num-attnres-blocks,
+          --attnres-warmup-steps, --attnres-modulate-global-memory,
+          --no-attnres-modulate-global-memory,
+          --attnres-modulate-local-memory
+        - "Adaptive window": --adaptive-window, --adaptive-window-min,
+          --adaptive-window-max, --adaptive-window-temperature,
+          --adaptive-window-lambda
+        - "MCA": --use-mca, --mca-insertion-layers, --mca-num-heads,
+          --mca-gate-type, --mca-gate-bias-init
+        - "Training": --epochs, --max-steps, --batch-size,
+          --gradient-accumulation-steps, --lr, --weight-decay, --grad-clip,
+          --warmup-ratio, --mixed-precision, --num-workers, --pin-memory,
+          --persistent-workers
+        - "Checkpointing": --checkpoint-dir, --save-every, --save-format,
+          --resume, --init-weights
+        - "Logging": --log-every, --wandb, --wandb-project, --wandb-run-name
+        - "Misc": --seed
+
+    Args:
+        description: Passed through to ``ArgumentParser(description=...)``.
+
+    Returns:
+        Parser with shared flags. Callers set their own ``--dataset`` /
+        script-specific flags on top.
+    """
+    parser = argparse.ArgumentParser(
+        description=description,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    arch = parser.add_argument_group("Model architecture")
+    arch.add_argument(
+        "--model", type=str, default="mac",
+        choices=["mac", "mag", "mal", "lmm"], help="Titans model variant",
+    )
+    arch.add_argument("--dim", type=int, default=512)
+    arch.add_argument("--num-heads", type=int, default=8)
+    arch.add_argument("--num-layers", type=int, default=12)
+    arch.add_argument("--vocab-size", type=int, default=32000)
+    arch.add_argument("--chunk-size", type=int, default=512)
+    arch.add_argument("--window-size", type=int, default=512)
+    arch.add_argument("--rope-proportion", type=float, default=1.0)
+    arch.add_argument("--num-persistent-tokens", type=int, default=16)
+    arch.add_argument("--num-memory-layers", type=int, default=2)
+    arch.add_argument(
+        "--memory-objective", type=str, default="l2", choices=["l2", "huber"],
+    )
+    arch.add_argument("--huber-delta-init", type=float, default=0.0)
+    arch.add_argument("--dropout", type=float, default=0.0)
+    arch.add_argument("--use-conv", action="store_true")
+
+    tnt = parser.add_argument_group("TNT / hierarchical memory")
+    tnt.add_argument("--use-tnt", action="store_true")
+    tnt.add_argument("--global-chunk-size", type=int, default=2048)
+    tnt.add_argument(
+        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16], metavar="N",
+    )
+    tnt.add_argument("--local-shard-length", type=int, default=2048)
+    tnt.add_argument("--use-qk-projection", action="store_true", default=True)
+    tnt.add_argument("--tnt-stage", type=int, default=1)
+    tnt.add_argument(
+        "--finetune-local-chunk-sizes", type=int, nargs="+", default=None,
+        metavar="N",
+    )
+
+    attn = parser.add_argument_group("Attention residual")
+    attn.add_argument("--use-attn-res", action="store_true")
+    attn.add_argument("--num-attnres-blocks", type=int, default=8)
+    attn.add_argument("--attnres-warmup-steps", type=int, default=0)
+    attn.add_argument(
+        "--attnres-modulate-global-memory", action="store_true", default=True,
+    )
+    attn.add_argument(
+        "--no-attnres-modulate-global-memory",
+        dest="attnres_modulate_global_memory", action="store_false",
+    )
+    attn.add_argument("--attnres-modulate-local-memory", action="store_true")
+
+    aw = parser.add_argument_group("Adaptive window")
+    aw.add_argument("--adaptive-window", action="store_true")
+    aw.add_argument("--adaptive-window-min", type=int, default=64)
+    aw.add_argument("--adaptive-window-max", type=int, default=None)
+    aw.add_argument("--adaptive-window-temperature", type=float, default=10.0)
+    aw.add_argument("--adaptive-window-lambda", type=float, default=0.01)
+
+    mca = parser.add_argument_group("Multi-context attention (MCA)")
+    mca.add_argument("--use-mca", action="store_true")
+    mca.add_argument(
+        "--mca-insertion-layers", type=int, nargs="+", default=None, metavar="N",
+    )
+    mca.add_argument("--mca-num-heads", type=int, default=8)
+    mca.add_argument("--mca-gate-type", type=str, default="scalar")
+    mca.add_argument("--mca-gate-bias-init", type=float, default=-2.0)
+
+    train_g = parser.add_argument_group("Training")
+    train_g.add_argument("--epochs", type=int, default=1)
+    train_g.add_argument("--max-steps", type=int, default=-1)
+    train_g.add_argument("--batch-size", type=int, default=4)
+    train_g.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    train_g.add_argument("--lr", type=float, default=2e-5)
+    train_g.add_argument("--weight-decay", type=float, default=0.1)
+    train_g.add_argument("--grad-clip", type=float, default=1.0)
+    train_g.add_argument("--warmup-ratio", type=float, default=0.03)
+    train_g.add_argument(
+        "--mixed-precision", type=str, default="no",
+        choices=["no", "fp16", "bf16"],
+    )
+    train_g.add_argument("--num-workers", type=int, default=0)
+    train_g.add_argument("--pin-memory", action="store_true", default=False)
+    train_g.add_argument(
+        "--persistent-workers", action="store_true", default=False,
+    )
+
+    ckpt = parser.add_argument_group("Checkpointing")
+    ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/run")
+    ckpt.add_argument("--save-every", type=int, default=1000)
+    ckpt.add_argument(
+        "--save-format", type=str, default="pt",
+        choices=["pt", "safetensors"],
+    )
+    ckpt.add_argument("--resume", type=str, default=None, metavar="PATH")
+    ckpt.add_argument("--init-weights", type=str, default=None, metavar="PATH")
+
+    log = parser.add_argument_group("Logging")
+    log.add_argument("--log-every", type=int, default=10)
+    log.add_argument("--wandb", action="store_true")
+    log.add_argument("--wandb-project", type=str, default="titans")
+    log.add_argument("--wandb-run-name", type=str, default=None)
+
+    misc = parser.add_argument_group("Misc")
+    misc.add_argument("--seed", type=int, default=42)
+
+    return parser

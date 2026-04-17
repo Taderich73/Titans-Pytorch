@@ -25,6 +25,7 @@ from scripts._common import (  # noqa: E402
     CHATML_IM_END,
     CHATML_IM_START,
     MODEL_CLASSES,
+    base_argparse_parser,
     build_loss_mask,
     build_titans_config,
     create_model,
@@ -433,3 +434,73 @@ class TestBuildTitansConfig:
             assert c.num_memory_inner_steps == 3
         if hasattr(c, "mac_per_position_memory_query"):
             assert c.mac_per_position_memory_query is True
+
+
+class TestBaseArgparseParser:
+    """Shared parser must expose every flag all four training scripts share."""
+
+    def test_returns_argparse_parser(self) -> None:
+        import argparse
+        p = base_argparse_parser(description="x")
+        assert isinstance(p, argparse.ArgumentParser)
+
+    def test_defaults_match_current_scripts(self) -> None:
+        p = base_argparse_parser(description="x")
+        ns = p.parse_args([])
+        # Seed/training defaults
+        assert ns.seed == 42
+        assert ns.batch_size == 4
+        assert ns.gradient_accumulation_steps == 8
+        assert ns.weight_decay == 0.1
+        assert ns.grad_clip == 1.0
+        assert ns.warmup_ratio == 0.03
+        assert ns.mixed_precision == "no"
+        # Model defaults
+        assert ns.dim == 512
+        assert ns.num_heads == 8
+        assert ns.num_layers == 12
+        assert ns.vocab_size == 32000
+        assert ns.chunk_size == 512
+        assert ns.window_size == 512
+        assert ns.rope_proportion == 1.0
+        assert ns.num_persistent_tokens == 16
+        assert ns.num_memory_layers == 2
+        assert ns.memory_objective == "l2"
+        # Feature toggles default off
+        assert ns.use_tnt is False
+        assert ns.use_attn_res is False
+        assert ns.use_mca is False
+        assert ns.adaptive_window is False
+        # Logging / checkpointing
+        assert ns.log_every == 10
+        assert ns.save_format == "pt"
+
+    def test_mixed_precision_choices(self) -> None:
+        p = base_argparse_parser(description="x")
+        ns = p.parse_args(["--mixed-precision", "bf16"])
+        assert ns.mixed_precision == "bf16"
+        with pytest.raises(SystemExit):
+            p.parse_args(["--mixed-precision", "invalid"])
+
+    def test_variant_choices(self) -> None:
+        p = base_argparse_parser(description="x")
+        for v in ("mac", "mag", "mal", "lmm"):
+            ns = p.parse_args(["--model", v])
+            assert ns.model == v
+        with pytest.raises(SystemExit):
+            p.parse_args(["--model", "bogus"])
+
+    def test_script_can_add_extra_flags(self) -> None:
+        p = base_argparse_parser(description="x")
+        p.add_argument("--beta", type=float, default=0.1)
+        ns = p.parse_args(["--beta", "0.5"])
+        assert ns.beta == 0.5
+        # And the base flags still work.
+        assert ns.dim == 512
+
+    def test_no_dead_flags_reintroduced(self) -> None:
+        """Plan 4 removed these; the base parser must not add them back."""
+        p = base_argparse_parser(description="x")
+        ns = p.parse_args([])
+        # Neither historic aliases nor dead flags should appear.
+        assert not hasattr(ns, "datasetonly_alias")
