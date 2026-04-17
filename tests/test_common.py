@@ -629,3 +629,23 @@ class TestDPOMigrationSmoke:
             timeout=30,
         )
         assert r.returncode == 0
+
+
+class TestRLVRMigrationSmoke:
+    """Smoke: rlvr.py still imports and its parser constructs."""
+
+    def test_imports(self) -> None:
+        from scripts import rlvr
+
+        assert callable(rlvr.create_model)
+        assert callable(rlvr.build_titans_config)
+
+    def test_parse_args_help_exits_zero(self) -> None:
+        import subprocess
+
+        r = subprocess.run(
+            [sys.executable, "scripts/rlvr.py", "--help"],
+            capture_output=True,
+            timeout=30,
+        )
+        assert r.returncode == 0
