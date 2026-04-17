@@ -22,7 +22,9 @@ import pytest  # noqa: E402
 from scripts._common import (  # noqa: E402
     CHATML_IM_END,
     CHATML_IM_START,
+    build_loss_mask,
     format_chatml,
+    loss_mask_to_zero_one,
     make_dataloader,
     make_optimizer,
     maybe_compile,
@@ -170,3 +172,55 @@ def test_make_dataloader_zero_workers_no_persistent() -> None:
     assert dl.pin_memory is False
     # persistent_workers default is False when num_workers=0.
     assert dl.persistent_workers is False
+
+
+class TestBuildLossMask:
+    """Parity tests vs sft.py/dpo.py build_loss_mask."""
+
+    def test_train_on_all_short_circuits(self) -> None:
+        assert build_loss_mask(5, [(0, 5)], train_on_all=True) == [1, 1, 1, 1, 1]
+
+    def test_empty_spans_yields_zeros(self) -> None:
+        assert build_loss_mask(4, [], train_on_all=False) == [0, 0, 0, 0]
+
+    def test_single_span(self) -> None:
+        assert build_loss_mask(6, [(2, 5)], train_on_all=False) == [0, 0, 1, 1, 1, 0]
+
+    def test_span_clamped_to_seq_len(self) -> None:
+        assert build_loss_mask(4, [(2, 10)], train_on_all=False) == [0, 0, 1, 1]
+
+    def test_eos_inclusion(self) -> None:
+        mask = build_loss_mask(
+            6,
+            [(1, 3)],
+            include_eos=True,
+            eos_positions=[3],
+            train_on_all=False,
+        )
+        assert mask == [0, 1, 1, 1, 0, 0]
+
+    def test_eos_outside_range_ignored(self) -> None:
+        mask = build_loss_mask(
+            4,
+            [(0, 2)],
+            include_eos=True,
+            eos_positions=[99, -1],
+            train_on_all=False,
+        )
+        assert mask == [1, 1, 0, 0]
+
+
+class TestLossMaskToZeroOne:
+    """Adapter that turns label arrays with -100 into 0/1 masks (lora variant)."""
+
+    def test_minus_100_becomes_zero(self) -> None:
+        assert loss_mask_to_zero_one([-100, 5, -100, 7]) == [0, 1, 0, 1]
+
+    def test_all_minus_100(self) -> None:
+        assert loss_mask_to_zero_one([-100, -100]) == [0, 0]
+
+    def test_all_valid(self) -> None:
+        assert loss_mask_to_zero_one([1, 2, 3]) == [1, 1, 1]
+
+    def test_zero_is_still_a_real_token(self) -> None:
+        assert loss_mask_to_zero_one([0, 0, -100]) == [1, 1, 0]

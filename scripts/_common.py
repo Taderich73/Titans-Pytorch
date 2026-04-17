@@ -223,3 +223,61 @@ def format_chatml(messages: list[dict[str, str]]) -> str:
         content = msg.get("content", "")
         parts.append(f"{CHATML_IM_START}{role}\n{content}{CHATML_IM_END}\n")
     return "".join(parts)
+
+# ---------------------------------------------------------------------------
+# Loss-mask helpers
+# ---------------------------------------------------------------------------
+
+
+def build_loss_mask(
+    seq_len: int,
+    assistant_content_spans: list[tuple[int, int]],
+    include_eos: bool = True,
+    eos_positions: list[int] | None = None,
+    train_on_all: bool = False,
+) -> list[int]:
+    """Build a per-token binary loss mask.
+
+    Canonical consolidated form. Byte-identical behaviour to the pre-
+    consolidation ``build_loss_mask`` functions in ``sft.py`` and ``dpo.py``.
+
+    Args:
+        seq_len: Total sequence length (after shifting for next-token prediction).
+        assistant_content_spans: List of (start, end) token index pairs
+            marking assistant-turn content in the shifted label sequence.
+            End is exclusive; spans are clamped to ``seq_len``.
+        include_eos: Whether to include EOS tokens that follow assistant turns.
+        eos_positions: Positions of EOS tokens after assistant turns.
+        train_on_all: If True, return all-ones regardless of spans.
+
+    Returns:
+        List of 0/1 ints of length ``seq_len``.
+    """
+    if train_on_all:
+        return [1] * seq_len
+
+    mask = [0] * seq_len
+    for start, end in assistant_content_spans:
+        for i in range(start, min(end, seq_len)):
+            mask[i] = 1
+
+    if include_eos and eos_positions:
+        for pos in eos_positions:
+            if 0 <= pos < seq_len:
+                mask[pos] = 1
+
+    return mask
+
+
+def loss_mask_to_zero_one(labels: list[int]) -> list[int]:
+    """Convert a labels list with -100 sentinels into a 0/1 loss mask.
+
+    Replaces lora.py's reduced ``build_loss_mask`` variant.
+
+    Args:
+        labels: Token labels where -100 means "masked, do not train".
+
+    Returns:
+        List of 0/1 ints: 0 iff label == -100, else 1.
+    """
+    return [0 if tok == -100 else 1 for tok in labels]
