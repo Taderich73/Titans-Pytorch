@@ -46,7 +46,6 @@ def _make_frame(
         gate_eta_means=[0.9] * n,
         batch_variance=None,
         local_signal_norms=None,
-        local_reset_flags=None,
     )
 
 

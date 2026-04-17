@@ -212,7 +212,6 @@ class TestSignalFrame:
             gate_eta_means=[0.85] * n_layers,
             batch_variance=0.05,
             local_signal_norms=None,
-            local_reset_flags=None,
         )
 
     def test_construction_mac_mode(self) -> None:
@@ -232,11 +231,9 @@ class TestSignalFrame:
             gate_eta_means=[0.85, 0.85],
             batch_variance=None,
             local_signal_norms=None,
-            local_reset_flags=None,
         )
         assert frame.chunk_index == 7
         assert frame.local_signal_norms is None
-        assert frame.local_reset_flags is None
 
     def test_construction_tnt_mode(self) -> None:
         """SignalFrame constructs with TNT-only fields populated."""
@@ -255,10 +252,8 @@ class TestSignalFrame:
             gate_eta_means=[0.8],
             batch_variance=0.01,
             local_signal_norms=[[0.1, 0.2], [0.3, 0.4]],
-            local_reset_flags=[False, True],
         )
         assert len(frame.local_signal_norms) == 2
-        assert frame.local_reset_flags == [False, True]
 
     def test_to_dict_is_json_serializable(self) -> None:
         """to_dict() output is JSON-serializable."""
@@ -286,7 +281,6 @@ class TestSignalFrame:
             "gate_eta_means",
             "batch_variance",
             "local_signal_norms",
-            "local_reset_flags",
         }
         assert set(d.keys()) == expected_keys
 
@@ -307,11 +301,9 @@ class TestSignalFrame:
             gate_eta_means=[0.8],
             batch_variance=0.02,
             local_signal_norms=[[0.1]],
-            local_reset_flags=[True],
         )
         d = frame.to_dict()
         assert d["local_signal_norms"] == [[0.1]]
-        assert d["local_reset_flags"] == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +421,6 @@ class TestTransitionRecord:
             gate_eta_means=[0.8],
             batch_variance=None,
             local_signal_norms=None,
-            local_reset_flags=None,
         )
 
     def test_construction(self, device: torch.device) -> None:

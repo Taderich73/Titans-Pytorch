@@ -257,9 +257,6 @@ class MemoryCheckpointer:
         if self.state == CheckpointerState.MONITORING:
             self._ring_buffer.append(entry)
             if frame is not None:
-                # Handle TNT local resets
-                if frame.local_reset_flags is not None:
-                    self._detector.reset_local_windows(frame.local_reset_flags)
                 decision = self._detector.observe(frame)
                 if decision.triggered:
                     self._handle_trigger(entry, decision, chunk_index)
