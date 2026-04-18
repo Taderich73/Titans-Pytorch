@@ -43,7 +43,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans.checkpoint import load_checkpoint, save_checkpoint
@@ -229,6 +229,24 @@ class LoRATrainingConfig:
 # ---------------------------------------------------------------------------
 # Backward-compatible wrappers around consolidated helpers
 # ---------------------------------------------------------------------------
+
+
+def build_model(config: LoRATrainingConfig) -> torch.nn.Module:
+    """Build a Titans model from a LoRATrainingConfig.
+
+    Thin wrapper over :func:`scripts._common.build_titans_config` and
+    :func:`scripts._common.create_model`. Preserved for backward-compat
+    with tests/callers that imported ``lora.build_model`` before the
+    _common migration.
+
+    Args:
+        config: LoRA training configuration.
+
+    Returns:
+        An instantiated (but not yet LoRA-wrapped) Titans model.
+    """
+    titans_config = build_titans_config(config)
+    return create_model(config.model_type, titans_config)
 
 
 def tokenize_chat(
@@ -665,7 +683,9 @@ def evaluate(
             total_tokens += batch_tokens
 
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None for s in memory_states
+                ]
 
     model.train()
     if total_tokens == 0:
