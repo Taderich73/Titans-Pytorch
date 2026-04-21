@@ -67,10 +67,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import IterableDataset
 from tqdm import tqdm
 
-from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 from titans.lora import (
@@ -85,17 +84,27 @@ from titans.lora import (
 # a flat directory (when tests add scripts/ onto sys.path and import "rlvr").
 try:
     from scripts._common import (  # type: ignore[import-not-found]
+        base_argparse_parser,
+        build_titans_config,
         chunked_forward,
+        create_model,
+        init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
+        base_argparse_parser,
+        build_titans_config,
         chunked_forward,
+        create_model,
+        init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
 
 # ---------------------------------------------------------------------------
@@ -103,7 +112,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.pat
 # ---------------------------------------------------------------------------
 
 try:
-    from accelerate import Accelerator
+    from accelerate import Accelerator  # noqa: F401
 
     HAS_ACCELERATE = True
 except ImportError:
@@ -130,16 +139,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Model class registry
-# ---------------------------------------------------------------------------
-
-_MODEL_CLASSES: dict[str, type[nn.Module]] = {
-    "mac": TitansMAC,
-    "mag": TitansMAG,
-    "mal": TitansMAL,
-    "lmm": TitansLMM,
-}
+# MODEL_CLASSES, create_model, and build_titans_config are imported from
+# scripts/_common above.
 
 # ---------------------------------------------------------------------------
 # Verifier framework
@@ -881,99 +882,7 @@ class RLVRConfig:
     synthetic_samples: int = 500
 
 
-# ---------------------------------------------------------------------------
-# Model factory
-# ---------------------------------------------------------------------------
-
-
-def create_model(model_type: str, config: TitansConfig) -> nn.Module:
-    """Instantiate a Titans model by variant name.
-
-    Args:
-        model_type: One of ``mac``, ``mag``, ``mal``, ``lmm``.
-        config: Fully-populated TitansConfig.
-
-    Returns:
-        Initialised (but untrained) model.
-
-    Raises:
-        ValueError: If ``model_type`` is not recognised.
-    """
-    if model_type not in _MODEL_CLASSES:
-        raise ValueError(
-            f"Unknown model type '{model_type}'. "
-            f"Choose from: {list(_MODEL_CLASSES.keys())}"
-        )
-    return _MODEL_CLASSES[model_type](config)
-
-
-def build_titans_config(cfg: RLVRConfig) -> TitansConfig:
-    """Translate RLVRConfig fields into a TitansConfig.
-
-    Args:
-        cfg: RLVRConfig populated from CLI arguments.
-
-    Returns:
-        TitansConfig instance ready to pass to create_model.
-    """
-    kwargs: dict[str, Any] = dict(
-        dim=cfg.dim,
-        num_heads=cfg.num_heads,
-        num_layers=cfg.num_layers,
-        vocab_size=cfg.vocab_size,
-        chunk_size=cfg.chunk_size,
-        window_size=cfg.window_size,
-        rope_proportion=cfg.rope_proportion,
-        num_persistent_tokens=cfg.num_persistent_tokens,
-        num_memory_layers=cfg.num_memory_layers,
-        memory_objective=cfg.memory_objective,
-        huber_delta_init=cfg.huber_delta_init,
-        dropout=cfg.dropout,
-        use_conv=cfg.use_conv,
-    )
-
-    if cfg.use_tnt:
-        kwargs.update(
-            use_tnt=cfg.use_tnt,
-            global_chunk_size=cfg.global_chunk_size,
-            use_qk_projection=cfg.use_qk_projection,
-            tnt_stage=cfg.tnt_stage,
-            finetune_local_chunk_sizes=cfg.finetune_local_chunk_sizes,
-        )
-        if cfg.local_chunk_sizes:
-            kwargs["local_chunk_sizes"] = cfg.local_chunk_sizes
-        if cfg.local_shard_length:
-            kwargs["local_shard_length"] = cfg.local_shard_length
-
-    if cfg.use_attn_res:
-        kwargs.update(
-            use_attn_res=cfg.use_attn_res,
-            num_attnres_blocks=cfg.num_attnres_blocks,
-            attnres_warmup_steps=cfg.attnres_warmup_steps,
-            attnres_modulate_global_memory=cfg.attnres_modulate_global_memory,
-            attnres_modulate_local_memory=cfg.attnres_modulate_local_memory,
-        )
-
-    if cfg.adaptive_window:
-        kwargs.update(
-            adaptive_window=cfg.adaptive_window,
-            adaptive_window_min=cfg.adaptive_window_min,
-            adaptive_window_max=cfg.adaptive_window_max,
-            adaptive_window_temperature=cfg.adaptive_window_temperature,
-            adaptive_window_lambda=cfg.adaptive_window_lambda,
-        )
-
-    if cfg.use_mca:
-        kwargs.update(
-            use_mca=cfg.use_mca,
-            mca_num_heads=cfg.mca_num_heads,
-            mca_gate_type=cfg.mca_gate_type,
-            mca_gate_bias_init=cfg.mca_gate_bias_init,
-        )
-        if cfg.mca_insertion_layers:
-            kwargs["mca_insertion_layers"] = cfg.mca_insertion_layers
-
-    return TitansConfig(**kwargs)
+# create_model and build_titans_config are imported from scripts/_common.
 
 
 # ---------------------------------------------------------------------------
@@ -1362,11 +1271,8 @@ def train(config: RLVRConfig) -> None:
 
     is_grpo = config.loss_type == "grpo"
 
-    accelerator = Accelerator(
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        mixed_precision=config.mixed_precision,
-        log_with="wandb" if config.wandb and HAS_WANDB else None,
-    )
+    bundle = init_accelerator_and_logging(config)
+    accelerator = bundle.accelerator
 
     if accelerator.is_main_process:
         logger.info(f"RLVR config: {config}")
@@ -1624,11 +1530,10 @@ def train(config: RLVRConfig) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Checkpoint directory
+    # Checkpoint directory + optional resume-path validation
     # ------------------------------------------------------------------
-    checkpoint_dir = Path(config.checkpoint_dir)
-    if accelerator.is_main_process:
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_setup = setup_checkpoint_dir(config.checkpoint_dir, config.resume)
+    checkpoint_dir = ckpt_setup.output_dir
 
     # ------------------------------------------------------------------
     # Resume
@@ -1637,10 +1542,8 @@ def train(config: RLVRConfig) -> None:
     start_epoch = 0
     memory_states: list | None = None
 
-    if config.resume is not None:
-        resume_path = Path(config.resume)
-        if not resume_path.exists():
-            raise FileNotFoundError(f"--resume checkpoint not found: {resume_path}")
+    if ckpt_setup.resume_path is not None:
+        resume_path = ckpt_setup.resume_path
         checkpoint = load_checkpoint(resume_path, weights_only=False)
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
@@ -2008,90 +1911,19 @@ def train(config: RLVRConfig) -> None:
 
 def parse_args() -> RLVRConfig:
     """Parse command-line arguments and return an RLVRConfig."""
-    parser = argparse.ArgumentParser(
+    parser = base_argparse_parser(
         description="RLVR (Reinforcement Learning with Verifiable Rewards) "
         "for Titans PyTorch models",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-
-    # Model architecture
-    arch = parser.add_argument_group("Model architecture")
-    arch.add_argument(
-        "--model",
-        type=str,
-        default="mac",
-        choices=["mac", "mag", "mal", "lmm"],
-        help="Titans model variant",
+    # Override base defaults to match RLVR-specific values.
+    parser.set_defaults(
+        lr=1e-5,
+        batch_size=2,
+        gradient_accumulation_steps=16,
+        checkpoint_dir="checkpoints/rlvr",
+        wandb_project="titans-rlvr",
+        mca_gate_bias_init=-3.0,
     )
-    arch.add_argument("--dim", type=int, default=512)
-    arch.add_argument("--num-heads", type=int, default=8)
-    arch.add_argument("--num-layers", type=int, default=12)
-    arch.add_argument("--vocab-size", type=int, default=32000)
-    arch.add_argument("--chunk-size", type=int, default=512)
-    arch.add_argument("--window-size", type=int, default=512)
-    arch.add_argument(
-        "--rope-proportion", type=float, default=1.0,
-        help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
-    )
-    arch.add_argument("--num-persistent-tokens", type=int, default=16)
-    arch.add_argument("--num-memory-layers", type=int, default=2)
-    arch.add_argument(
-        "--memory-objective", type=str, default="l2", choices=["l2", "huber"]
-    )
-    arch.add_argument("--huber-delta-init", type=float, default=0.0)
-    arch.add_argument("--dropout", type=float, default=0.0)
-    arch.add_argument("--use-conv", action="store_true")
-
-    # TNT
-    tnt = parser.add_argument_group("TNT / hierarchical memory")
-    tnt.add_argument("--use-tnt", action="store_true")
-    tnt.add_argument("--global-chunk-size", type=int, default=2048)
-    tnt.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16], metavar="N"
-    )
-    tnt.add_argument("--local-shard-length", type=int, default=2048)
-    tnt.add_argument("--use-qk-projection", action="store_true", default=True)
-    tnt.add_argument("--tnt-stage", type=int, default=1)
-    tnt.add_argument(
-        "--finetune-local-chunk-sizes",
-        type=int,
-        nargs="+",
-        default=None,
-        metavar="N",
-    )
-
-    # Attention residual
-    attn = parser.add_argument_group("Attention residual")
-    attn.add_argument("--use-attn-res", action="store_true")
-    attn.add_argument("--num-attnres-blocks", type=int, default=8)
-    attn.add_argument("--attnres-warmup-steps", type=int, default=0)
-    attn.add_argument(
-        "--attnres-modulate-global-memory", action="store_true", default=True
-    )
-    attn.add_argument(
-        "--no-attnres-modulate-global-memory",
-        dest="attnres_modulate_global_memory",
-        action="store_false",
-    )
-    attn.add_argument("--attnres-modulate-local-memory", action="store_true")
-
-    # Adaptive window
-    aw = parser.add_argument_group("Adaptive window")
-    aw.add_argument("--adaptive-window", action="store_true")
-    aw.add_argument("--adaptive-window-min", type=int, default=64)
-    aw.add_argument("--adaptive-window-max", type=int, default=None)
-    aw.add_argument("--adaptive-window-temperature", type=float, default=10.0)
-    aw.add_argument("--adaptive-window-lambda", type=float, default=0.01)
-
-    # MCA
-    mca = parser.add_argument_group("Multi-context attention (MCA)")
-    mca.add_argument("--use-mca", action="store_true")
-    mca.add_argument(
-        "--mca-insertion-layers", type=int, nargs="+", default=None, metavar="N"
-    )
-    mca.add_argument("--mca-num-heads", type=int, default=8)
-    mca.add_argument("--mca-gate-type", type=str, default="scalar")
-    mca.add_argument("--mca-gate-bias-init", type=float, default=-3.0)
 
     # RLVR-specific
     rlvr_g = parser.add_argument_group("RLVR")
@@ -2211,53 +2043,10 @@ def parse_args() -> RLVRConfig:
         help="Dataset field containing pre-computed reward scores (offline mode)",
     )
 
-    # Training
-    train_g = parser.add_argument_group("Training")
-    train_g.add_argument("--epochs", type=int, default=1)
-    train_g.add_argument("--max-steps", type=int, default=-1)
-    train_g.add_argument("--batch-size", type=int, default=2)
-    train_g.add_argument("--gradient-accumulation-steps", type=int, default=16)
-    train_g.add_argument(
-        "--lr",
-        type=float,
-        default=1e-5,
-        help="Learning rate (lower than SFT; RLVR is sensitive to LR)",
-    )
-    train_g.add_argument("--weight-decay", type=float, default=0.1)
-    train_g.add_argument("--grad-clip", type=float, default=1.0)
-    train_g.add_argument("--warmup-ratio", type=float, default=0.03)
-    train_g.add_argument(
-        "--mixed-precision",
-        type=str,
-        default="no",
-        choices=["no", "fp16", "bf16"],
-    )
-
-    # Checkpointing
-    ckpt = parser.add_argument_group("Checkpointing")
-    ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/rlvr")
-    ckpt.add_argument("--save-every", type=int, default=1000)
-    ckpt.add_argument(
-        "--save-format",
-        type=str,
-        default="pt",
-        choices=["pt", "safetensors"],
-    )
-    ckpt.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Resume RLVR from a previous RLVR checkpoint (.pt)",
-    )
-    ckpt.add_argument(
-        "--init-weights",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Load pretrained or SFT weights before RLVR",
-    )
-    ckpt.add_argument(
+    # RLVR-only memory-lifecycle flags (added on top of the base parser's
+    # Checkpointing group).
+    mem_g = parser.add_argument_group("Memory-state lifecycle")
+    mem_g.add_argument(
         "--reset-memory-per-batch",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -2266,7 +2055,7 @@ def parse_args() -> RLVRConfig:
             "Default True because rollouts are typically independent."
         ),
     )
-    ckpt.add_argument(
+    mem_g.add_argument(
         "--state-carry-warmup-steps",
         type=int,
         default=0,
@@ -2276,17 +2065,8 @@ def parse_args() -> RLVRConfig:
         ),
     )
 
-    # Logging
-    log = parser.add_argument_group("Logging")
-    log.add_argument("--log-every", type=int, default=10)
-    log.add_argument("--wandb", action="store_true")
-    log.add_argument("--wandb-project", type=str, default="titans-rlvr")
-    log.add_argument("--wandb-run-name", type=str, default=None)
-
-    # Misc
-    misc = parser.add_argument_group("Misc")
-    misc.add_argument("--seed", type=int, default=42)
-    misc.add_argument("--synthetic-samples", type=int, default=500)
+    # Misc RLVR-only
+    parser.add_argument("--synthetic-samples", type=int, default=500)
 
     args = parser.parse_args()
 

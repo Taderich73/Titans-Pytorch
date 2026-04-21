@@ -1,18 +1,40 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Shared helpers for training/eval scripts.
+"""Shared helpers for training / inference scripts.
 
-This module is the landing pad for DRY consolidation across the
-sft / lora / dpo / rlvr scripts. It currently exposes only
-``chunked_forward``; future plans will add tokenize_chat,
-build_titans_config, and create_model helpers.
+This module is the single source of truth for code that would otherwise
+drift across sft / lora / dpo / rlvr / pretrain / inference.
+
+Forward (Plan 2):
+    chunked_forward, compute_log_probs, compute_token_log_probs,
+    and memory-plumbing helpers.
+
+Optimiser / dataloader (Plan 8):
+    make_optimizer, make_dataloader, maybe_compile.
+
+DRY consolidation (Plan 3):
+    - CHATML_IM_START, CHATML_IM_END: canonical ChatML markers.
+    - format_chatml: list[dict] -> str in ChatML markup.
+    - build_loss_mask: span-based 0/1 mask builder (sft/dpo canonical form).
+    - loss_mask_to_zero_one: adapter for lora's -100-sentinel labels.
+    - tokenize_chat: ChatML tokenisation + shift + loss-mask in one call.
+    - MODEL_CLASSES / create_model: Titans variant registry.
+    - build_titans_config: duck-typed config -> TitansConfig.
+    - base_argparse_parser: argparse skeleton shared by all training scripts.
+    - init_accelerator_and_logging: Accelerator + logging setup bundle.
+    - setup_checkpoint_dir: output dir creation + resume-path resolution.
+
+Do not add helpers here that belong in the library (``src/titans``); this
+module is only for script-level orchestration glue.
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 from collections.abc import Iterable, Iterator
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -195,3 +217,605 @@ def make_dataloader(
     if not streaming:
         kwargs["shuffle"] = shuffle
     return DataLoader(dataset, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# ChatML constants and formatting
+# ---------------------------------------------------------------------------
+
+CHATML_IM_START = "<|im_start|>"
+CHATML_IM_END = "<|im_end|>"
+
+
+def format_chatml(messages: list[dict[str, str]]) -> str:
+    """Format a list of message dicts into a ChatML string.
+
+    Args:
+        messages: List of dicts with ``role`` and ``content`` keys. Missing
+            ``role`` defaults to ``user``; missing ``content`` defaults to
+            the empty string.
+
+    Returns:
+        A single string with all turns formatted in ChatML markup,
+        including a trailing newline after each ``<|im_end|>``.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        parts.append(f"{CHATML_IM_START}{role}\n{content}{CHATML_IM_END}\n")
+    return "".join(parts)
+
+# ---------------------------------------------------------------------------
+# Loss-mask helpers
+# ---------------------------------------------------------------------------
+
+
+def build_loss_mask(
+    seq_len: int,
+    assistant_content_spans: list[tuple[int, int]],
+    include_eos: bool = True,
+    eos_positions: list[int] | None = None,
+    train_on_all: bool = False,
+) -> list[int]:
+    """Build a per-token binary loss mask.
+
+    Canonical consolidated form. Byte-identical behaviour to the pre-
+    consolidation ``build_loss_mask`` functions in ``sft.py`` and ``dpo.py``.
+
+    Args:
+        seq_len: Total sequence length (after shifting for next-token prediction).
+        assistant_content_spans: List of (start, end) token index pairs
+            marking assistant-turn content in the shifted label sequence.
+            End is exclusive; spans are clamped to ``seq_len``.
+        include_eos: Whether to include EOS tokens that follow assistant turns.
+        eos_positions: Positions of EOS tokens after assistant turns.
+        train_on_all: If True, return all-ones regardless of spans.
+
+    Returns:
+        List of 0/1 ints of length ``seq_len``.
+    """
+    if train_on_all:
+        return [1] * seq_len
+
+    mask = [0] * seq_len
+    for start, end in assistant_content_spans:
+        for i in range(start, min(end, seq_len)):
+            mask[i] = 1
+
+    if include_eos and eos_positions:
+        for pos in eos_positions:
+            if 0 <= pos < seq_len:
+                mask[pos] = 1
+
+    return mask
+
+
+def loss_mask_to_zero_one(labels: list[int]) -> list[int]:
+    """Convert a labels list with -100 sentinels into a 0/1 loss mask.
+
+    Replaces lora.py's reduced ``build_loss_mask`` variant.
+
+    Args:
+        labels: Token labels where -100 means "masked, do not train".
+
+    Returns:
+        List of 0/1 ints: 0 iff label == -100, else 1.
+    """
+    return [0 if tok == -100 else 1 for tok in labels]
+
+
+# ---------------------------------------------------------------------------
+# tokenize_chat
+# ---------------------------------------------------------------------------
+
+
+def tokenize_chat(
+    messages: list[dict],
+    tokenizer,  # transformers.PreTrainedTokenizerBase when installed
+    max_len: int,
+    train_on_all: bool = False,
+) -> dict[str, list[int]]:
+    """Tokenize a ChatML conversation and produce input_ids + labels + mask.
+
+    Uses ``tokenizer.apply_chat_template`` when the tokenizer provides a
+    chat template; otherwise falls back to ChatML markup (``format_chatml``).
+    Identifies assistant turns so non-assistant tokens can be masked out
+    of the loss.
+
+    Output is shifted for next-token prediction:
+        input_ids = tokens[:-1]
+        labels    = tokens[1:]
+        loss_mask = mask[1:]
+
+    Args:
+        messages: List of role/content dicts.
+        tokenizer: HuggingFace-style tokenizer.
+        max_len: Sequences are truncated to at most ``max_len`` tokens
+            before shifting.
+        train_on_all: If True, every output position is supervised.
+
+    Returns:
+        Dict with keys ``input_ids``, ``labels``, ``loss_mask``.
+        All lists of ints of equal length ``<= max_len - 1``.
+    """
+    use_native_template = (
+        hasattr(tokenizer, "apply_chat_template")
+        and getattr(tokenizer, "chat_template", None) is not None
+    )
+
+    if use_native_template:
+        full_ids: list[int] = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=False,
+        )
+
+        assistant_spans: list[tuple[int, int]] = []
+        eos_after_assistant: list[int] = []
+
+        if not train_on_all:
+            for i, msg in enumerate(messages):
+                if msg.get("role") != "assistant":
+                    continue
+                prefix_turns = messages[:i]
+                if prefix_turns:
+                    prefix_ids = tokenizer.apply_chat_template(
+                        prefix_turns, tokenize=True, add_generation_prompt=True,
+                    )
+                else:
+                    prefix_ids = tokenizer.encode(
+                        f"{CHATML_IM_START}assistant\n", add_special_tokens=False,
+                    )
+                content_start = len(prefix_ids)
+                through_ids = tokenizer.apply_chat_template(
+                    messages[: i + 1], tokenize=True, add_generation_prompt=False,
+                )
+                content_end = len(through_ids)
+                if content_end < len(full_ids):
+                    eos_after_assistant.append(content_end)
+                assistant_spans.append((content_start, content_end))
+    else:
+        full_text = format_chatml(messages)
+        full_ids = tokenizer.encode(full_text, add_special_tokens=False)
+        assistant_spans = []
+        eos_after_assistant = []
+
+        if not train_on_all:
+            cursor = 0
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                header = f"{CHATML_IM_START}{role}\n"
+                footer = f"{CHATML_IM_END}\n"
+                header_ids = tokenizer.encode(header, add_special_tokens=False)
+                content_ids = tokenizer.encode(content, add_special_tokens=False)
+                footer_ids = tokenizer.encode(footer, add_special_tokens=False)
+                content_start = cursor + len(header_ids)
+                content_end = content_start + len(content_ids)
+                footer_end = content_end + len(footer_ids)
+                if role == "assistant":
+                    assistant_spans.append((content_start, content_end))
+                    if footer_ids and content_end < len(full_ids):
+                        eos_after_assistant.append(content_end)
+                cursor = footer_end
+
+    full_ids = full_ids[:max_len]
+    input_ids = full_ids[:-1]
+    labels = full_ids[1:]
+
+    shifted_spans = [(max(0, s - 1), max(0, e - 1)) for s, e in assistant_spans]
+    shifted_eos = [max(0, p - 1) for p in eos_after_assistant]
+
+    loss_mask = build_loss_mask(
+        seq_len=len(labels),
+        assistant_content_spans=shifted_spans,
+        include_eos=True,
+        eos_positions=shifted_eos,
+        train_on_all=train_on_all,
+    )
+
+    return {"input_ids": input_ids, "labels": labels, "loss_mask": loss_mask}
+
+
+# ---------------------------------------------------------------------------
+# Model factory
+# ---------------------------------------------------------------------------
+
+from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL  # noqa: E402
+
+MODEL_CLASSES: dict[str, type[nn.Module]] = {
+    "mac": TitansMAC,
+    "mag": TitansMAG,
+    "mal": TitansMAL,
+    "lmm": TitansLMM,
+}
+
+
+def build_titans_config(cfg: Any) -> TitansConfig:
+    """Translate any duck-typed training config into a ``TitansConfig``.
+
+    This is the canonical builder used by sft / lora / dpo / rlvr / pretrain.
+    Feature sub-groups (TNT / AttnRes / adaptive window / MCA) are only
+    forwarded when their top-level toggle (e.g. ``cfg.use_tnt``) is truthy.
+
+    Includes fields added in Plan 5 (``num_memory_inner_steps``,
+    ``mac_per_position_memory_query``) when both the caller config and
+    ``TitansConfig`` expose them.
+
+    Args:
+        cfg: Any object with the expected attribute names (a dataclass
+            such as ``SFTConfig`` / ``DPOConfig`` / ``RLVRConfig`` /
+            ``LoRATrainingConfig``, or an argparse Namespace).
+
+    Returns:
+        A fully populated ``TitansConfig`` ready to hand to ``create_model``.
+    """
+    kwargs: dict[str, Any] = dict(
+        dim=cfg.dim,
+        num_heads=cfg.num_heads,
+        num_layers=cfg.num_layers,
+        vocab_size=cfg.vocab_size,
+        chunk_size=cfg.chunk_size,
+        window_size=cfg.window_size,
+        rope_proportion=cfg.rope_proportion,
+        num_persistent_tokens=cfg.num_persistent_tokens,
+        num_memory_layers=cfg.num_memory_layers,
+        memory_objective=cfg.memory_objective,
+        huber_delta_init=cfg.huber_delta_init,
+        dropout=cfg.dropout,
+        use_conv=cfg.use_conv,
+    )
+
+    # TNT fields
+    if getattr(cfg, "use_tnt", False):
+        kwargs.update(
+            use_tnt=cfg.use_tnt,
+            global_chunk_size=cfg.global_chunk_size,
+            use_qk_projection=cfg.use_qk_projection,
+            tnt_stage=cfg.tnt_stage,
+            finetune_local_chunk_sizes=cfg.finetune_local_chunk_sizes,
+        )
+        if cfg.local_chunk_sizes:
+            kwargs["local_chunk_sizes"] = cfg.local_chunk_sizes
+        if cfg.local_shard_length:
+            kwargs["local_shard_length"] = cfg.local_shard_length
+
+    # Attention-residual
+    if getattr(cfg, "use_attn_res", False):
+        kwargs.update(
+            use_attn_res=cfg.use_attn_res,
+            num_attnres_blocks=cfg.num_attnres_blocks,
+            attnres_warmup_steps=cfg.attnres_warmup_steps,
+            attnres_modulate_global_memory=cfg.attnres_modulate_global_memory,
+            attnres_modulate_local_memory=cfg.attnres_modulate_local_memory,
+        )
+
+    # Adaptive window
+    if getattr(cfg, "adaptive_window", False):
+        kwargs.update(
+            adaptive_window=cfg.adaptive_window,
+            adaptive_window_min=cfg.adaptive_window_min,
+            adaptive_window_max=cfg.adaptive_window_max,
+            adaptive_window_temperature=cfg.adaptive_window_temperature,
+            adaptive_window_lambda=cfg.adaptive_window_lambda,
+        )
+
+    # MCA
+    if getattr(cfg, "use_mca", False):
+        kwargs.update(
+            use_mca=cfg.use_mca,
+            mca_num_heads=cfg.mca_num_heads,
+            mca_gate_type=cfg.mca_gate_type,
+            mca_gate_bias_init=cfg.mca_gate_bias_init,
+        )
+        if cfg.mca_insertion_layers:
+            kwargs["mca_insertion_layers"] = cfg.mca_insertion_layers
+
+    # Plan 5 additions (guarded by hasattr on TitansConfig)
+    for extra in ("num_memory_inner_steps", "mac_per_position_memory_query"):
+        if hasattr(cfg, extra) and extra in TitansConfig.__dataclass_fields__:
+            kwargs[extra] = getattr(cfg, extra)
+
+    return TitansConfig(**kwargs)
+
+
+def create_model(variant: str, config: TitansConfig) -> nn.Module:
+    """Instantiate a Titans model by variant name.
+
+    Args:
+        variant: One of ``mac``, ``mag``, ``mal``, ``lmm``.
+        config: Fully-populated ``TitansConfig``.
+
+    Returns:
+        Initialised (but untrained) model instance.
+
+    Raises:
+        ValueError: If ``variant`` is not a known key.
+    """
+    if variant not in MODEL_CLASSES:
+        raise ValueError(
+            f"Unknown variant: {variant!r}. Options: {sorted(MODEL_CLASSES)}"
+        )
+    return MODEL_CLASSES[variant](config)
+
+
+# ---------------------------------------------------------------------------
+# base_argparse_parser
+# ---------------------------------------------------------------------------
+
+
+def base_argparse_parser(description: str) -> argparse.ArgumentParser:
+    """Return an ``argparse.ArgumentParser`` pre-populated with the flags
+    every Titans training/inference script shares.
+
+    Calling scripts add script-specific flags by calling
+    ``parser.add_argument(...)`` or
+    ``parser.add_argument_group(...).add_argument(...)`` on the returned parser.
+
+    Groups:
+        - "Model architecture": --model, --dim, --num-heads, --num-layers,
+          --vocab-size, --chunk-size, --window-size, --rope-proportion,
+          --num-persistent-tokens, --num-memory-layers, --memory-objective,
+          --huber-delta-init, --dropout, --use-conv
+        - "TNT / hierarchical memory": --use-tnt, --global-chunk-size,
+          --local-chunk-sizes, --local-shard-length, --use-qk-projection,
+          --tnt-stage, --finetune-local-chunk-sizes
+        - "Attention residual": --use-attn-res, --num-attnres-blocks,
+          --attnres-warmup-steps, --attnres-modulate-global-memory,
+          --no-attnres-modulate-global-memory,
+          --attnres-modulate-local-memory
+        - "Adaptive window": --adaptive-window, --adaptive-window-min,
+          --adaptive-window-max, --adaptive-window-temperature,
+          --adaptive-window-lambda
+        - "MCA": --use-mca, --mca-insertion-layers, --mca-num-heads,
+          --mca-gate-type, --mca-gate-bias-init
+        - "Training": --epochs, --max-steps, --batch-size,
+          --gradient-accumulation-steps, --lr, --weight-decay, --grad-clip,
+          --warmup-ratio, --mixed-precision, --num-workers, --pin-memory,
+          --persistent-workers
+        - "Checkpointing": --checkpoint-dir, --save-every, --save-format,
+          --resume, --init-weights
+        - "Logging": --log-every, --wandb, --wandb-project, --wandb-run-name
+        - "Misc": --seed
+
+    Args:
+        description: Passed through to ``ArgumentParser(description=...)``.
+
+    Returns:
+        Parser with shared flags. Callers set their own ``--dataset`` /
+        script-specific flags on top.
+    """
+    parser = argparse.ArgumentParser(
+        description=description,
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    arch = parser.add_argument_group("Model architecture")
+    arch.add_argument(
+        "--model", type=str, default="mac",
+        choices=["mac", "mag", "mal", "lmm"], help="Titans model variant",
+    )
+    arch.add_argument("--dim", type=int, default=512)
+    arch.add_argument("--num-heads", type=int, default=8)
+    arch.add_argument("--num-layers", type=int, default=12)
+    arch.add_argument("--vocab-size", type=int, default=32000)
+    arch.add_argument("--chunk-size", type=int, default=512)
+    arch.add_argument("--window-size", type=int, default=512)
+    arch.add_argument("--rope-proportion", type=float, default=1.0)
+    arch.add_argument("--num-persistent-tokens", type=int, default=16)
+    arch.add_argument("--num-memory-layers", type=int, default=2)
+    arch.add_argument(
+        "--memory-objective", type=str, default="l2", choices=["l2", "huber"],
+    )
+    arch.add_argument("--huber-delta-init", type=float, default=0.0)
+    arch.add_argument("--dropout", type=float, default=0.0)
+    arch.add_argument("--use-conv", action="store_true")
+
+    tnt = parser.add_argument_group("TNT / hierarchical memory")
+    tnt.add_argument("--use-tnt", action="store_true")
+    tnt.add_argument("--global-chunk-size", type=int, default=2048)
+    tnt.add_argument(
+        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16], metavar="N",
+    )
+    tnt.add_argument("--local-shard-length", type=int, default=2048)
+    tnt.add_argument("--use-qk-projection", action="store_true", default=True)
+    tnt.add_argument("--tnt-stage", type=int, default=1)
+    tnt.add_argument(
+        "--finetune-local-chunk-sizes", type=int, nargs="+", default=None,
+        metavar="N",
+    )
+
+    attn = parser.add_argument_group("Attention residual")
+    attn.add_argument("--use-attn-res", action="store_true")
+    attn.add_argument("--num-attnres-blocks", type=int, default=8)
+    attn.add_argument("--attnres-warmup-steps", type=int, default=0)
+    attn.add_argument(
+        "--attnres-modulate-global-memory", action="store_true", default=True,
+    )
+    attn.add_argument(
+        "--no-attnres-modulate-global-memory",
+        dest="attnres_modulate_global_memory", action="store_false",
+    )
+    attn.add_argument("--attnres-modulate-local-memory", action="store_true")
+
+    aw = parser.add_argument_group("Adaptive window")
+    aw.add_argument("--adaptive-window", action="store_true")
+    aw.add_argument("--adaptive-window-min", type=int, default=64)
+    aw.add_argument("--adaptive-window-max", type=int, default=None)
+    aw.add_argument("--adaptive-window-temperature", type=float, default=10.0)
+    aw.add_argument("--adaptive-window-lambda", type=float, default=0.01)
+
+    mca = parser.add_argument_group("Multi-context attention (MCA)")
+    mca.add_argument("--use-mca", action="store_true")
+    mca.add_argument(
+        "--mca-insertion-layers", type=int, nargs="+", default=None, metavar="N",
+    )
+    mca.add_argument("--mca-num-heads", type=int, default=8)
+    mca.add_argument("--mca-gate-type", type=str, default="scalar")
+    mca.add_argument("--mca-gate-bias-init", type=float, default=-2.0)
+
+    train_g = parser.add_argument_group("Training")
+    train_g.add_argument("--epochs", type=int, default=1)
+    train_g.add_argument("--max-steps", type=int, default=-1)
+    train_g.add_argument("--batch-size", type=int, default=4)
+    train_g.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    train_g.add_argument("--lr", type=float, default=2e-5)
+    train_g.add_argument("--weight-decay", type=float, default=0.1)
+    train_g.add_argument("--grad-clip", type=float, default=1.0)
+    train_g.add_argument("--warmup-ratio", type=float, default=0.03)
+    train_g.add_argument(
+        "--mixed-precision", type=str, default="no",
+        choices=["no", "fp16", "bf16"],
+    )
+    train_g.add_argument("--num-workers", type=int, default=0)
+    train_g.add_argument("--pin-memory", action="store_true", default=False)
+    train_g.add_argument(
+        "--persistent-workers", action="store_true", default=False,
+    )
+
+    ckpt = parser.add_argument_group("Checkpointing")
+    ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/run")
+    ckpt.add_argument("--save-every", type=int, default=1000)
+    ckpt.add_argument(
+        "--save-format", type=str, default="pt",
+        choices=["pt", "safetensors"],
+    )
+    ckpt.add_argument("--resume", type=str, default=None, metavar="PATH")
+    ckpt.add_argument("--init-weights", type=str, default=None, metavar="PATH")
+
+    log = parser.add_argument_group("Logging")
+    log.add_argument("--log-every", type=int, default=10)
+    log.add_argument("--wandb", action="store_true")
+    log.add_argument("--wandb-project", type=str, default="titans")
+    log.add_argument("--wandb-run-name", type=str, default=None)
+
+    misc = parser.add_argument_group("Misc")
+    misc.add_argument("--seed", type=int, default=42)
+
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Accelerator + logging setup
+# ---------------------------------------------------------------------------
+
+import importlib.util
+from dataclasses import dataclass
+
+try:
+    from accelerate import Accelerator
+
+    _HAS_ACCELERATE = True
+except ImportError:  # pragma: no cover - optional dep
+    _HAS_ACCELERATE = False
+
+_HAS_WANDB = importlib.util.find_spec("wandb") is not None
+
+
+@dataclass
+class AcceleratorBundle:
+    """Tuple-ish return value of ``init_accelerator_and_logging``."""
+
+    accelerator: Any
+    logger: logging.Logger
+    is_main_process: bool
+    has_wandb: bool
+
+
+def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
+    """Initialize the Accelerate runtime and a stdlib logger.
+
+    Args:
+        cfg: Object with attributes ``gradient_accumulation_steps`` (int),
+            ``mixed_precision`` (str in {"no","fp16","bf16"}),
+            and ``wandb`` (bool).
+
+    Returns:
+        ``AcceleratorBundle`` with the accelerator instance (or a CPU
+        stub), a module-level logger, ``is_main_process`` flag and a
+        ``has_wandb`` flag indicating whether wandb logging is available.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    logger = logging.getLogger("scripts")
+
+    if _HAS_ACCELERATE:
+        accelerator = Accelerator(
+            gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+            mixed_precision=cfg.mixed_precision,
+            log_with="wandb" if getattr(cfg, "wandb", False) and _HAS_WANDB else None,
+        )
+        is_main = accelerator.is_main_process
+    else:
+        class _Stub:
+            is_main_process = True
+            device = "cpu"
+
+            def prepare(self, *args):
+                return args if len(args) > 1 else args[0]
+
+            def print(self, *args, **kwargs):
+                print(*args, **kwargs)
+
+        accelerator = _Stub()
+        is_main = True
+
+    return AcceleratorBundle(
+        accelerator=accelerator,
+        logger=logger,
+        is_main_process=is_main,
+        has_wandb=_HAS_WANDB,
+    )
+
+
+# ---------------------------------------------------------------------------
+# setup_checkpoint_dir
+# ---------------------------------------------------------------------------
+
+import re
+from pathlib import Path
+
+
+@dataclass
+class CheckpointSetup:
+    """Return type for setup_checkpoint_dir."""
+
+    output_dir: Path
+    resume_path: Path | None
+    resume_step: int
+
+
+def setup_checkpoint_dir(
+    output_dir: str, resume_path: str | None = None,
+) -> CheckpointSetup:
+    """Create the output directory (if missing) and resolve a resume path.
+
+    Args:
+        output_dir: Where future checkpoints will be written.
+        resume_path: Optional explicit checkpoint file to resume from.
+            Must exist if provided.
+
+    Returns:
+        ``CheckpointSetup`` with the resolved output path, the resume
+        checkpoint (if any), and the step number parsed from the
+        filename (``step_123.pt`` -> 123; unparseable -> 0).
+
+    Raises:
+        FileNotFoundError: If ``resume_path`` is given but the file does
+            not exist.
+    """
+    out = Path(output_dir).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    resume: Path | None = None
+    step = 0
+    if resume_path is not None:
+        resume = Path(resume_path).expanduser()
+        if not resume.exists():
+            raise FileNotFoundError(f"--resume file not found: {resume}")
+        m = re.search(r"step[_-]?(\d+)", resume.stem)
+        if m:
+            step = int(m.group(1))
+
+    return CheckpointSetup(output_dir=out, resume_path=resume, resume_step=step)

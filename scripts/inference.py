@@ -22,6 +22,19 @@ from titans import TitansConfig, TitansMAC
 from titans.checkpoint import load_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 
+# scripts/ is imported both as a namespace package (under pytest) and as a
+# flat directory (when the script is invoked as ``python scripts/inference.py``).
+try:
+    from scripts._common import (  # type: ignore[import-not-found]
+        MODEL_CLASSES,
+        create_model,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    from _common import (  # type: ignore[no-redef]
+        MODEL_CLASSES,
+        create_model,
+    )
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -62,9 +75,26 @@ def _save_final_memory(
 
 
 def load_model(
-    checkpoint_path: str, device: torch.device
+    checkpoint_path: str, device: torch.device, variant: str = "mac",
 ) -> tuple[TitansMAC, TitansConfig]:
-    """Load model from checkpoint (.pt or .safetensors, auto-detected)."""
+    """Load model from checkpoint (.pt or .safetensors, auto-detected).
+
+    Uses the shared ``MODEL_CLASSES`` registry so inference stays in sync
+    with the training scripts as new Titans variants land.
+
+    Args:
+        checkpoint_path: Path to a ``.pt`` or ``.safetensors`` checkpoint.
+        device: Torch device to load the model onto.
+        variant: Titans variant key (``mac``/``mag``/``mal``/``lmm``).
+
+    Returns:
+        Tuple of ``(model, config)`` with the model in ``eval()`` mode.
+    """
+    if variant not in MODEL_CLASSES:
+        raise ValueError(
+            f"Unknown variant: {variant!r}. Options: {sorted(MODEL_CLASSES)}"
+        )
+
     ckpt = load_checkpoint(checkpoint_path, device=device)
 
     if "config" in ckpt:
@@ -77,7 +107,7 @@ def load_model(
             "Pass model config via CLI args (--dim, --num-layers, etc.)"
         )
 
-    model = TitansMAC(config)
+    model = create_model(variant, config)
     model.load_state_dict(ckpt["model"])
     model.to(device)
     model.eval()
@@ -198,6 +228,11 @@ def generate(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Titans inference")
     parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument(
+        "--model", type=str, default="mac",
+        choices=sorted(MODEL_CLASSES.keys()),
+        help="Titans model variant to instantiate from the checkpoint",
+    )
     parser.add_argument("--tokenizer", type=str, default="gpt2")
     parser.add_argument("--prompt", type=str, default="The meaning of life is")
     parser.add_argument("--max-new-tokens", type=int, default=100)
@@ -231,7 +266,7 @@ def main() -> None:
 
     logger.info(f"Device: {device}")
 
-    model, config = load_model(args.checkpoint, device)
+    model, config = load_model(args.checkpoint, device, variant=args.model)
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")
 
     if args.signal_log and not args.auto_checkpoint:
