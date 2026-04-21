@@ -72,7 +72,7 @@ from titans.novelty_detector import (
 )
 from titans.memory_checkpointer import MemoryCheckpointer
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     # Config
