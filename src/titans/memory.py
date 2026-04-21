@@ -210,11 +210,18 @@ class NeuralLongTermMemory(nn.Module):
         values: torch.Tensor,
         weights: list[torch.Tensor],
         delta: torch.Tensor | None = None,
-    ) -> list[torch.Tensor]:
+        return_pred_error: bool = False,
+    ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
         num_layers = len(weights)
         if num_layers == 1:
-            return self._compute_gradients_linear(keys, values, weights[0], delta=delta)
-        return self._compute_gradients_deep(keys, values, weights, delta=delta)
+            return self._compute_gradients_linear(
+                keys, values, weights[0], delta=delta,
+                return_pred_error=return_pred_error,
+            )
+        return self._compute_gradients_deep(
+            keys, values, weights, delta=delta,
+            return_pred_error=return_pred_error,
+        )
 
     def _compute_gradients_linear(
         self,
@@ -222,7 +229,8 @@ class NeuralLongTermMemory(nn.Module):
         values: torch.Tensor,
         weight: torch.Tensor,
         delta: torch.Tensor | None = None,
-    ) -> list[torch.Tensor]:
+        return_pred_error: bool = False,
+    ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
         pred_W = self._get_effective_weights([weight], detach_base=True)[0]
         predictions = F.linear(keys, pred_W)
         err_clip = self.config.memory_error_clip
@@ -244,7 +252,16 @@ class NeuralLongTermMemory(nn.Module):
         grad_w = scale * (error_flat.T @ keys_flat)
 
         grad_clip = self.config.memory_grad_clip
-        return [torch.clamp(grad_w, -grad_clip, grad_clip)]
+        grads = [torch.clamp(grad_w, -grad_clip, grad_clip)]
+
+        pred_err_norm: torch.Tensor | None = None
+        if return_pred_error:
+            # L2 norm of the raw (pre-clip) prediction error, one scalar per
+            # memory layer. Detached and cast to float32 for observability so
+            # the caller can emit it without perturbing the inner-loop graph.
+            pred_err_norm = (predictions - values).detach().float().norm().reshape(1)
+
+        return grads, pred_err_norm
 
     def _compute_gradients_deep(
         self,
@@ -252,7 +269,8 @@ class NeuralLongTermMemory(nn.Module):
         values: torch.Tensor,
         weights: list[torch.Tensor],
         delta: torch.Tensor | None = None,
-    ) -> list[torch.Tensor]:
+        return_pred_error: bool = False,
+    ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
         num_layers = len(weights)
         effective = self._get_effective_weights(weights, detach_base=True)
         batch_size, seq_len = keys.shape[0], keys.shape[1]
@@ -301,7 +319,13 @@ class NeuralLongTermMemory(nn.Module):
                 x = pre_activations[i - 1]
                 delta_bp = delta_bp * self._activation_derivative(x)
 
-        return grads  # type: ignore[return-value]
+        pred_err_norm: torch.Tensor | None = None
+        if return_pred_error:
+            # Final-layer prediction residual (pre-clip), detached float L2
+            # norm as one scalar for the deep inner-loop.
+            pred_err_norm = (h - values).detach().float().norm().reshape(1)
+
+        return grads, pred_err_norm  # type: ignore[return-value]
 
     def _activation_derivative(self, x: torch.Tensor) -> torch.Tensor:
         if self.config.activation == "silu":
@@ -359,7 +383,9 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | torch.Tensor = 1.0,
         memory_gate: torch.Tensor | None = None,
         return_keys: bool = False,
+        return_q: bool = False,
         retrieve_after_update: bool = True,
+        return_signal_frame: bool = False,
     ) -> tuple:
         """Forward with optional retrieval source.
 
@@ -443,6 +469,7 @@ class NeuralLongTermMemory(nn.Module):
 
         theta = theta * lr_scale
 
+        pred_err: torch.Tensor | None = None
         if len(state.weights) == 1:
             if self.config.per_chunk_decay:
                 # Sigmoid output = per-chunk decay fraction.  Convert to the
@@ -451,8 +478,9 @@ class NeuralLongTermMemory(nn.Module):
                 chunk_alpha = alpha
                 seq_len = float(x.shape[1])
                 alpha = 1.0 - torch.pow(1.0 - chunk_alpha, 1.0 / seq_len)
-            new_state = self._parallel_memory_update_linear(
-                k, v, state, alpha, theta, eta, delta=delta_val
+            new_state, pred_err = self._parallel_memory_update_linear(
+                k, v, state, alpha, theta, eta, delta=delta_val,
+                return_pred_error=return_signal_frame,
             )
         else:
             # Shared deep-memory weights require batch-scalar gate values for
@@ -467,8 +495,9 @@ class NeuralLongTermMemory(nn.Module):
             K = int(self.config.num_memory_inner_steps)
             if K == 1:
                 # Legacy single-step path (exact backward-compat for K=1).
-                grads = self._compute_gradients(
-                    k, v, state.weights, delta=delta_val
+                grads, pred_err = self._compute_gradients(
+                    k, v, state.weights, delta=delta_val,
+                    return_pred_error=return_signal_frame,
                 )
                 new_momentum = [
                     eta_scalar * m - theta_scalar * g
@@ -505,7 +534,7 @@ class NeuralLongTermMemory(nn.Module):
                             continue
                         k_sub = k[:, lo_i:hi_i, :]
                         v_sub = v[:, lo_i:hi_i, :]
-                        grads = self._compute_gradients(
+                        grads, _ = self._compute_gradients(
                             k_sub, v_sub, prev_w, delta=delta_val,
                         )
                         prev_m = [
@@ -524,8 +553,9 @@ class NeuralLongTermMemory(nn.Module):
                 if hi > lo:
                     k_final = k[:, lo:hi, :]
                     v_final = v[:, lo:hi, :]
-                    grads = self._compute_gradients(
+                    grads, pred_err = self._compute_gradients(
                         k_final, v_final, prev_w, delta=delta_val,
+                        return_pred_error=return_signal_frame,
                     )
                     new_momentum = [
                         eta_scalar * m - theta_scalar * g
@@ -585,12 +615,26 @@ class NeuralLongTermMemory(nn.Module):
                     weight_bits=self.config.memory_state_weight_bits,
                     momentum_bits=self.config.memory_state_momentum_bits,
                 )
+            extras: list = []
             if return_keys:
-                return output, returned_state, gate_snapshot, k
+                extras.append(k)
+            if return_q:
+                extras.append(q)
+            if return_signal_frame:
+                extras.append(pred_err)
+            if extras:
+                return (output, returned_state, gate_snapshot, *extras)
             return output, returned_state, gate_snapshot
 
+        extras = []
         if return_keys:
-            return output, None, gate_snapshot, k
+            extras.append(k)
+        if return_q:
+            extras.append(q)
+        if return_signal_frame:
+            extras.append(pred_err)
+        if extras:
+            return (output, None, gate_snapshot, *extras)
         return output, None, gate_snapshot
 
     def _parallel_memory_update_linear(
@@ -602,7 +646,8 @@ class NeuralLongTermMemory(nn.Module):
         theta: torch.Tensor,
         eta: torch.Tensor,
         delta: torch.Tensor | None = None,
-    ) -> MemoryState:
+        return_pred_error: bool = False,
+    ) -> tuple[MemoryState, torch.Tensor | None]:
         """Tensorized parallel memory update for linear memory (Section 3.2)."""
         B, S, D = keys.shape
         W_0 = state.weights[0]
@@ -625,6 +670,11 @@ class NeuralLongTermMemory(nn.Module):
         # Predict from effective weights (base + delta when delta_memory_param)
         pred_W = self._get_effective_weights([W_0], detach_base=True)[0]
         preds = F.linear(keys, pred_W)
+        pred_err_norm: torch.Tensor | None = None
+        if return_pred_error:
+            # Raw (pre-clip) prediction-error L2 norm as the primary novelty
+            # signal. Detached + float32 so emission doesn't perturb grads.
+            pred_err_norm = (preds - values).detach().float().norm().reshape(1)
         errors = torch.clamp(preds - values, -err_clip, err_clip)
 
         if self.memory_objective == "huber":
@@ -684,7 +734,7 @@ class NeuralLongTermMemory(nn.Module):
 
         new_weights = decay_S * W_0 + c_S0 * S_prev - theta * grad_combined
 
-        return MemoryState(weights=[new_weights], momentum=[new_momentum])
+        return MemoryState(weights=[new_weights], momentum=[new_momentum]), pred_err_norm
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
         q = self.proj_q(queries)

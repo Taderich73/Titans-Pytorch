@@ -665,9 +665,12 @@ class TestVProjectionActivation:
         captured2 = {}
         orig2 = memory2._compute_gradients_deep
 
-        def capture2(keys, values, weights, delta=None):
+        def capture2(keys, values, weights, delta=None, return_pred_error=False):
             captured2["values"] = values.detach().clone()
-            return orig2(keys, values, weights, delta=delta)
+            return orig2(
+                keys, values, weights, delta=delta,
+                return_pred_error=return_pred_error,
+            )
 
         memory2._compute_gradients_deep = capture2  # type: ignore[assignment]
         memory2(x)
@@ -701,7 +704,7 @@ class TestErrorScale:
         values = torch.randn(B, S, D)
         weight = memory.memory.layers[0].weight.data.clone()
 
-        grads = memory._compute_gradients_linear(keys, values, weight)
+        grads, _ = memory._compute_gradients_linear(keys, values, weight)
 
         # Expected per paper: scale = 2/S
         preds = torch.nn.functional.linear(keys, weight)
@@ -732,7 +735,7 @@ class TestErrorScale:
         values = torch.randn(B, S, D)
         weights = [memory.memory.layers[i].weight.data.clone() for i in range(2)]
 
-        grads = memory._compute_gradients_deep(keys, values, weights)
+        grads, _ = memory._compute_gradients_deep(keys, values, weights)
 
         # With 2/numel, grad would be scaled by D_out smaller than 2/S.
         # We assert the last-layer grad's Frobenius norm matches 2/S scaling.
@@ -780,7 +783,7 @@ class TestErrorScale:
         eta = torch.tensor(0.0)  # no momentum
         theta = torch.tensor(1.0)
 
-        new_state = memory._parallel_memory_update_linear(
+        new_state, _ = memory._parallel_memory_update_linear(
             k_proc, v, state, alpha, theta, eta
         )
         new_w = new_state.weights[0]

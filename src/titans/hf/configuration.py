@@ -48,6 +48,7 @@ class TitansMACConfig(PretrainedConfig):
         local_chunk_sizes: list[int] | None = None,
         local_shard_length: int = 2048,
         use_qk_projection: bool = True,
+        tnt_qk_projection: str = "per_position",
         tnt_stage: int = 1,
         finetune_local_chunk_sizes: list[int] | None = None,
         use_attn_res: bool = False,
@@ -115,6 +116,7 @@ class TitansMACConfig(PretrainedConfig):
         self.local_chunk_sizes = local_chunk_sizes if local_chunk_sizes is not None else [8, 16]
         self.local_shard_length = local_shard_length
         self.use_qk_projection = use_qk_projection
+        self.tnt_qk_projection = tnt_qk_projection
         self.tnt_stage = tnt_stage
         self.finetune_local_chunk_sizes = finetune_local_chunk_sizes
         self.use_attn_res = use_attn_res

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -56,6 +57,13 @@ class TitansConfig:
     local_chunk_sizes: list[int] = field(default_factory=lambda: [8, 16])
     local_shard_length: int = 2048
     use_qk_projection: bool = True
+    # QK projection variant (TNT Eq. 7):
+    # - "per_position" (default, paper-faithful): per-token M_t is applied to
+    #   q_t in LocalMemory retrieval, computed causally inside the chunk.
+    # - "chunk_mean": legacy path — a single chunk-aggregated carry is applied
+    #   uniformly to all queries. Retained so pre-fix checkpoints can be
+    #   loaded without semantic drift; violates strict causality per Eq. 7.
+    tnt_qk_projection: Literal["per_position", "chunk_mean"] = "per_position"
     tnt_stage: int = 1
     finetune_local_chunk_sizes: list[int] | None = None
 
@@ -190,6 +198,12 @@ class TitansConfig:
             raise ValueError(
                 f"num_memory_inner_steps must be >= 1, got {self.num_memory_inner_steps}"
             )
+        valid_qk = ("per_position", "chunk_mean")
+        if self.tnt_qk_projection not in valid_qk:
+            raise ValueError(
+                f"tnt_qk_projection must be one of {valid_qk}, "
+                f"got '{self.tnt_qk_projection}'"
+            )
         if self.use_mca:
             for idx in self.mca_active_insertion_layers:
                 if idx >= self.num_layers:
@@ -239,6 +253,7 @@ class TitansConfig:
             "local_chunk_sizes": self.local_chunk_sizes,
             "local_shard_length": self.local_shard_length,
             "use_qk_projection": self.use_qk_projection,
+            "tnt_qk_projection": self.tnt_qk_projection,
             "tnt_stage": self.tnt_stage,
             "finetune_local_chunk_sizes": self.finetune_local_chunk_sizes,
             "use_attn_res": self.use_attn_res,

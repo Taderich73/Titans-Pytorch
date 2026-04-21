@@ -588,3 +588,84 @@ class TestStatisticalNoveltyDetector:
         assert "drop" in result.reason.lower(), (
             f"Expected drop direction in reason; got {result.reason!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestNoveltyCascadePriority (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestNoveltyCascadePriority:
+    """Regression guards locking in the cascade preference.
+
+    Once ``prediction_error_norms`` is populated (see Tasks 7+8), the
+    :class:`StatisticalNoveltyDetector` cascade must prefer it over
+    ``weight_delta``.  These tests protect against a future reordering that
+    would silently demote the primary signal.
+    """
+
+    def test_cascade_prefers_prediction_error_when_both_spike(self) -> None:
+        """When both pred_error and weight_delta are populated and spike,
+        the decision must cite prediction_error as the signal source."""
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=10,
+            sigma_threshold=2.0,
+            min_observations=4,
+        )
+        # Warmup with stable values on both signals.
+        for i in range(5):
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.1],
+                    weight_delta_norms=[0.1],
+                )
+            )
+        # Both signals spike simultaneously.
+        decision = det.observe(
+            _make_frame(
+                chunk_index=5,
+                error_norms=[100.0],
+                weight_delta_norms=[100.0],
+            )
+        )
+        assert decision.triggered
+        assert decision.signal_source == "prediction_error", (
+            f"Expected prediction_error priority, got {decision.signal_source}"
+        )
+
+    def test_cascade_falls_back_to_weight_delta_when_pred_error_absent(
+        self,
+    ) -> None:
+        """When prediction_error is unavailable (all-zero history) the
+        cascade must fall through to weight_delta."""
+        from titans.novelty_detector import StatisticalNoveltyDetector
+
+        det = StatisticalNoveltyDetector(
+            window_size=10,
+            sigma_threshold=2.0,
+            min_observations=4,
+        )
+        # Warmup with all-zero pred_error but stable weight_delta.
+        for i in range(5):
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.0],
+                    weight_delta_norms=[0.1],
+                )
+            )
+        # weight_delta spikes; pred_error stays zero (unavailable).
+        decision = det.observe(
+            _make_frame(
+                chunk_index=5,
+                error_norms=[0.0],
+                weight_delta_norms=[100.0],
+            )
+        )
+        assert decision.triggered
+        assert decision.signal_source == "weight_delta", (
+            f"Expected weight_delta fallback, got {decision.signal_source}"
+        )
