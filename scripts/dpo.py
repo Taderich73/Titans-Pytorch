@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,9 +75,19 @@ from titans.lora import (
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "dpo").
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -1099,11 +1110,13 @@ def train(config: DPOConfig) -> None:
         )
 
     is_iterable = isinstance(train_dataset, IterableDataset)
-    train_dataloader = DataLoader(
+    train_dataloader = make_dataloader(
         train_dataset,
         batch_size=config.batch_size,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
         shuffle=not is_iterable,
-        num_workers=0,
+        streaming=is_iterable,
         drop_last=True,
         collate_fn=dpo_collate_fn if use_streaming else None,
     )
@@ -1116,10 +1129,11 @@ def train(config: DPOConfig) -> None:
     else:
         trainable = list(model.parameters())
 
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         trainable,
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     # ------------------------------------------------------------------
@@ -1155,6 +1169,14 @@ def train(config: DPOConfig) -> None:
     # ------------------------------------------------------------------
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, scheduler
+    )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
     )
 
     # ------------------------------------------------------------------

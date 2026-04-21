@@ -9,10 +9,25 @@ boundary with a differentiable sigmoid falloff.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 import torch.nn as nn
 
 from titans.config import TitansConfig
+
+
+@lru_cache(maxsize=32)
+def _adaptive_window_grid(
+    seq_len: int, device_str: str
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return (row_idx, col_idx, causal_mask) cached per (seq_len, device)."""
+    device = torch.device(device_str)
+    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+    row_idx = positions.unsqueeze(1)
+    col_idx = positions.unsqueeze(0)
+    causal = (col_idx <= row_idx).float()
+    return row_idx, col_idx, causal
 
 
 class AdaptiveWindowPredictor(nn.Module):
@@ -45,13 +60,10 @@ class AdaptiveWindowPredictor(nn.Module):
         raw = self.proj(x)  # (batch, seq_len, 1)
         falloff_centers = self.min_window + self.window_range * torch.sigmoid(raw)
 
-        positions = torch.arange(seq_len, device=x.device, dtype=torch.float32)
-        row_idx = positions.unsqueeze(1)  # (seq_len, 1)
-        col_idx = positions.unsqueeze(0)  # (1, seq_len)
+        row_idx, col_idx, causal = _adaptive_window_grid(seq_len, str(x.device))
         distance = row_idx - col_idx  # (seq_len, seq_len)
 
         soft_mask = torch.sigmoid(self.temperature * (falloff_centers - distance))
-        causal = (col_idx <= row_idx).float()
         soft_mask = soft_mask * causal
         soft_mask = soft_mask.unsqueeze(1)  # (batch, 1, seq_len, seq_len)
 

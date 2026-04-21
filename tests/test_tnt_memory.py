@@ -158,3 +158,46 @@ class TestLocalMemoryReset:
             f"expected counter=0 at shard boundary, got {state2.local_step_counters[0]}"
         )
         assert out2.shape == (batch_size, seq_len, config.dim)
+
+
+def test_qk_carry_reset_uses_new_zeros() -> None:
+    """The qk_carry reset branch must use ``new_zeros`` on the existing
+    carry tensor so dtype (and device) are inherited rather than dropping
+    to the default float32.
+
+    Regression guard for ``torch.zeros(..., device=x.device)`` which
+    silently loses any non-default dtype. We verify the fix by patching
+    ``Tensor.new_zeros`` and confirming it gets called with the expected
+    matrix shape during the reset path.
+    """
+    config = TitansConfig(
+        dim=32, num_heads=4, num_memory_layers=2,
+        local_chunk_sizes=[4], local_shard_length=8,
+        use_qk_projection=True,
+    )
+    hm = HierarchicalMemory(config)
+
+    state = hm.init_state(batch_size=1)
+    # Arrange for the reset branch to fire: counter > 0 and divisible by
+    # shard_length (8). init_state produces counter=0, so bump it.
+    state.local_step_counters[0] = 8
+
+    # Spy on Tensor.new_zeros to confirm the reset branch used it (rather
+    # than falling back to plain torch.zeros, which loses dtype).
+    original = torch.Tensor.new_zeros
+    called_with_shape: list[tuple[int, int]] = []
+
+    def spy(self, *args, **kwargs):
+        if args == (config.dim, config.dim):
+            called_with_shape.append(args)
+        return original(self, *args, **kwargs)
+
+    x = torch.randn(1, 4, config.dim)
+    with patch.object(torch.Tensor, "new_zeros", new=spy):
+        _, _, _ = hm(x, state=state)
+
+    assert called_with_shape, (
+        "Expected the qk_carry reset branch to call "
+        "qk_projections[i].new_zeros(dim, dim); it didn't. "
+        "Check for a lingering torch.zeros(...) on the reset path."
+    )

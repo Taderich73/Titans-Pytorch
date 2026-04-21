@@ -79,14 +79,80 @@ def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
     return block.mca(h, W)
 
 
+def _build_attnres_schedule(
+    num_blocks: int,
+    mca_block_indices: frozenset[int],
+    sub_layer_block_size: int,
+) -> tuple[tuple[tuple[str, int, bool], ...], int]:
+    """Precompute the AttnRes sub-layer schedule.
+
+    The AttnRes path emits a fixed sequence of sub-layer operations whose
+    flush boundaries (the points at which the running ``partial_block``
+    becomes a completed block) are entirely determined by construction-time
+    config: ``num_layers``, the MCA insertion layers, and
+    ``attnres_sub_layer_block_size``. Computing the schedule up front gives
+    ``process_chunk`` a static Python loop that ``torch.compile`` can
+    fully unroll without any data-dependent control flow.
+
+    Args:
+        num_blocks: Number of MAC/MAG/MAL blocks in the model.
+        mca_block_indices: Block indices that carry an MCA sub-layer.
+        sub_layer_block_size: ``S`` — number of sub-layers per completed
+            AttnRes block (see ``TitansConfig.attnres_sub_layer_block_size``).
+
+    Returns:
+        Tuple of:
+          * ``schedule``: an immutable tuple of ``(op_kind, block_idx,
+            flush)`` entries, where ``op_kind`` is one of ``"core"``,
+            ``"mca"``, ``"ffn"`` and ``flush`` is True when this sub-layer
+            closes out the current completed block.
+          * ``num_completed_blocks``: total number of completed blocks
+            including the initial ``b_0`` seed, so ``schedule`` will append
+            ``num_completed_blocks - 1`` tensors to ``completed_blocks``.
+    """
+    schedule: list[tuple[str, int, bool]] = []
+    sub_idx = 0
+    for i in range(num_blocks):
+        ops = ["core", "mca", "ffn"] if i in mca_block_indices else ["core", "ffn"]
+        for op in ops:
+            sub_idx += 1
+            # Flush on sub-layer boundary, and always on the final sub-layer.
+            is_final = (i == num_blocks - 1) and op == ops[-1]
+            flush = (sub_idx % sub_layer_block_size == 0) or is_final
+            schedule.append((op, i, flush))
+    # +1 for b_0 (the chunk embedding seed).
+    num_completed = 1 + sum(1 for entry in schedule if entry[2])
+    return tuple(schedule), num_completed
+
+
 def process_chunk(
     blocks: nn.ModuleList,
     chunk: torch.Tensor,
     states: list[MemoryState | TNTMemoryState],
     config: TitansConfig,
     _step_count: int = 0,
+    attnres_schedule: tuple[tuple[str, int, bool], ...] | None = None,
 ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
-    """Process a single chunk through all blocks."""
+    """Process a single chunk through all blocks.
+
+    Both branches (standard residual and AttnRes) are structured so
+    ``torch.compile(fullgraph=True)`` can lower the whole function into a
+    single graph with zero graph breaks: the AttnRes sub-layer schedule is
+    a construction-time constant tuple (see ``_build_attnres_schedule``),
+    so Dynamo unrolls the Python-level loop and constant-folds every
+    ``flush``/``op_kind``/``has_mca`` check into branch-free tensor ops.
+
+    Args:
+        blocks: Ordered MAC/MAG/MAL blocks to evaluate in sequence.
+        chunk: Input hidden states, shape ``(B, T, D)``.
+        states: Per-block incoming memory states (one entry per block,
+            may contain ``None`` for first-chunk initialization).
+        config: Global ``TitansConfig``.
+        _step_count: Global step index; used only to decide whether
+            AttnRes warmup is still active.
+        attnres_schedule: Optional precomputed schedule. When ``None``
+            (legacy callers) the schedule is built on the fly.
+    """
     new_states = []
     gate_snapshots = []
 
@@ -97,7 +163,7 @@ def process_chunk(
             core_out, new_state, gate_snapshot = block.core_forward(x, state=states[i])
             x = x + core_out
 
-            if hasattr(block, "has_mca") and block.has_mca:
+            if block.has_mca:
                 mca_out = block.mca_forward(x, new_state)
                 x = x + mca_out
 
@@ -107,65 +173,50 @@ def process_chunk(
             gate_snapshots.append(gate_snapshot)
         return x, new_states, gate_snapshots
 
-    # AttnRes path — replaces residual connections per AttnRes paper
-    S = config.attnres_sub_layer_block_size
+    # AttnRes path — replaces residual connections per AttnRes paper.
+    # The schedule is a compile-time constant: precomputed at __init__ by
+    # the owning Titans* model, or rebuilt here for legacy callers.
+    if attnres_schedule is None:
+        mca_set = frozenset(config.mca_active_insertion_layers)
+        attnres_schedule, _ = _build_attnres_schedule(
+            len(blocks), mca_set, config.attnres_sub_layer_block_size
+        )
+
     completed_blocks: list[torch.Tensor] = [chunk]  # b_0 = embedding
     partial_block: torch.Tensor | None = None
-    sub_idx = 0
     warmup = (
         config.attnres_warmup_steps > 0
         and _step_count < config.attnres_warmup_steps
     )
 
-    for i, block in enumerate(blocks):
-        # --- Core sub-layer ---
-        h, attn_weights = block.attn_res_core(completed_blocks, partial_block)
+    # Track whether each block's state has been produced yet (core_forward
+    # is the first sub-layer that actually creates the state; mca_forward
+    # needs the fresh post-core state).
+    block_states: list[MemoryState | TNTMemoryState | None] = [None] * len(blocks)
 
-        memory_gate = None
-        if not warmup:
-            memory_gate = block.attn_res_gate(attn_weights)
+    for op, block_idx, flush in attnres_schedule:
+        block = blocks[block_idx]
 
-        core_out, new_state, gate_snapshot = block.core_forward(
-            h, state=states[i], memory_gate=memory_gate
-        )
-        new_states.append(new_state)
-        gate_snapshots.append(gate_snapshot)
-
-        if partial_block is None:
-            partial_block = core_out
-        else:
-            partial_block = partial_block + core_out
-        sub_idx += 1
-
-        if sub_idx % S == 0:
-            completed_blocks.append(partial_block)
-            partial_block = None
-
-        # --- MCA sub-layer ---
-        if hasattr(block, "has_mca") and block.has_mca:
+        if op == "core":
+            h, attn_weights = block.attn_res_core(completed_blocks, partial_block)
+            memory_gate = None if warmup else block.attn_res_gate(attn_weights)
+            core_out, new_state, gate_snapshot = block.core_forward(
+                h, state=states[block_idx], memory_gate=memory_gate
+            )
+            new_states.append(new_state)
+            gate_snapshots.append(gate_snapshot)
+            block_states[block_idx] = new_state
+            step_out = core_out
+        elif op == "mca":
             h_mca, _ = block.attn_res_mca(completed_blocks, partial_block)
-            mca_out = block.mca_forward(h_mca, new_state)
+            step_out = block.mca_forward(h_mca, block_states[block_idx])
+        else:  # "ffn"
+            h, _ = block.attn_res_ffn(completed_blocks, partial_block)
+            step_out = block.ffn_forward(h)
 
-            if partial_block is None:
-                partial_block = mca_out
-            else:
-                partial_block = partial_block + mca_out
-            sub_idx += 1
-            if sub_idx % S == 0:
-                completed_blocks.append(partial_block)
-                partial_block = None
+        partial_block = step_out if partial_block is None else partial_block + step_out
 
-        # --- FFN sub-layer ---
-        h, _ = block.attn_res_ffn(completed_blocks, partial_block)
-        ffn_out = block.ffn_forward(h)
-
-        if partial_block is None:
-            partial_block = ffn_out
-        else:
-            partial_block = partial_block + ffn_out
-        sub_idx += 1
-
-        if sub_idx % S == 0 or i == len(blocks) - 1:
+        if flush:
             completed_blocks.append(partial_block)
             partial_block = None
 
@@ -287,6 +338,20 @@ class MACBlock(nn.Module):
         return x, new_state
 
 
+def _maybe_build_schedule(
+    config: TitansConfig,
+) -> tuple[tuple[str, int, bool], ...] | None:
+    """Precompute the AttnRes schedule when use_attn_res is on (else None)."""
+    if not config.use_attn_res:
+        return None
+    schedule, _ = _build_attnres_schedule(
+        num_blocks=config.num_layers,
+        mca_block_indices=frozenset(config.mca_active_insertion_layers),
+        sub_layer_block_size=config.attnres_sub_layer_block_size,
+    )
+    return schedule
+
+
 class TitansMAC(nn.Module):
     """Titans with Memory as Context."""
 
@@ -304,6 +369,7 @@ class TitansMAC(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
         self._step_count = 0
+        self._attnres_schedule = _maybe_build_schedule(config)
 
     def _init_weights(self) -> None:
         nn.init.normal_(self.embed.weight, std=self.config.init_std)
@@ -337,7 +403,12 @@ class TitansMAC(nn.Module):
 
         x = self.embed(input_ids)
         x, new_states, gate_snapshots = process_chunk(
-            self.blocks, x, states, self.config, self._step_count
+            self.blocks,
+            x,
+            states,
+            self.config,
+            self._step_count,
+            attnres_schedule=self._attnres_schedule,
         )
 
         x = self.norm(x)
@@ -475,6 +546,7 @@ class TitansMAG(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
         self._step_count = 0
+        self._attnres_schedule = _maybe_build_schedule(config)
 
     def _init_weights(self) -> None:
         nn.init.normal_(self.embed.weight, std=self.config.init_std)
@@ -508,7 +580,12 @@ class TitansMAG(nn.Module):
 
         x = self.embed(input_ids)
         x, new_states, gate_snapshots = process_chunk(
-            self.blocks, x, states, self.config, self._step_count
+            self.blocks,
+            x,
+            states,
+            self.config,
+            self._step_count,
+            attnres_schedule=self._attnres_schedule,
         )
 
         x = self.norm(x)
@@ -656,6 +733,7 @@ class TitansMAL(nn.Module):
         self._init_weights()
         self.head.weight = self.embed.weight
         self._step_count = 0
+        self._attnres_schedule = _maybe_build_schedule(config)
 
     def _init_weights(self) -> None:
         nn.init.normal_(self.embed.weight, std=self.config.init_std)
@@ -689,7 +767,12 @@ class TitansMAL(nn.Module):
 
         x = self.embed(input_ids)
         x, new_states, gate_snapshots = process_chunk(
-            self.blocks, x, states, self.config, self._step_count
+            self.blocks,
+            x,
+            states,
+            self.config,
+            self._step_count,
+            attnres_schedule=self._attnres_schedule,
         )
 
         x = self.norm(x)

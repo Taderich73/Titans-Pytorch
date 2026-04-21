@@ -34,22 +34,22 @@ def log_sdpa_backend() -> str:
 
 
 @lru_cache(maxsize=32)
-def _cached_sliding_window_mask(
+def _cached_sliding_window_bool_mask(
     seq_len: int, window_size: int, device_str: str
 ) -> torch.Tensor:
-    """LRU-cached sliding window mask to avoid rebuilding every forward pass.
+    """LRU-cached bool sliding-window causal mask (True = keep).
 
-    Uses a string device key (rather than torch.device) so the cache is
-    insensitive to ad-hoc device-object construction by callers.
+    SDPA accepts bool masks without dropping to the math backend, unlike
+    float masks which disable the flash kernel. The device is keyed by
+    string so the cache is insensitive to ad-hoc device-object construction.
     """
     device = torch.device(device_str)
     positions = torch.arange(seq_len, device=device)
     row_idx = positions.unsqueeze(1)
     col_idx = positions.unsqueeze(0)
-    causal_mask = col_idx <= row_idx
-    window_mask = (row_idx - col_idx) < window_size
-    bool_mask = causal_mask & window_mask
-    return torch.where(bool_mask, 0.0, float("-inf"))
+    causal = col_idx <= row_idx
+    windowed = (row_idx - col_idx) < window_size
+    return causal & windowed
 
 
 class RotaryPositionEmbedding(nn.Module):
@@ -111,6 +111,20 @@ class RotaryPositionEmbedding(nn.Module):
         q_rotated = self._apply_rotary(q, cos, sin)
         k_rotated = self._apply_rotary(k, cos, sin)
         return q_rotated, k_rotated
+
+    def apply(self, x: torch.Tensor, seq_offset: int = 0) -> torch.Tensor:
+        """Apply rotary embeddings to a single tensor.
+
+        Avoids doubling work when the caller only needs one of (q, k).
+        """
+        if self.rotate_dim == 0:
+            return x
+        seq_len = x.shape[2]
+        if seq_offset + seq_len > self._max_seq_len:
+            self._build_cache(seq_offset + seq_len)
+        cos = self.cos_cached[seq_offset : seq_offset + seq_len]
+        sin = self.sin_cached[seq_offset : seq_offset + seq_len]
+        return self._apply_rotary(x, cos, sin)
 
     def _apply_rotary(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
@@ -178,10 +192,23 @@ class SlidingWindowAttention(nn.Module):
         for module in [self.proj_q, self.proj_k, self.proj_v, self.proj_out]:
             nn.init.normal_(module.weight, std=std)
 
-    def _create_sliding_window_mask(
-        self, seq_len: int, device: torch.device
-    ) -> torch.Tensor:
-        return _cached_sliding_window_mask(seq_len, self.window_size, str(device))
+    def _select_sdpa_mode(
+        self,
+        seq_len: int,
+        prefix_len: int,
+        adaptive_mask: torch.Tensor | None,
+    ) -> str:
+        """Return 'is_causal' | 'bool_window' | 'adaptive_float'.
+
+        The pure-causal case (no prefix, no adaptive mask, window covers
+        the full sequence) routes through ``is_causal=True`` with no mask,
+        which lets SDPA dispatch to the flash-attention kernel on CUDA.
+        """
+        if adaptive_mask is not None:
+            return "adaptive_float"
+        if prefix_len == 0 and self.window_size >= seq_len:
+            return "is_causal"
+        return "bool_window"
 
     def forward(
         self,
@@ -208,26 +235,45 @@ class SlidingWindowAttention(nn.Module):
         v = _rearrange_to_heads(v, self.num_heads)
 
         if self.rope is not None:
-            q, _ = self.rope(q, q, seq_offset=prefix_len + seq_offset)
-            k, _ = self.rope(k, k, seq_offset=seq_offset)
+            q = self.rope.apply(q, seq_offset=prefix_len + seq_offset)
+            k = self.rope.apply(k, seq_offset=seq_offset)
 
-        if adaptive_mask is not None:
+        mode = self._select_sdpa_mode(seq_len, prefix_len, adaptive_mask)
+        if mode == "is_causal":
+            # Flash-eligible path: no mask tensor, SDPA picks the flash kernel.
+            output = F.scaled_dot_product_attention(
+                q, k, v, is_causal=True, scale=self.scale
+            )
+        elif mode == "bool_window":
+            bool_main = _cached_sliding_window_bool_mask(
+                seq_len, self.window_size, str(x.device)
+            )
+            if prefix_len > 0:
+                prefix_mask = torch.ones(
+                    (seq_len, prefix_len), dtype=torch.bool, device=x.device
+                )
+                bool_mask = torch.cat([prefix_mask, bool_main], dim=1)
+            else:
+                bool_mask = bool_main
+            bool_mask = bool_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, Q, K)
+            output = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=bool_mask, scale=self.scale
+            )
+        else:  # adaptive_float
             # adaptive_mask: (batch, 1, seq_len, seq_len) with values in [0, 1]
             # Build an additive mask: log(mask) where the soft mask is > 0,
             # -inf where the soft mask is exactly 0. This removes the ~-18.4
             # log-leak that torch.log(mask + 1e-8) produced at zero entries,
             # which allowed ~1e-8 probability to bleed through supposedly
             # fully-masked positions after softmax.
+            assert adaptive_mask is not None  # mode selector invariant
             neg_inf = torch.finfo(x.dtype).min
             nonzero = adaptive_mask > 0
-            # Single where: log on nonzero entries, -inf on zeros. Clamp guards
-            # fp16 subnormals; nonzero entries dominate, zeros get exactly -inf.
             additive = torch.where(
                 nonzero,
                 torch.log(adaptive_mask.clamp(min=1e-8)),
                 torch.full_like(adaptive_mask, neg_inf),
             )
-
             if prefix_len > 0:
                 prefix_attn = torch.zeros(
                     (batch_size, 1, seq_len, prefix_len), device=x.device
@@ -235,34 +281,13 @@ class SlidingWindowAttention(nn.Module):
                 mask = torch.cat([prefix_attn, additive], dim=-1)
             else:
                 mask = additive
-        else:
-            mask = self._create_extended_mask(
-                seq_len, full_x.shape[1], prefix_len, x.device
+            output = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, scale=self.scale
             )
-        output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, scale=self.scale
-        )
 
         output = _rearrange_from_heads(output)
         output = self.proj_out(output)
         return output
-
-    def _create_extended_mask(
-        self,
-        query_len: int,
-        key_len: int,
-        prefix_len: int,
-        device: torch.device,
-    ) -> torch.Tensor:
-        prefix_mask = torch.zeros((query_len, prefix_len), device=device)
-
-        if key_len > prefix_len:
-            main_mask = self._create_sliding_window_mask(query_len, device)
-        else:
-            main_mask = torch.zeros((query_len, 0), device=device)
-
-        mask = torch.cat([prefix_mask, main_mask], dim=1)
-        return mask.unsqueeze(0).unsqueeze(0)
 
 
 class SegmentedAttention(nn.Module):

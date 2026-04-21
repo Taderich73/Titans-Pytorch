@@ -359,8 +359,11 @@ class HierarchicalMemory(nn.Module):
                 and start_counter % local_mem.shard_length == 0
             )
             if will_reset_at_start:
-                qk_carry = torch.zeros(
-                    self.config.dim, self.config.dim, device=x.device,
+                # Preserve both device *and* dtype from the existing carry
+                # (plain torch.zeros with device=x.device silently drops
+                # any non-default dtype).
+                qk_carry = state.qk_projections[i].new_zeros(
+                    self.config.dim, self.config.dim
                 )
             else:
                 qk_carry = state.qk_projections[i]

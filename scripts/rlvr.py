@@ -56,6 +56,7 @@ import importlib
 import importlib.util
 import logging
 import math
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -83,9 +84,19 @@ from titans.lora import (
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "rlvr").
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -355,6 +366,241 @@ def sum_log_probs_for_completion(
 # ---------------------------------------------------------------------------
 
 
+def _prefill_prompt(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    chunk_size: int,
+) -> tuple[torch.Tensor, list | None, int]:
+    """Run the prompt through ``model`` once in chunk-aligned fashion.
+
+    Iterates only the FULL prompt chunks so memory commits are aligned to
+    chunk boundaries. Any partial tail is left for the caller to re-feed
+    from the committed state (matching the buffer/commit pattern used
+    during decode).
+
+    Args:
+        model: Titans model. Must accept ``(tokens, states=...)`` and
+            return ``(logits, states, _)``.
+        input_ids: Prompt token IDs of shape ``(B, prompt_len)``.
+        chunk_size: Model chunk size (``model.config.chunk_size``).
+
+    Returns:
+        Tuple of:
+        - ``last_full_chunk_logits``: logits from the last completed chunk,
+          or ``None`` if the prompt has no full chunk.
+        - ``committed_states``: detached memory state after the last commit
+          (``None`` if the model returned ``None`` states or no full chunk
+          ran).
+        - ``buffer_start``: index of the first un-committed token in the
+          prompt (``n_full * chunk_size``).
+    """
+    prompt_len = input_ids.shape[1]
+    n_full = prompt_len // chunk_size
+    buffer_start = n_full * chunk_size
+
+    states: list | None = None
+    last_chunk_logits: torch.Tensor | None = None
+    for i in range(n_full):
+        chunk_ids = input_ids[:, i * chunk_size : (i + 1) * chunk_size]
+        last_chunk_logits, states, _ = model(chunk_ids, states=states)
+        if states is not None:
+            states = [s.detach() if s is not None else None for s in states]
+
+    committed_states = (
+        [s.detach() if s is not None else None for s in states]
+        if states is not None
+        else None
+    )
+    return last_chunk_logits, committed_states, buffer_start
+
+
+def _decode_from_committed(
+    model: nn.Module,
+    tokens: torch.Tensor,
+    logits: torch.Tensor,
+    committed_states: list | None,
+    buffer_start: int,
+    *,
+    max_new_tokens: int,
+    temperature: float,
+    chunk_size: int,
+    eos_token_id: int | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run the decode loop from a prefilled committed memory state.
+
+    Per-step: sample the next token from ``logits[:, -1, :]``, append it,
+    then advance memory using the prefill/buffer/commit pattern — partial
+    buffers are re-fed from the committed state so memory only sees each
+    completed chunk exactly once.
+
+    Args:
+        model: Titans model.
+        tokens: Initial tokens of shape ``(B, prompt_len)``.
+        logits: Next-token logits for the first decode step, shape
+            ``(B, T_last, V)`` — only position ``-1`` is used.
+        committed_states: Detached memory states after the last prefill
+            commit, or ``None``.
+        buffer_start: Index of the first un-committed token (from prefill).
+        max_new_tokens: Maximum tokens to generate.
+        temperature: Sampling temperature (clipped to ``>= 1e-8``).
+        chunk_size: Model chunk size.
+        eos_token_id: If provided, stop when all sequences emit this token.
+
+    Returns:
+        Tuple of ``(tokens, completion_logps)`` where ``tokens`` is
+        ``(B, prompt_len + generated)`` and ``completion_logps`` is ``(B,)``
+        summed log-probs over generated positions (zeroed after EOS per row).
+    """
+    batch_size = tokens.shape[0]
+    device = tokens.device
+
+    completion_logps = torch.zeros(batch_size, device=device)
+    finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    states = committed_states
+    buf_start = buffer_start
+
+    for _ in range(max_new_tokens):
+        next_logits = logits[:, -1, :].float() / max(temperature, 1e-8)
+        probs = F.softmax(next_logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
+
+        log_p = F.log_softmax(next_logits, dim=-1)
+        token_logp = log_p.gather(dim=-1, index=next_token).squeeze(-1)
+        completion_logps = completion_logps + token_logp * (~finished).float()
+
+        tokens = torch.cat([tokens, next_token], dim=-1)
+
+        buffer = tokens[:, buf_start:]
+        buffer_len = buffer.shape[1]
+
+        if buffer_len >= chunk_size:
+            chunk = buffer[:, :chunk_size]
+            logits, new_states, _ = model(chunk, states=committed_states)
+            committed_states = (
+                [s.detach() if s is not None else None for s in new_states]
+                if new_states is not None
+                else None
+            )
+            states = committed_states
+            buf_start += chunk_size
+            if buffer_len > chunk_size:
+                remainder = buffer[:, chunk_size:]
+                logits, _, _ = model(remainder, states=committed_states)
+        else:
+            logits, _, _ = model(buffer, states=committed_states)
+
+        if eos_token_id is not None:
+            finished = finished | (next_token.squeeze(-1) == eos_token_id)
+            if finished.all():
+                break
+
+    # Silence unused-variable lint: ``states`` tracks the last-returned
+    # per-step state for possible future callers; its value is not needed
+    # to produce the return tuple.
+    del states
+    return tokens, completion_logps
+
+
+@torch.no_grad()
+def rollout_samples(
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    *,
+    max_new_tokens: int,
+    num_samples: int,
+    temperature: float,
+    eos_token_id: int | None = None,
+    pad_token_id: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Generate ``num_samples`` rollouts per prompt with buffered memory carry.
+
+    Amortizes the prompt prefill across all samples: the prompt's full
+    chunks are forwarded through the model once, producing a single set
+    of committed memory states that are then reused as the decode-start
+    state for every sample.  Each sample still decodes sequentially so
+    its memory evolution stays independent of the other samples in the
+    group (Titans' memory updates are shared across the batch dimension,
+    so batching samples along dim 0 during decode would mix their memory
+    state).
+
+    Args:
+        model: Titans model (must expose ``config.chunk_size`` and accept
+            ``(tokens, states=...)`` returning ``(logits, states, _)``).
+        input_ids: Prompt token IDs of shape ``(B, prompt_len)``; must
+            already live on the target device.
+        max_new_tokens: Maximum new tokens to generate per sample.
+        num_samples: Number of independent rollouts per prompt.
+        temperature: Sampling temperature.
+        eos_token_id: Optional EOS token; if supplied, finished rows stop
+            accumulating log-probs.
+        pad_token_id: Token used to right-pad shorter rollouts.
+
+    Returns:
+        Tuple of ``(generated_ids, completion_log_probs)`` with shapes
+        ``(B, num_samples, max_len)`` and ``(B, num_samples)`` respectively.
+        ``max_len`` is the longest rollout length in the group.
+    """
+    model.eval()
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
+    batch_size, prompt_len = input_ids.shape
+    device = input_ids.device
+
+    # --- Prefill ONCE, shared across all samples. ---
+    last_chunk_logits, committed_states, buffer_start = _prefill_prompt(
+        model, input_ids, chunk_size
+    )
+
+    # Derive the first decode-step logits from the prefilled state.
+    # If the prompt has a partial tail, re-feed it from committed_states so
+    # memory only sees it once (when the first chunk of decode commits).
+    if buffer_start < prompt_len:
+        buf = input_ids[:, buffer_start:]
+        shared_logits, _, _ = model(buf, states=committed_states)
+    else:
+        assert last_chunk_logits is not None, (
+            "chunk-aligned prompt must have at least one full chunk"
+        )
+        shared_logits = last_chunk_logits
+
+    all_sequences: list[torch.Tensor] = []
+    all_sum_logps: list[torch.Tensor] = []
+
+    for _ in range(num_samples):
+        # Each sample decodes from the SAME committed state (read-only; the
+        # model does not mutate inputs) but with independent sampled tokens,
+        # so their memory trajectories diverge after the first commit.
+        tokens_sample, logps_sample = _decode_from_committed(
+            model,
+            input_ids.clone(),
+            shared_logits,
+            committed_states,
+            buffer_start,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            chunk_size=chunk_size,
+            eos_token_id=eos_token_id,
+        )
+        all_sequences.append(tokens_sample)
+        all_sum_logps.append(logps_sample)
+
+    # Pad all sequences to the same length.
+    max_len = max(seq.shape[-1] for seq in all_sequences)
+    padded: list[torch.Tensor] = []
+    for seq in all_sequences:
+        pad_len = max_len - seq.shape[-1]
+        if pad_len > 0:
+            pad = torch.full(
+                (batch_size, pad_len), pad_token_id, dtype=torch.long, device=device
+            )
+            seq = torch.cat([seq, pad], dim=-1)
+        padded.append(seq)
+
+    generated_ids = torch.stack(padded, dim=1)  # (B, num_samples, max_len)
+    completion_log_probs = torch.stack(all_sum_logps, dim=1)  # (B, num_samples)
+    return generated_ids, completion_log_probs
+
+
 @torch.no_grad()
 def generate_rollouts(
     model: nn.Module,
@@ -367,11 +613,9 @@ def generate_rollouts(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate rollouts with memory-aware prefill->buffer->commit decoding.
 
-    Mirrors the inference.py generation pattern: prefill the prompt once
-    per sample to produce an initial committed memory state, then
-    autoregressively decode, re-feeding the since-commit buffer each step
-    from the committed state so memory sees each completed chunk exactly
-    once.
+    Thin wrapper around :func:`rollout_samples` that preserves the original
+    keyword-compatible signature used by the RLVR training loop. See
+    :func:`rollout_samples` for details.
 
     Args:
         model: Titans model with ``config.chunk_size``. Must accept
@@ -392,129 +636,15 @@ def generate_rollouts(
         - ``completion_log_probs``: shape (B, num_samples) sum log-probs for
           the generated completion (post-prompt) tokens only.
     """
-    model.eval()
-    base_model = model.module if hasattr(model, "module") else model
-    chunk_size = base_model.config.chunk_size
-
-    batch_size, prompt_len = input_ids.shape
-    device = input_ids.device
-
-    all_sequences: list[torch.Tensor] = []  # each: (B, T)
-    all_sum_logps: list[torch.Tensor] = []  # each: (B,)
-
-    for _ in range(num_samples):
-        tokens = input_ids.clone()  # (B, prompt_len)
-        # Accumulate per-token log-probs for the completion
-        completion_logps = torch.zeros(batch_size, device=device)
-        # Track which sequences have hit EOS
-        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
-
-        # ---- Prefill: iterate only FULL prompt chunks so memory commits
-        # are aligned to chunk boundaries. Any partial tail is handled
-        # uniformly via the re-feed path below (the same pattern used in
-        # the decode loop). Iterating input_ids.split(chunk_size) would
-        # commit the partial tail here AND re-feed it, double-counting
-        # those tokens once the first decode chunk commits. ----
-        n_full = prompt_len // chunk_size
-        buffer_start = n_full * chunk_size
-        states = None
-        last_chunk_logits = None
-        for i in range(n_full):
-            chunk_ids = input_ids[:, i * chunk_size : (i + 1) * chunk_size]
-            last_chunk_logits, states, _ = model(chunk_ids, states=states)
-            if states is not None:
-                states = [
-                    s.detach() if s is not None else None for s in states
-                ]
-
-        committed_states = (
-            [s.detach() if s is not None else None for s in states]
-            if states is not None
-            else None
-        )
-
-        # Derive next-token logits (for sampling the first generated token).
-        # If the prompt has a partial tail, re-feed it from committed_states
-        # so memory only ever sees it once (when the chunk completes during
-        # decode). If the prompt is chunk-aligned, the last committed chunk's
-        # final-position logits are already the next-token prediction.
-        if buffer_start < prompt_len:
-            buf = tokens[:, buffer_start:]
-            logits, _, _ = model(buf, states=committed_states)
-        else:
-            assert last_chunk_logits is not None, (
-                "chunk-aligned prompt must have at least one full chunk"
-            )
-            logits = last_chunk_logits
-
-        # ---- Decode loop ----
-        for _ in range(max_new_tokens):
-            next_logits = logits[:, -1, :].float() / max(temperature, 1e-8)
-            # Multinomial sampling
-            probs = F.softmax(next_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
-
-            # Accumulate log-prob for non-finished sequences
-            log_p = F.log_softmax(next_logits, dim=-1)
-            token_logp = log_p.gather(dim=-1, index=next_token).squeeze(-1)  # (B,)
-            completion_logps = completion_logps + token_logp * (~finished).float()
-
-            tokens = torch.cat([tokens, next_token], dim=-1)  # (B, T+1)
-
-            buffer = tokens[:, buffer_start:]
-            buffer_len = buffer.shape[1]
-
-            if buffer_len >= chunk_size:
-                # Full chunk ready — process and commit memory update
-                chunk = buffer[:, :chunk_size]
-                logits, states, _ = model(chunk, states=committed_states)
-                states = (
-                    [s.detach() if s is not None else None for s in states]
-                    if states is not None
-                    else None
-                )
-                committed_states = (
-                    [s.detach() if s is not None else None for s in states]
-                    if states is not None
-                    else None
-                )
-                buffer_start += chunk_size
-                if buffer_len > chunk_size:
-                    remainder = buffer[:, chunk_size:]
-                    logits, states, _ = model(
-                        remainder, states=committed_states
-                    )
-            else:
-                # Partial buffer — re-feed from committed state so memory
-                # only sees these tokens once when the chunk completes
-                logits, states, _ = model(buffer, states=committed_states)
-
-            if eos_token_id is not None:
-                finished = finished | (next_token.squeeze(-1) == eos_token_id)
-                if finished.all():
-                    break
-
-        all_sequences.append(tokens)
-        all_sum_logps.append(completion_logps)
-
-    # Pad all sequences to the same length
-    max_len = max(seq.shape[-1] for seq in all_sequences)
-    padded: list[torch.Tensor] = []
-    for seq in all_sequences:
-        pad_len = max_len - seq.shape[-1]
-        if pad_len > 0:
-            pad = torch.full(
-                (batch_size, pad_len), pad_token_id, dtype=torch.long, device=device
-            )
-            seq = torch.cat([seq, pad], dim=-1)
-        padded.append(seq)
-
-    # Stack: (B, num_samples, max_len)
-    generated_ids = torch.stack(padded, dim=1)
-    # Stack: (B, num_samples)
-    completion_log_probs = torch.stack(all_sum_logps, dim=1)
-
-    return generated_ids, completion_log_probs
+    return rollout_samples(
+        model,
+        input_ids,
+        max_new_tokens=max_new_tokens,
+        num_samples=num_samples,
+        temperature=temperature,
+        eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1418,11 +1548,13 @@ def train(config: RLVRConfig) -> None:
         )
 
     is_iterable = isinstance(train_dataset_obj, IterableDataset)
-    train_dataloader = DataLoader(
+    train_dataloader = make_dataloader(
         train_dataset_obj,
         batch_size=config.batch_size,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
         shuffle=not is_iterable,
-        num_workers=0,
+        streaming=is_iterable,
         drop_last=True,
         collate_fn=collate_fn,
     )
@@ -1431,10 +1563,11 @@ def train(config: RLVRConfig) -> None:
     # Optimizer (LoRA-only params)
     # ------------------------------------------------------------------
     trainable = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         trainable,
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     # ------------------------------------------------------------------
@@ -1470,6 +1603,14 @@ def train(config: RLVRConfig) -> None:
     # ------------------------------------------------------------------
     model, optimizer, train_dataloader, scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, scheduler
+    )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
     )
 
     # ------------------------------------------------------------------

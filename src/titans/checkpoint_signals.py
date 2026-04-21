@@ -75,6 +75,39 @@ def _frobenius(tensor: torch.Tensor) -> float:
     return float(torch.linalg.norm(tensor.float(), ord="fro").item())
 
 
+def _frobenius_gpu(tensor: torch.Tensor) -> torch.Tensor:
+    """Return the Frobenius norm of *tensor* as a 0-d tensor (no CPU sync).
+
+    Mirrors :func:`_frobenius` but keeps the result on-device so norms can be
+    stacked and transferred to the CPU in a single batched ``.tolist()`` call.
+
+    Args:
+        tensor: Arbitrary-rank tensor.
+
+    Returns:
+        A 0-d tensor holding the Frobenius norm in float32.
+    """
+    return torch.linalg.norm(tensor.float(), ord="fro")
+
+
+def _stack_norms_gpu(tensors: list[torch.Tensor]) -> torch.Tensor:
+    """Stack per-layer Frobenius norms into a 1-d tensor on device.
+
+    Returns an empty 1-d tensor when *tensors* is empty so downstream ``cat``
+    operations remain well-defined.
+
+    Args:
+        tensors: List of tensors to take per-element Frobenius norms of.
+
+    Returns:
+        A 1-d tensor of length ``len(tensors)`` on the same device as the
+        first tensor (or CPU when the list is empty).
+    """
+    if not tensors:
+        return torch.zeros(0)
+    return torch.stack([_frobenius_gpu(t) for t in tensors])
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -186,32 +219,77 @@ def build_signal_frame(
     Returns:
         A fully populated :class:`SignalFrame`.
     """
-    n_layers = len(_extract_weights(new_state))
+    old_weights = _extract_weights(old_state)
+    new_weights = _extract_weights(new_state)
+    old_mom = _extract_momentum(old_state)
+    new_mom = _extract_momentum(new_state)
+    n_layers = len(new_weights)
 
-    # Signals computed from state tensors.
-    weight_delta_norms = compute_weight_delta(old_state, new_state)
-    momentum_shift_norms = compute_momentum_shift(old_state, new_state)
-    weight_norms = compute_weight_norms(new_state)
-    momentum_norms = compute_momentum_norms(new_state)
+    # Compute all scalar signals on-device so they can be stacked and
+    # transferred to the CPU in one batched ``.tolist()`` call.  With
+    # auto-checkpointing enabled this collapses ``~4*L + 3*L`` individual
+    # ``.item()`` syncs per frame into a single CPU sync.
+    wd_t = _stack_norms_gpu(
+        [w_new - w_old for w_old, w_new in zip(old_weights, new_weights)]
+    )
+    ms_t = _stack_norms_gpu(
+        [m_new - m_old for m_old, m_new in zip(old_mom, new_mom)]
+    )
+    w_t = _stack_norms_gpu(new_weights)
+    m_t = _stack_norms_gpu(new_mom)
 
-    # Gate means — one scalar per layer from the GateSnapshot.
-    gate_alpha_means = [float(t.float().mean().item()) for t in gates.alpha]
-    gate_theta_means = [float(t.float().mean().item()) for t in gates.theta]
-    gate_eta_means = [float(t.float().mean().item()) for t in gates.eta]
+    def _gate_means(tensors: list[torch.Tensor]) -> torch.Tensor:
+        if not tensors:
+            return torch.zeros(0)
+        return torch.stack([t.float().mean() for t in tensors])
+
+    alpha_t = _gate_means(gates.alpha)
+    theta_t = _gate_means(gates.theta)
+    eta_t = _gate_means(gates.eta)
+
+    # TNT-specific per-local-memory weight norms — also computed on-device.
+    is_tnt = isinstance(new_state, TNTMemoryState)
+    if is_tnt:
+        local_norm_tensors = [
+            _stack_norms_gpu(local.weights) for local in new_state.local_states
+        ]
+    else:
+        local_norm_tensors = []
+
+    # Build a single cat buffer of all 0-d/1-d tensors, then one CPU sync.
+    parts = [wd_t, ms_t, w_t, m_t, alpha_t, theta_t, eta_t]
+    parts.extend(local_norm_tensors)
+    if any(p.numel() > 0 for p in parts):
+        batched = torch.cat([p.to(torch.float32) for p in parts])
+        flat = batched.tolist()
+    else:
+        flat = []
+
+    idx = 0
+
+    def _take(n: int) -> list[float]:
+        nonlocal idx
+        out = flat[idx : idx + n]
+        idx += n
+        return out
+
+    weight_delta_norms = _take(int(wd_t.numel()))
+    momentum_shift_norms = _take(int(ms_t.numel()))
+    weight_norms = _take(int(w_t.numel()))
+    momentum_norms = _take(int(m_t.numel()))
+    gate_alpha_means = _take(int(alpha_t.numel()))
+    gate_theta_means = _take(int(theta_t.numel()))
+    gate_eta_means = _take(int(eta_t.numel()))
+
+    local_signal_norms: list[list[float]] | None = None
+    if is_tnt:
+        local_signal_norms = [_take(int(t.numel())) for t in local_norm_tensors]
 
     # Optional signals that require model internals — default to zeros.
     if prediction_error_norms is None:
         prediction_error_norms = [0.0] * n_layers
     if gradient_norms is None:
         gradient_norms = [0.0] * n_layers
-
-    # TNT-specific fields.
-    local_signal_norms: list[list[float]] | None = None
-
-    if isinstance(new_state, TNTMemoryState):
-        local_signal_norms = [
-            [_frobenius(w) for w in local.weights] for local in new_state.local_states
-        ]
 
     return SignalFrame(
         chunk_index=chunk_index,

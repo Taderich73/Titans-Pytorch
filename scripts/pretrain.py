@@ -48,6 +48,20 @@ from titans import TitansConfig, TitansMAC
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
+# scripts/ is imported both as a namespace package and as a flat directory.
+try:
+    from scripts._common import (  # type: ignore[import-not-found]
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    from _common import (  # type: ignore[no-redef]
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -406,16 +420,21 @@ def train():
         logger.warning(f"Could not load dataset ({e}), falling back to synthetic")
         dataset = SyntheticDataset(VOCAB_SIZE, SEQ_LEN)
 
-    dataloader = DataLoader(
+    dataloader = make_dataloader(
         dataset,
         batch_size=BATCH_SIZE,
-        num_workers=0,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
+        streaming=isinstance(dataset, IterableDataset),
         drop_last=True,
     )
 
     # Optimizer + scheduler
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
+    optimizer = make_optimizer(
+        model.parameters(),
+        lr=LR,
+        weight_decay=WEIGHT_DECAY,
+        device_type=accelerator.device.type,
     )
 
     # accelerator.prepare() wraps scheduler.step() so it only fires on real
@@ -453,6 +472,14 @@ def train():
         model, optimizer, dataloader, scheduler
     )
     _log_mem("after accelerator.prepare")
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
+    )
 
     # Instrument each block with memory snapshots around core_forward and
     # around the memory module's forward call. No-op when PROFILE_MEMORY is

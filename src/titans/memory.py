@@ -112,6 +112,9 @@ class MemoryMLP(nn.Module):
         self.layers = nn.ModuleList(layers)
         self._init_weights(config.init_std)
 
+        self._layer_shapes = [tuple(layer.weight.shape) for layer in self.layers]
+        self._ref_dtype = self.layers[0].weight.dtype
+
     def _init_weights(self, std: float) -> None:
         for layer in self.layers:
             nn.init.normal_(layer.weight, std=std)
@@ -126,6 +129,13 @@ class MemoryMLP(nn.Module):
 
     def get_weights(self) -> list[torch.Tensor]:
         return [layer.weight.data.clone() for layer in self.layers]
+
+    def zero_weights_like(self, device: torch.device) -> list[torch.Tensor]:
+        """Return zero-initialized tensors matching each layer's weight shape."""
+        return [
+            torch.zeros(shape, dtype=self._ref_dtype, device=device)
+            for shape in self._layer_shapes
+        ]
 
     def get_base_weights(self) -> list[torch.Tensor]:
         """Return live weight parameter references (with autograd graph)."""
@@ -271,40 +281,65 @@ class NeuralLongTermMemory(nn.Module):
         delta: torch.Tensor | None = None,
         return_pred_error: bool = False,
     ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
+        # Analytical inner-loop gradient computation. The inner MLP forward
+        # pass (activations / pre-activations / effective weights) does not
+        # need autograd — running it under torch.no_grad() frees those
+        # tensors as soon as the block exits, instead of retaining them
+        # until the outer-loss backward pass.
+        #
+        # Gate projections (alpha/theta/eta) reach the outer LM loss via
+        # the retrieval path (forward_with_weights(q, effective)), not
+        # through these analytical grads, so detaching activations here
+        # is safe for them.
+        #
+        # EXCEPTION: gate_delta_proj (Huber δ) has its only gradient path
+        # through the clipped-error region of this loop. We therefore keep
+        # the ``error`` computation and the analytical backprop that
+        # consumes it OUTSIDE no_grad — ``delta_bp`` retains δ's graph
+        # edge while activations/effective weights remain detached (they
+        # come out of the no_grad block as leaves).
         num_layers = len(weights)
-        effective = self._get_effective_weights(weights, detach_base=True)
         batch_size, seq_len = keys.shape[0], keys.shape[1]
         batch_seq = batch_size * seq_len
-
-        activations = [keys]
-        pre_activations = []
-        h = keys
-
-        for i in range(num_layers):
-            h_pre = F.linear(h, effective[i])
-            pre_activations.append(h_pre)
-            if i < num_layers - 1:
-                h = self.memory.activation(h_pre)
-                activations.append(h)
-            else:
-                h = h_pre
-
         err_clip = self.config.memory_error_clip
-        raw_error = torch.clamp(h - values, -err_clip, err_clip)
+        grad_clip = self.config.memory_grad_clip
+        scale = 2.0 / float(seq_len)
 
+        with torch.no_grad():
+            effective = self._get_effective_weights(weights, detach_base=True)
+
+            activations = [keys]
+            pre_activations = []
+            h = keys
+
+            for i in range(num_layers):
+                h_pre = F.linear(h, effective[i])
+                pre_activations.append(h_pre)
+                if i < num_layers - 1:
+                    h = self.memory.activation(h_pre)
+                    activations.append(h)
+                else:
+                    h = h_pre
+
+            raw_error = torch.clamp(h - values, -err_clip, err_clip)
+
+        # ``error`` MAY carry δ's autograd graph (huber path). Other
+        # inputs — activations, effective weights, keys — are detached
+        # leaves by construction (no_grad block above), so grad_w /
+        # delta_bp only pin δ's graph edge, not the per-token activations.
         if self.memory_objective == "huber" and delta is not None:
             abs_error = torch.abs(raw_error)
-            error = torch.where(abs_error <= delta, raw_error, delta * torch.sign(raw_error))
+            error = torch.where(
+                abs_error <= delta, raw_error, delta * torch.sign(raw_error)
+            )
         else:
             error = raw_error
 
         # Per paper §3.1: outer scale is 2/S, not 2/(B*S*D_out).
         # This multiplier is absorbed by learnable theta = sigmoid(.)*memory_lr;
         # no behavioral regression expected, just paper-correct calibration.
-        scale = 2.0 / float(seq_len)
         delta_bp = scale * error
 
-        grad_clip = self.config.memory_grad_clip
         grads: list[torch.Tensor | None] = [None] * num_layers
 
         for i in range(num_layers - 1, -1, -1):
@@ -343,13 +378,13 @@ class NeuralLongTermMemory(nn.Module):
             raise ValueError(f"No derivative for activation: {self.config.activation}")
 
     def init_state(self, batch_size: int) -> MemoryState:  # noqa: ARG002
+        device = next(self.parameters()).device
         if self.config.delta_memory_param:
-            # Deltas start at zero — no corrections from base initially
-            base_weights = self.memory.get_weights()  # for shape/device only
-            weights = [torch.zeros_like(w) for w in base_weights]
+            # Deltas start at zero — allocate directly without cloning params
+            weights = self.memory.zero_weights_like(device)
         else:
-            weights = [w.detach().clone() for w in self.memory.get_weights()]
-        momentum = [torch.zeros_like(w) for w in weights]
+            weights = [layer.weight.detach().clone() for layer in self.memory.layers]
+        momentum = self.memory.zero_weights_like(device)
         return MemoryState(weights=weights, momentum=momentum)
 
     def _get_effective_weights(

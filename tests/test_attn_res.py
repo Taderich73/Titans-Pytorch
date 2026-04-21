@@ -66,3 +66,42 @@ class TestAttnResMemoryGate:
         importance = gate(weights)
         assert importance.shape == ()
         assert 0.0 <= importance.item() <= 1.0
+
+
+class TestAttnResCompileParity:
+    """The AttnRes path must produce numerically-close outputs eager vs compiled."""
+
+    def test_process_chunk_attnres_compiles_with_parity(self) -> None:
+        """torch.compile(fullgraph=True) on AttnRes path must match eager."""
+        import torch._dynamo
+
+        from titans import TitansConfig, TitansMAC
+
+        torch._dynamo.reset()
+        torch.manual_seed(0)
+        cfg = TitansConfig(
+            dim=32,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=128,
+            chunk_size=16,
+            window_size=16,
+            max_seq_len=64,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_attn_res=True,
+            num_attnres_blocks=2,
+        )
+        model = TitansMAC(cfg).eval()
+        torch.manual_seed(1)
+        ids = torch.randint(0, cfg.vocab_size, (2, 16))
+
+        with torch.no_grad():
+            out_eager, _, _ = model(ids)
+
+        torch._dynamo.reset()
+        compiled = torch.compile(model, fullgraph=True, dynamic=False)
+        with torch.no_grad():
+            out_compiled, _, _ = compiled(ids)
+
+        torch.testing.assert_close(out_eager, out_compiled, rtol=1e-4, atol=1e-4)

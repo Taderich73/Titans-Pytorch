@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,9 +57,19 @@ from titans.memory_dump import save_memory_states
 # a flat directory (when tests add scripts/ onto sys.path and import "sft").
 # Try the package-style import first; fall back to sibling-module import.
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -827,11 +838,13 @@ def train(config: SFTConfig) -> None:
         )
 
     is_streaming = isinstance(train_dataset, IterableDataset)
-    train_dataloader = DataLoader(
+    train_dataloader = make_dataloader(
         train_dataset,
         batch_size=config.batch_size,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
         shuffle=not is_streaming,
-        num_workers=0,
+        streaming=is_streaming,
         drop_last=True,
     )
 
@@ -860,10 +873,13 @@ def train(config: SFTConfig) -> None:
             )
             # Override the loaded dataset with the test split
             eval_hf.ds = raw_eval
-            eval_dataloader = DataLoader(
+            eval_dataloader = make_dataloader(
                 eval_hf,
                 batch_size=config.batch_size,
-                num_workers=0,
+                num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+                device_type=accelerator.device.type,
+                shuffle=False,
+                streaming=True,
                 drop_last=False,
             )
             if accelerator.is_main_process:
@@ -875,10 +891,11 @@ def train(config: SFTConfig) -> None:
     # ------------------------------------------------------------------
     # Optimizer and scheduler
     # ------------------------------------------------------------------
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         model.parameters(),
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     if config.max_steps > 0:
@@ -914,6 +931,14 @@ def train(config: SFTConfig) -> None:
         model, optimizer, train_dataloader, scheduler = accelerator.prepare(
             model, optimizer, train_dataloader, scheduler
         )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
+    )
 
     # ------------------------------------------------------------------
     # WandB / tracker init

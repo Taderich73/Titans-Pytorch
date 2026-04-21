@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,9 +54,19 @@ from titans.memory_dump import save_memory_states
 # scripts/ is imported both as a namespace package ("scripts._common") and as
 # a flat directory (when tests add scripts/ onto sys.path and import "lora").
 try:
-    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+    from scripts._common import (  # type: ignore[import-not-found]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import chunked_forward  # type: ignore[no-redef]
+    from _common import (  # type: ignore[no-redef]
+        chunked_forward,
+        make_dataloader,
+        make_optimizer,
+        maybe_compile,
+    )
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -779,20 +790,24 @@ def train(config: LoRATrainingConfig) -> None:
         )
 
     # --- 4. Optimizer — only LoRA parameters ---
-    optimizer = torch.optim.AdamW(
+    optimizer = make_optimizer(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config.lr,
         weight_decay=config.weight_decay,
+        device_type=accelerator.device.type,
     )
 
     # --- 5. Dataset and dataloader ---
     dataset = build_dataset(config)
     use_collate = isinstance(dataset, (JSONLChatDataset, HFChatStreamingDataset))
-    dataloader = DataLoader(
+    is_streaming = isinstance(dataset, IterableDataset)
+    dataloader = make_dataloader(
         dataset,
         batch_size=config.batch_size,
-        shuffle=not isinstance(dataset, IterableDataset),
-        num_workers=0,
+        num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+        device_type=accelerator.device.type,
+        shuffle=not is_streaming,
+        streaming=is_streaming,
         drop_last=True,
         collate_fn=sft_collate_fn if use_collate else None,
     )
@@ -850,6 +865,14 @@ def train(config: LoRATrainingConfig) -> None:
         model, optimizer, dataloader, scheduler = accelerator.prepare(
             model, optimizer, dataloader, scheduler
         )
+
+    # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
+    model = maybe_compile(
+        model,
+        enabled=bool(int(os.environ.get("COMPILE", "0"))),
+        device_type=accelerator.device.type,
+        use_attn_res=getattr(config, "use_attn_res", False),
+    )
 
     if config.wandb and HAS_WANDB and accelerator.is_main_process:
         accelerator.init_trackers(

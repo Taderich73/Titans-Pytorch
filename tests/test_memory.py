@@ -947,3 +947,191 @@ class TestDeepMemoryKStep:
         x = torch.randn(1, 8, 16)
         out, state, _ = memory(x)
         assert out.shape == x.shape
+
+
+def test_init_state_does_not_clone_weights() -> None:
+    """init_state should not call MemoryMLP.get_weights (which clones)."""
+    cfg = TitansConfig(
+        dim=32,
+        num_heads=4,
+        num_memory_layers=2,
+        memory_objective="l2",
+        chunk_size=16,
+    )
+    mem = NeuralLongTermMemory(cfg)
+    call_count = 0
+    orig = mem.memory.get_weights
+
+    def counting_get_weights() -> list[torch.Tensor]:
+        nonlocal call_count
+        call_count += 1
+        return orig()
+
+    mem.memory.get_weights = counting_get_weights  # type: ignore[assignment]
+    _ = mem.init_state(batch_size=2)
+    assert call_count == 0, "init_state must not clone via get_weights"
+
+
+def test_init_state_tensors_are_zero_and_correct_shape() -> None:
+    cfg = TitansConfig(
+        dim=32,
+        num_heads=4,
+        num_memory_layers=2,
+        memory_objective="l2",
+        chunk_size=16,
+    )
+    mem = NeuralLongTermMemory(cfg)
+    state = mem.init_state(batch_size=2)
+    assert len(state.weights) == 2
+    for w, m in zip(state.weights, state.momentum):
+        assert torch.all(w == 0)
+        assert torch.all(m == 0)
+        assert w.shape == m.shape
+
+
+def _deep_mem_cfg(**overrides) -> TitansConfig:
+    base = dict(
+        dim=32,
+        num_heads=4,
+        num_memory_layers=3,
+        memory_objective="l2",
+        chunk_size=16,
+    )
+    base.update(overrides)
+    return TitansConfig(**base)
+
+
+def test_deep_memory_inner_loop_activations_do_not_pin_graph_l2() -> None:
+    """The analytical inner loop must not retain MLP activations in the graph.
+
+    For the l2 objective, wrapping the inner MLP forward under no_grad
+    means the returned grads cannot carry a grad_fn rooted at the
+    intermediate (B, S, hidden_dim) activations. Inputs to the inner
+    function (keys, values) may still contribute grad edges, but that is
+    O(seq_len, dim) — not O(seq_len, hidden_dim * num_layers).
+    """
+    cfg = _deep_mem_cfg(memory_objective="l2")
+    mem = NeuralLongTermMemory(cfg)
+    # Detach inputs: when keys/values are leaves without graph, the
+    # returned grads must be fully detached (no graph at all).
+    k = torch.randn(2, 16, cfg.dim)
+    v = torch.randn(2, 16, cfg.dim)
+    state = mem.init_state(batch_size=2)
+    grads, _ = mem._compute_gradients_deep(k, v, state.weights)
+    for g in grads:
+        assert g.grad_fn is None, (
+            "Analytical deep grads must not carry a graph when inputs are leaves"
+        )
+        assert g.requires_grad is False
+
+
+def test_deep_memory_forward_does_not_pin_inner_activations() -> None:
+    """Forward pass must not hold inner-loop activation tensors alive.
+
+    The deep-memory analytical inner loop used to pin per-layer
+    pre-activation / activation tensors of shape (B, S, hidden_dim)
+    inside the autograd graph. Wrapping that forward pass in
+    torch.no_grad() frees those intermediates as soon as the inner
+    function returns.
+
+    Regression probe: count new live torch.Tensor objects (via gc scan)
+    after a single forward. With the inner loop properly under no_grad,
+    this count drops substantially vs the legacy code path. The test
+    guards against >~50 live tensors, a threshold safely above the
+    post-fix count (~35) and well below the pre-fix count (~64) for
+    a 3-layer memory.
+    """
+    import gc
+
+    cfg = _deep_mem_cfg(chunk_size=32)
+    mem = NeuralLongTermMemory(cfg)
+    x = torch.randn(2, 32, cfg.dim, requires_grad=True)
+    gc.collect()
+    before_ids = {id(o) for o in gc.get_objects() if isinstance(o, torch.Tensor)}
+    out, new_state, _ = mem(x)
+    # Keep output + state alive so graph isn't GC'd before the scan.
+    keep_alive = (out, new_state)
+    after_objs = {
+        id(o): o for o in gc.get_objects() if isinstance(o, torch.Tensor)
+    }
+    new_count = len(set(after_objs.keys()) - before_ids)
+    assert new_count < 55, (
+        f"Too many live tensors after forward ({new_count}); "
+        f"analytical inner loop may be leaking an autograd graph."
+    )
+    _ = keep_alive
+
+
+def test_deep_memory_k1_inner_loop_detaches_activations() -> None:
+    """K=1 deep-memory path must not pin intermediate MLP activations.
+
+    The K=1 branch in NeuralLongTermMemory.forward calls
+    ``_compute_gradients`` without an outer no_grad wrapper, so the
+    inner function itself must drop its activation graph. We verify by
+    feeding detached inputs: if activations leaked, ``grads`` would still
+    carry grad_fn via effective weights / activations (pre-Plan-5
+    behaviour), which is the exact leak this task targets.
+    """
+    cfg = _deep_mem_cfg(num_memory_inner_steps=1)
+    mem = NeuralLongTermMemory(cfg)
+    k = torch.randn(2, 16, cfg.dim)
+    v = torch.randn(2, 16, cfg.dim)
+    state = mem.init_state(batch_size=2)
+    grads, _ = mem._compute_gradients(k, v, state.weights)
+    for g in grads:
+        assert g.grad_fn is None
+        assert g.requires_grad is False
+
+
+def test_deep_memory_huber_delta_gradient_is_preserved() -> None:
+    """Huber δ gate must still receive gradient after inner-loop no_grad wrap.
+
+    gate_delta_proj's only differentiable path to the LM loss runs
+    through the clipped-error region of ``_compute_gradients_deep``.
+    Verifying its bias receives a non-zero gradient guards against
+    accidentally wrapping the error computation (which depends on δ)
+    under torch.no_grad().
+    """
+    cfg = _deep_mem_cfg(
+        memory_objective="huber",
+        huber_delta_init=-10.0,  # small δ ≈ 4.5e-4 → errors clip often
+    )
+    mem = NeuralLongTermMemory(cfg)
+    x = torch.randn(2, 16, cfg.dim)
+    out, _, _ = mem(x)
+    loss = out.pow(2).mean()
+    loss.backward()
+    assert mem.gate_delta_proj.bias.grad is not None
+    assert mem.gate_delta_proj.bias.grad.abs().sum() > 0
+
+
+def test_deep_memory_gate_projections_still_receive_gradient() -> None:
+    """Dropping the analytical inner-loop activation graph must not cut
+    gate gradients.
+
+    theta and eta enter new_state.weights directly (as multiplicative
+    factors outside ``_compute_gradients``), and retrieval uses
+    new_state.weights. So their parameters must receive non-zero
+    gradients from an LM-like downstream loss. alpha_decay's gradient
+    requires a non-zero prior state (since (1 - alpha) * 0 = 0), so we
+    pre-populate the state with a warmup step.
+    """
+    cfg = _deep_mem_cfg(num_memory_inner_steps=1)
+    mem = NeuralLongTermMemory(cfg)
+    x = torch.randn(2, 16, cfg.dim)
+    with torch.no_grad():
+        _, warm_state, _ = mem(x)
+    state = MemoryState(
+        weights=[w.detach().clone() for w in warm_state.weights],
+        momentum=[m.detach().clone() + 0.01 for m in warm_state.momentum],
+    )
+    out, _, _ = mem(x, state=state)
+    loss = out.pow(2).mean()
+    loss.backward()
+    for name, param in [
+        ("gate_decay_proj", mem.gate_decay_proj.weight),
+        ("gate_lr_proj", mem.gate_lr_proj.weight),
+        ("gate_momentum_proj", mem.gate_momentum_proj.weight),
+    ]:
+        assert param.grad is not None, f"{name} received no gradient"
+        assert param.grad.abs().sum() > 0, f"{name} gradient is zero"

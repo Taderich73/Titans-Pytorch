@@ -110,49 +110,137 @@ def _is_unavailable(values: list[float], history: deque[list[float]]) -> bool:
     return True
 
 
-def _z_score_spike(value: float, window: deque[float], sigma_threshold: float) -> float | None:
-    """Compute a spike z-score for a single scalar value against its window.
+class WelfordStats:
+    """Online mean + M2 accumulator with a bounded-window evict path.
+
+    Uses Welford's algorithm for numerically stable incremental updates and a
+    closed-form reverse update when the oldest observation is evicted, giving
+    O(1) per operation while tracking population variance over the retained
+    window.
+
+    Attributes:
+        count: Number of observations currently represented.
+        mean: Running mean of the retained observations.
+        M2: Running sum of squared deltas (not divided by count).
+
+    Example:
+        >>> stats = WelfordStats()
+        >>> stats.push(1.0)
+        >>> stats.push(2.0)
+        >>> round(stats.population_variance, 2)
+        0.25
+    """
+
+    __slots__ = ("_buffer", "count", "mean", "M2")
+
+    def __init__(self) -> None:
+        self._buffer: deque[float] = deque()
+        self.count: int = 0
+        self.mean: float = 0.0
+        self.M2: float = 0.0
+
+    def push(self, x: float) -> None:
+        """Add a new observation using Welford's incremental update.
+
+        Args:
+            x: The new observation value.
+        """
+        self._buffer.append(x)
+        self.count += 1
+        delta = x - self.mean
+        self.mean += delta / self.count
+        delta2 = x - self.mean
+        self.M2 += delta * delta2
+
+    def _evict_oldest(self) -> None:
+        """Reverse-apply the oldest observation to shrink the window by one."""
+        if not self._buffer:
+            return
+        x = self._buffer.popleft()
+        if self.count <= 1:
+            self.count = 0
+            self.mean = 0.0
+            self.M2 = 0.0
+            return
+        new_count = self.count - 1
+        new_mean = (self.mean * self.count - x) / new_count
+        # Closed-form reverse update: subtract (x - new_mean) * (x - old_mean).
+        self.M2 -= (x - new_mean) * (x - self.mean)
+        # Guard against tiny negative values from floating-point drift.
+        if self.M2 < 0.0:
+            self.M2 = 0.0
+        self.count = new_count
+        self.mean = new_mean
+
+    def push_with_evict(self, x: float, window_max: int) -> None:
+        """Push *x* and evict oldest entries until ``count <= window_max``.
+
+        Args:
+            x: New observation.
+            window_max: Maximum number of observations to retain.
+        """
+        self.push(x)
+        while self.count > window_max:
+            self._evict_oldest()
+
+    def clear(self) -> None:
+        """Reset the accumulator to its empty initial state."""
+        self._buffer.clear()
+        self.count = 0
+        self.mean = 0.0
+        self.M2 = 0.0
+
+    @property
+    def population_variance(self) -> float:
+        """Return the population variance (M2/count), or 0.0 when empty."""
+        if self.count == 0:
+            return 0.0
+        return self.M2 / self.count
+
+
+def _z_score_spike(
+    value: float, stats: WelfordStats, sigma_threshold: float
+) -> float | None:
+    """Compute a spike z-score for *value* against a Welford-backed window.
 
     Args:
         value: The current observation.
-        window: Historical observations (must have at least 2 entries).
+        stats: Running Welford stats for the value window.
         sigma_threshold: Threshold multiplier for sigma.
 
     Returns:
         The z-score if it exceeds the threshold; ``None`` otherwise.
     """
-    if len(window) < 2:
+    if stats.count < 2:
         return None
-    mean = sum(window) / len(window)
-    variance = sum((x - mean) ** 2 for x in window) / len(window)
-    std = math.sqrt(variance)
+    std = math.sqrt(stats.population_variance)
     if std < _AVAILABILITY_EPS:
         return None
-    z = (value - mean) / std
+    z = (value - stats.mean) / std
     if z > sigma_threshold:
         return z
     return None
 
 
-def _z_score_drop(roc: float, roc_window: deque[float], sigma_threshold: float) -> float | None:
+def _z_score_drop(
+    roc: float, stats: WelfordStats, sigma_threshold: float
+) -> float | None:
     """Check for a sudden downward cliff in rate-of-change.
 
     Args:
         roc: Current rate-of-change (current - previous value).
-        roc_window: Historical rate-of-change values.
+        stats: Running Welford stats for the rate-of-change window.
         sigma_threshold: Threshold multiplier for sigma.
 
     Returns:
         The magnitude of the z-score if it drops below mean - k*sigma; else None.
     """
-    if len(roc_window) < 2:
+    if stats.count < 2:
         return None
-    mean = sum(roc_window) / len(roc_window)
-    variance = sum((x - mean) ** 2 for x in roc_window) / len(roc_window)
-    std = math.sqrt(variance)
+    std = math.sqrt(stats.population_variance)
     if std < _AVAILABILITY_EPS:
         return None
-    z = (roc - mean) / std
+    z = (roc - stats.mean) / std
     if z < -sigma_threshold:
         return abs(z)
     return None
@@ -195,23 +283,86 @@ class _LayerWindows:
         self._window_size = window_size
         self.values: deque[float] = deque(maxlen=window_size)
         self.roc_values: deque[float] = deque(maxlen=window_size)
+        self.value_stats: WelfordStats = WelfordStats()
+        self.roc_stats: WelfordStats = WelfordStats()
         self._prev: float | None = None
 
     def push(self, value: float) -> None:
         """Append a new observation and update rate-of-change history.
 
+        Maintains Welford running stats in lockstep with the bounded
+        ``values`` / ``roc_values`` deques so spike and drop z-scores update
+        in O(1) per call.
+
         Args:
             value: The latest raw signal value for this layer.
         """
         if self._prev is not None:
-            self.roc_values.append(value - self._prev)
+            roc = value - self._prev
+            self.roc_values.append(roc)
+            self.roc_stats.push_with_evict(roc, self._window_size)
         self.values.append(value)
+        self.value_stats.push_with_evict(value, self._window_size)
         self._prev = value
 
     def reset(self) -> None:
         """Clear all window history for this layer."""
         self.values.clear()
         self.roc_values.clear()
+        self.value_stats.clear()
+        self.roc_stats.clear()
+        self._prev = None
+
+
+# ---------------------------------------------------------------------------
+# Aggregated ring buffer
+# ---------------------------------------------------------------------------
+
+
+class _AggregatedWindow:
+    """Ring buffer of per-step layer-means + Welford stats, for aggregation.
+
+    Lives on the detector and updates in O(1) per observation instead of
+    rebuilding the aggregated window from every layer's deque on every call.
+
+    Attributes:
+        values: Bounded deque of per-step layer-mean values.
+        roc_values: Bounded deque of per-step layer-mean rate-of-change.
+        value_stats: Welford stats for ``values``.
+        roc_stats: Welford stats for ``roc_values``.
+    """
+
+    __slots__ = ("values", "roc_values", "value_stats", "roc_stats", "_prev")
+
+    def __init__(self, window_size: int) -> None:
+        self.values: deque[float] = deque(maxlen=window_size)
+        self.roc_values: deque[float] = deque(maxlen=window_size)
+        self.value_stats: WelfordStats = WelfordStats()
+        self.roc_stats: WelfordStats = WelfordStats()
+        self._prev: float | None = None
+
+    def push(self, step_mean: float, window_size: int) -> None:
+        """Append a new aggregated observation and update RoC state.
+
+        Args:
+            step_mean: The mean across layers for the current step.
+            window_size: Upper bound for the underlying Welford state so it
+                stays in lockstep with ``values`` / ``roc_values``.
+        """
+        if self._prev is not None:
+            roc = step_mean - self._prev
+            self.roc_values.append(roc)
+            self.roc_stats.push_with_evict(roc, window_size)
+        self.values.append(step_mean)
+        self.value_stats.push_with_evict(step_mean, window_size)
+        self._prev = step_mean
+
+    def reset(self) -> None:
+        """Clear the ring buffer and Welford state."""
+        self.values.clear()
+        self.roc_values.clear()
+        self.value_stats.clear()
+        self.roc_stats.clear()
         self._prev = None
 
 
@@ -271,6 +422,11 @@ class StatisticalNoveltyDetector:
         # (used in _is_unavailable).  We store the last window_size raw value
         # lists per signal.
         self._raw_history: dict[str, deque[list[float]]] = {}
+
+        # Cached aggregated (per_layer=False) ring buffers per signal.  Keeps
+        # the aggregated sliding window live across observe() calls instead of
+        # rebuilding it from the per-layer deques on every call.
+        self._aggregated_stream: dict[str, _AggregatedWindow] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -345,6 +501,8 @@ class StatisticalNoveltyDetector:
                 lw.reset()
         for name in self._raw_history:
             self._raw_history[name].clear()
+        for agg in self._aggregated_stream.values():
+            agg.reset()
 
     def reset_local_windows(self, reset_flags: list[bool]) -> None:
         """Clear signal windows for specific layers (TNT shard-boundary resets).
@@ -422,7 +580,7 @@ class StatisticalNoveltyDetector:
 
         for _layer_idx, (val, lw) in enumerate(zip(values, layer_windows)):
             # Spike check — signed z-score filtered above +sigma.
-            z_spike = _z_score_spike(val, lw.values, self.sigma_threshold)
+            z_spike = _z_score_spike(val, lw.value_stats, self.sigma_threshold)
             if z_spike is not None:
                 abs_z = abs(z_spike)
                 if best_abs_z is None or abs_z > best_abs_z:
@@ -436,7 +594,7 @@ class StatisticalNoveltyDetector:
             # already been updated to the current value by push()).
             if lw.roc_values:
                 current_roc = lw.roc_values[-1]
-                z_drop = _z_score_drop(current_roc, lw.roc_values, self.sigma_threshold)
+                z_drop = _z_score_drop(current_roc, lw.roc_stats, self.sigma_threshold)
                 if z_drop is not None:
                     abs_z = abs(z_drop)
                     if best_abs_z is None or abs_z > best_abs_z:
@@ -479,28 +637,26 @@ class StatisticalNoveltyDetector:
         if n == 0:
             return _NO_TRIGGER
 
-        # Build an aggregated scalar window from per-layer windows
-        agg_values: deque[float] = deque(maxlen=self.window_size)
-        # Zip per-step across layers (all windows have the same length)
-        min_len = min(len(lw.values) for lw in layer_windows)
-        for step in range(min_len):
-            step_mean = sum(lw.values[step] for lw in layer_windows) / n
-            agg_values.append(step_mean)
-
-        agg_roc: deque[float] = deque(maxlen=self.window_size)
-        min_roc_len = min(len(lw.roc_values) for lw in layer_windows)
-        for step in range(min_roc_len):
-            step_mean = sum(lw.roc_values[step] for lw in layer_windows) / n
-            agg_roc.append(step_mean)
-
+        # Push the current step's layer-mean into the cached aggregated ring
+        # buffer so Welford stats update in O(1) per observation instead of
+        # rebuilding the window from every layer's deque on every call.
         current_mean = sum(values) / n
+        agg = self._aggregated_stream.get(signal_name)
+        if agg is None:
+            agg = _AggregatedWindow(self.window_size)
+            self._aggregated_stream[signal_name] = agg
+        agg.push(current_mean, self.window_size)
+
+        # layer_windows retained in the signature for API parity with
+        # _evaluate_per_layer; unused here since the aggregate is cached.
+        del layer_windows
 
         best_abs_z: float | None = None
         best_signed_z: float | None = None
         best_direction: str = "spike"
 
-        # Spike check on aggregated scalar
-        z_spike = _z_score_spike(current_mean, agg_values, self.sigma_threshold)
+        # Spike check on aggregated scalar — stats already include current_mean.
+        z_spike = _z_score_spike(current_mean, agg.value_stats, self.sigma_threshold)
         if z_spike is not None:
             abs_z = abs(z_spike)
             if best_abs_z is None or abs_z > best_abs_z:
@@ -508,12 +664,11 @@ class StatisticalNoveltyDetector:
                 best_signed_z = z_spike
                 best_direction = "spike"
 
-        # Drop check on aggregated rate-of-change.
-        # Use the last entry of the aggregated roc window (already computed) rather
-        # than recomputing from _prev (which has been updated by push()).
-        if agg_roc:
-            current_agg_roc = agg_roc[-1]
-            z_drop = _z_score_drop(current_agg_roc, agg_roc, self.sigma_threshold)
+        # Drop check on aggregated rate-of-change.  The current RoC was appended
+        # by agg.push() above; read it directly.
+        if agg.roc_values:
+            current_agg_roc = agg.roc_values[-1]
+            z_drop = _z_score_drop(current_agg_roc, agg.roc_stats, self.sigma_threshold)
             if z_drop is not None:
                 abs_z = abs(z_drop)
                 if best_abs_z is None or abs_z > best_abs_z:
