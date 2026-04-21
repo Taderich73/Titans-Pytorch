@@ -266,6 +266,17 @@ def main() -> None:
 
     logger.info(f"Device: {device}")
 
+    # Validate --checkpoint exists up front with a clear error message.
+    # load_checkpoint supports extensionless paths (auto-resolves .safetensors
+    # or .pt), so mirror that lookup here instead of requiring an exact file.
+    ckpt_candidates = [Path(args.checkpoint)]
+    if not ckpt_candidates[0].suffix:
+        ckpt_candidates.extend(
+            [Path(f"{args.checkpoint}.safetensors"), Path(f"{args.checkpoint}.pt")]
+        )
+    if not any(p.exists() for p in ckpt_candidates):
+        raise FileNotFoundError(f"--checkpoint file not found: {args.checkpoint}")
+
     model, config = load_model(args.checkpoint, device, variant=args.model)
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")
 

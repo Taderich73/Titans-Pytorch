@@ -671,6 +671,14 @@ class TestPretrainMigrationSmoke:
         )
         assert r.returncode == 0
 
+    def test_pretrain_imports_setup_checkpoint_dir(self) -> None:
+        """pretrain.py must import setup_checkpoint_dir from scripts._common."""
+        src = (_REPO_ROOT / "scripts" / "pretrain.py").read_text()
+        assert "setup_checkpoint_dir," in src or "    setup_checkpoint_dir," in src, (
+            "pretrain.py did not import setup_checkpoint_dir; "
+            "plan 3 Task 13 Step 5 required it."
+        )
+
 
 class TestInferenceMigrationSmoke:
     """Smoke: inference.py still imports and exposes shared helpers."""
@@ -692,6 +700,26 @@ class TestInferenceMigrationSmoke:
         )
         assert r.returncode == 0
 
+    def test_inference_validates_checkpoint_existence(self) -> None:
+        """inference.py must surface a clear FileNotFoundError for a missing --checkpoint.
+
+        Plan 3 Task 14 originally asked for setup_checkpoint_dir here, but
+        inference is a read path (no output_dir, no resume_path concept, and
+        load_checkpoint supports extensionless lookup). A direct existence
+        check with a --checkpoint-specific error message is the right fit.
+        """
+        src = (_REPO_ROOT / "scripts" / "inference.py").read_text()
+        # Must not import the training-script helper.
+        assert "setup_checkpoint_dir" not in src, (
+            "inference.py re-imported setup_checkpoint_dir; it is a training-script "
+            "helper and its FileNotFoundError message mis-labels --checkpoint as --resume."
+        )
+        # Must surface a --checkpoint-specific error.
+        assert '"--checkpoint file not found:' in src, (
+            "inference.py must raise a --checkpoint-specific FileNotFoundError "
+            "for missing checkpoints (see plan-audit-gap-fixes Task 2 pivot)."
+        )
+
 
 class TestCommonModuleDocumentation:
     def test_module_docstring_lists_public_helpers(self) -> None:
@@ -709,3 +737,22 @@ class TestCommonModuleDocumentation:
             "setup_checkpoint_dir",
         ):
             assert name in doc, f"{name} missing from scripts/_common docstring"
+
+
+class TestSFTIntegrationFence:
+    """sft.py must still expose create_model / build_titans_config /
+    tokenize_chat / format_chatml / build_loss_mask as re-exports
+    (or at least importable names) so external callers don't break.
+
+    This is the fence test from plan 3 Task 9 Step 1 that was never
+    added when the migration landed.
+    """
+
+    def test_sft_re_exports(self) -> None:
+        from scripts import sft
+
+        assert callable(sft.create_model)
+        assert callable(sft.build_titans_config)
+        assert callable(sft.tokenize_chat)
+        assert callable(sft.format_chatml)
+        assert callable(sft.build_loss_mask)

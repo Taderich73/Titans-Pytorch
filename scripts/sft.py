@@ -58,9 +58,11 @@ from titans.memory_dump import save_memory_states
 try:
     from scripts._common import (  # type: ignore[import-not-found]
         base_argparse_parser,
+        build_loss_mask,  # noqa: F401 — re-exported for API parity
         build_titans_config,
         chunked_forward,
         create_model,
+        format_chatml,  # noqa: F401 — re-exported for API parity
         init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,
@@ -71,9 +73,11 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
     from _common import (  # type: ignore[no-redef]
         base_argparse_parser,
+        build_loss_mask,  # noqa: F401 — re-exported for API parity
         build_titans_config,
         chunked_forward,
         create_model,
+        format_chatml,  # noqa: F401 — re-exported for API parity
         init_accelerator_and_logging,
         make_dataloader,
         make_optimizer,

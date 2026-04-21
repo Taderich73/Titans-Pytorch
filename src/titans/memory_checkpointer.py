@@ -3,8 +3,8 @@
 
 """MemoryCheckpointer state machine and ring buffer for memory auto-checkpointing.
 
-Paper alignment: N/A — novel engineering. The four-state machine
-(MONITORING → TRIGGERED → CAPTURING_AFTER → COOLDOWN) and ring buffer are
+Paper alignment: N/A — novel engineering. The three-state machine
+(MONITORING → CAPTURING_AFTER → COOLDOWN) and ring buffer are
 project-specific plumbing, not derived from any Titans / TNT / AttnRes paper.
 
 Provides the high-level orchestrator that ties together:

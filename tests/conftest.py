@@ -1,5 +1,19 @@
 """Shared test fixtures for Titans PyTorch tests."""
 
+import sys
+from pathlib import Path
+
+# scripts/ is not a package. Some tests (DPO, RLVR memory plumbing)
+# load scripts/dpo.py and scripts/rlvr.py via importlib.util; those
+# modules in turn try both `from scripts._common import ...` and the
+# sibling fallback `from _common import ...`. Putting scripts/ on
+# sys.path here makes the sibling fallback succeed under the
+# spec_from_file_location loader without otherwise changing test
+# collection behaviour.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 import pytest
 import torch
 
