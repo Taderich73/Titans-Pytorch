@@ -61,6 +61,7 @@ try:
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
 except ModuleNotFoundError:  # pragma: no cover
     from _common import (  # type: ignore[no-redef]
@@ -70,6 +71,7 @@ except ModuleNotFoundError:  # pragma: no cover
         make_dataloader,
         make_optimizer,
         maybe_compile,
+        setup_checkpoint_dir,
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -277,6 +279,7 @@ MIXED_PRECISION = "bf16"
 # Hub persistence
 HUB_REPO = "FlatFootInternational/titans-mac-1.5B"  # Where to push checkpoints
 PUSH_CHECKPOINTS = True
+CHECKPOINT_DIR = "checkpoints"  # Local staging dir for checkpoint artifacts
 
 # Resume — set to a Hub checkpoint path to continue training, e.g.:
 #   RESUME_FROM = "checkpoints/step_10000.pt"   (resumes from step 10000)
@@ -531,6 +534,13 @@ def train():
     # ---------------------------------------------------------------------------
     # Resume from Hub checkpoint
     # ---------------------------------------------------------------------------
+    # Create the local staging directory for checkpoint artifacts via the
+    # shared helper. RESUME_FROM here is a *Hub* filename (not a local
+    # path), so we intentionally do not pass it to setup_checkpoint_dir —
+    # the Hub-resume flow below handles remote checkpoint download.
+    ckpt_setup = setup_checkpoint_dir(CHECKPOINT_DIR)
+    output_dir = ckpt_setup.output_dir
+
     global_step = 0
     memory_states = None
     running_loss = 0.0

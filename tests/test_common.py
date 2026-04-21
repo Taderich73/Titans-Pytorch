@@ -671,6 +671,15 @@ class TestPretrainMigrationSmoke:
         )
         assert r.returncode == 0
 
+    def test_pretrain_imports_setup_checkpoint_dir(self) -> None:
+        """pretrain.py must import setup_checkpoint_dir from scripts._common."""
+        import pathlib
+        src = pathlib.Path("scripts/pretrain.py").read_text()
+        assert "setup_checkpoint_dir" in src, (
+            "pretrain.py did not import setup_checkpoint_dir; "
+            "plan 3 Task 13 Step 5 required it."
+        )
+
 
 class TestInferenceMigrationSmoke:
     """Smoke: inference.py still imports and exposes shared helpers."""
