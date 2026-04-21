@@ -737,3 +737,22 @@ class TestCommonModuleDocumentation:
             "setup_checkpoint_dir",
         ):
             assert name in doc, f"{name} missing from scripts/_common docstring"
+
+
+class TestSFTIntegrationFence:
+    """sft.py must still expose create_model / build_titans_config /
+    tokenize_chat / format_chatml / build_loss_mask as re-exports
+    (or at least importable names) so external callers don't break.
+
+    This is the fence test from plan 3 Task 9 Step 1 that was never
+    added when the migration landed.
+    """
+
+    def test_sft_re_exports(self) -> None:
+        from scripts import sft
+
+        assert callable(sft.create_model)
+        assert callable(sft.build_titans_config)
+        assert callable(sft.tokenize_chat)
+        assert callable(sft.format_chatml)
+        assert callable(sft.build_loss_mask)
