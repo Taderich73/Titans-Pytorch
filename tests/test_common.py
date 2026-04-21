@@ -700,6 +700,14 @@ class TestInferenceMigrationSmoke:
         )
         assert r.returncode == 0
 
+    def test_inference_imports_setup_checkpoint_dir(self) -> None:
+        """inference.py must import setup_checkpoint_dir for --checkpoint validation."""
+        src = (_REPO_ROOT / "scripts" / "inference.py").read_text()
+        assert "setup_checkpoint_dir," in src, (
+            "inference.py did not import setup_checkpoint_dir; "
+            "plan 3 Task 14 Step 3 required it for --checkpoint validation."
+        )
+
 
 class TestCommonModuleDocumentation:
     def test_module_docstring_lists_public_helpers(self) -> None:

@@ -28,11 +28,13 @@ try:
     from scripts._common import (  # type: ignore[import-not-found]
         MODEL_CLASSES,
         create_model,
+        setup_checkpoint_dir,
     )
 except ModuleNotFoundError:  # pragma: no cover
     from _common import (  # type: ignore[no-redef]
         MODEL_CLASSES,
         create_model,
+        setup_checkpoint_dir,
     )
 
 logging.basicConfig(
@@ -265,6 +267,14 @@ def main() -> None:
         device = torch.device(args.device)
 
     logger.info(f"Device: {device}")
+
+    # Validate --checkpoint exists via the shared helper (raises
+    # FileNotFoundError with a helpful message when the file is missing).
+    # Using the parent directory as output_dir is a no-op in inference
+    # (we never write to it); the helper is here purely for its
+    # resume_path existence check and filename step parsing.
+    ckpt_file = Path(args.checkpoint)
+    setup_checkpoint_dir(str(ckpt_file.parent), resume_path=str(ckpt_file))
 
     model, config = load_model(args.checkpoint, device, variant=args.model)
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")
