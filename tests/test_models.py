@@ -7,9 +7,6 @@ import torch.nn.functional as F
 from titans.config import TitansConfig
 from titans.models import (
     FeedForward,
-    LMMBlock,
-    MACBlock,
-    MALBlock,
     RMSNorm,
     TitansLMM,
     TitansMAC,

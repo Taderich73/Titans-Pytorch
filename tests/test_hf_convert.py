@@ -16,7 +16,6 @@ from titans.models import TitansMAC
 
 pytest.importorskip("transformers")
 
-from titans.hf.configuration import TitansMACConfig
 from titans.hf.modeling import TitansMACForCausalLM
 
 # Allow importing from scripts/

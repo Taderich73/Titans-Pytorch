@@ -2,11 +2,10 @@
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from titans.checkpoint_types import GateSnapshot
 from titans.config import TitansConfig
-from titans.memory import MemoryMLP, MemoryState, NeuralLongTermMemory
+from titans.memory import MemoryState, NeuralLongTermMemory
 
 
 class TestMemoryState:
@@ -24,30 +23,6 @@ class TestMemoryState:
         cloned = state.clone()
         w.fill_(0)
         assert cloned.weights[0].abs().sum() > 0
-
-
-class TestMemoryMLP:
-    def test_forward_shape_linear(self, device):
-        config = TitansConfig(dim=64, num_memory_layers=1)
-        mlp = MemoryMLP(config).to(device)
-        x = torch.randn(2, 8, 64, device=device)
-        out = mlp(x)
-        assert out.shape == (2, 8, 64)
-
-    def test_forward_shape_deep(self, default_config, device):
-        mlp = MemoryMLP(default_config).to(device)
-        x = torch.randn(2, 8, default_config.dim, device=device)
-        out = mlp(x)
-        assert out.shape == (2, 8, default_config.dim)
-
-    def test_forward_with_weights(self, device):
-        config = TitansConfig(dim=32, num_memory_layers=1)
-        mlp = MemoryMLP(config).to(device)
-        x = torch.randn(2, 4, 32, device=device)
-        weights = mlp.get_weights()
-        out1 = mlp(x)
-        out2 = mlp.forward_with_weights(x, weights)
-        torch.testing.assert_close(out1, out2)
 
 
 class TestNeuralLongTermMemory:

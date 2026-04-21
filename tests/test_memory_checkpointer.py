@@ -9,7 +9,6 @@ import gzip
 import json
 from pathlib import Path
 
-import pytest
 import torch
 
 from titans.checkpoint_types import (

@@ -30,9 +30,6 @@ from titans.hf.trainer import TitansChunkMixin, TitansTrainer
 # Adding a new variant means adding one tuple here.
 _VARIANT_REGISTRY = [
     ("titans-mac", TitansMACConfig, TitansMACForCausalLM),
-    # Future: ("titans-mag", TitansMAGConfig, TitansMAGForCausalLM),
-    # Future: ("titans-mal", TitansMALConfig, TitansMALForCausalLM),
-    # Future: ("titans-lmm", TitansLMMConfig, TitansLMMForCausalLM),
 ]
 
 from transformers import AutoConfig, AutoModelForCausalLM

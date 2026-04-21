@@ -63,14 +63,12 @@ class TNTMemoryState:
     Attributes:
         global_state: MemoryState for the global memory (V)
         local_states: List of MemoryState, one per local memory (W^(i))
-        local_inits: Initial weight snapshots per local memory
         qk_projections: Accumulated Q-K projection matrices (M_t^(i))
         local_step_counters: Position within shard for each local memory
     """
 
     global_state: MemoryState
     local_states: list[MemoryState]
-    local_inits: list[list[torch.Tensor]]
     qk_projections: list[torch.Tensor]
     local_step_counters: list[int]
 
@@ -78,9 +76,6 @@ class TNTMemoryState:
         return TNTMemoryState(
             global_state=self.global_state.detach(),
             local_states=[s.detach() for s in self.local_states],
-            local_inits=[
-                [w.detach() for w in init_list] for init_list in self.local_inits
-            ],
             qk_projections=[qk.detach() for qk in self.qk_projections],
             local_step_counters=list(self.local_step_counters),
         )
@@ -89,10 +84,6 @@ class TNTMemoryState:
         return TNTMemoryState(
             global_state=self.global_state.clone(),
             local_states=[s.clone() for s in self.local_states],
-            local_inits=[
-                [w.detach().clone() for w in init_list]
-                for init_list in self.local_inits
-            ],
             qk_projections=[qk.detach().clone() for qk in self.qk_projections],
             local_step_counters=list(self.local_step_counters),
         )
@@ -124,14 +115,6 @@ class MemoryMLP(nn.Module):
     def _init_weights(self, std: float) -> None:
         for layer in self.layers:
             nn.init.normal_(layer.weight, std=std)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = x
-        for i, layer in enumerate(self.layers):
-            h = layer(h)
-            if i < len(self.layers) - 1:
-                h = self.activation(h)
-        return h
 
     def forward_with_weights(self, x: torch.Tensor, weights: list[torch.Tensor]) -> torch.Tensor:
         h = x
@@ -377,7 +360,7 @@ class NeuralLongTermMemory(nn.Module):
             state = self.init_state(batch_size)
 
         if self.config.quantize_memory_state:
-            from titans.quantize_state import QuantizedMemoryState, get_weights, get_momentum
+            from titans.quantize_state import QuantizedMemoryState
 
             if isinstance(state, QuantizedMemoryState):
                 state = state.dequantize()

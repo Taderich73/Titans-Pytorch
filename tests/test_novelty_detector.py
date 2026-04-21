@@ -456,7 +456,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_implements_novelty_detector_protocol(self) -> None:
         """StatisticalNoveltyDetector is structurally compatible with NoveltyDetector."""
-        from titans.novelty_detector import NoveltyDetector, StatisticalNoveltyDetector
+        from titans.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector()
         # Structural protocol check: must have observe and reset

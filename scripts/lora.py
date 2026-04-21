@@ -53,7 +53,6 @@ from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
     save_adapters,
-    set_lora_enabled,
     wrap_lora_layers,
 )
 
@@ -213,9 +212,6 @@ def tokenize_chat(
     Returns:
         Dict with keys "input_ids" and "labels" (both lists of ints).
     """
-    full_text = format_chatml(messages)
-    full_ids = tokenizer.encode(full_text, add_special_tokens=False)
-
     # Build labels: mask out non-assistant tokens
     labels: list[int] = []
     input_ids: list[int] = []

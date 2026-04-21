@@ -482,43 +482,6 @@ class SFTStreamingDataset(IterableDataset):
                 "loss_mask": torch.tensor(tokenized["loss_mask"], dtype=torch.float),
             }
 
-    def get_batch(
-        self, batch_size: int, pad_id: int = 0
-    ) -> dict[str, torch.Tensor]:
-        """Return a single padded batch (convenience method for non-DataLoader use).
-
-        Args:
-            batch_size: Number of examples to collect.
-            pad_id: Token id used for padding.
-
-        Returns:
-            Dict of ``input_ids``, ``labels``, ``loss_mask`` as 2-D tensors
-            of shape ``(batch_size, seq_len)`` where ``seq_len`` is the length
-            of the longest example in the batch.
-        """
-        samples: list[dict[str, torch.Tensor]] = []
-        for sample in self:
-            samples.append(sample)
-            if len(samples) >= batch_size:
-                break
-
-        if not samples:
-            raise StopIteration("Dataset exhausted")
-
-        max_len = max(s["input_ids"].size(0) for s in samples)
-
-        input_ids = torch.full((len(samples), max_len), pad_id, dtype=torch.long)
-        labels = torch.full((len(samples), max_len), -100, dtype=torch.long)
-        loss_mask = torch.zeros(len(samples), max_len, dtype=torch.float)
-
-        for i, s in enumerate(samples):
-            length = s["input_ids"].size(0)
-            input_ids[i, :length] = s["input_ids"]
-            labels[i, :length] = s["labels"]
-            loss_mask[i, :length] = s["loss_mask"]
-
-        return {"input_ids": input_ids, "labels": labels, "loss_mask": loss_mask}
-
 
 class SyntheticSFTDataset(Dataset):
     """Synthetic chat dataset for smoke-testing without a real corpus.
@@ -759,13 +722,11 @@ def train(config: SFTConfig) -> None:
     # Tokenizer
     # ------------------------------------------------------------------
     tokenizer = None
-    pad_id = 0
     if HAS_TRANSFORMERS:
         try:
             tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token_id = tokenizer.eos_token_id or 0
-            pad_id = tokenizer.pad_token_id
             if accelerator.is_main_process:
                 logger.info(f"Loaded tokenizer: {config.tokenizer}")
                 logger.info(f"Vocab size (tokenizer): {tokenizer.vocab_size}")

@@ -22,7 +22,7 @@ from titans.attention import (
     SlidingWindowAttention,
     log_sdpa_backend,
 )
-from titans.attn_res import AttnResMemoryGate, BlockAttnRes
+from titans.attn_res import BlockAttnRes
 from titans.config import TitansConfig
 from titans.mca import MemoryCrossAttention
 from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
@@ -31,17 +31,10 @@ from titans.tnt_memory import GlobalMemory, HierarchicalMemory, LocalMemory
 from titans.memory_dump import load_memory_states, save_memory_states
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.models import (
-    FeedForward,
-    LMMBlock,
-    MAGBlock,
-    MALBlock,
-    RMSNorm,
     TitansLMM,
     TitansMAC,
     TitansMAG,
     TitansMAL,
-    compile_model,
-    process_chunk,
 )
 from titans.persistent import PersistentMemory
 from titans.quantize_state import (
@@ -113,19 +106,16 @@ __all__ = [
     "MemoryCrossAttention",
     # AttnRes
     "BlockAttnRes",
-    "AttnResMemoryGate",
     # Models
-    "RMSNorm",
-    "FeedForward",
-    "LMMBlock",
-    "MAGBlock",
-    "MALBlock",
     "TitansMAC",
     "TitansMAG",
     "TitansMAL",
     "TitansLMM",
-    "compile_model",
-    "process_chunk",
+    # Quantization
+    "QuantizedMemoryState",
+    "QuantizedTensor",
+    "quantize_memory_state",
+    "quantize_tensor",
     # LoRA
     "LoRALinear",
     "wrap_lora_layers",
