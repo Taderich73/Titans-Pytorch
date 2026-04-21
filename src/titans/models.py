@@ -18,6 +18,8 @@ memory_checkpointer.py — see docs/ for per-feature callouts.
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -371,6 +373,17 @@ class TitansMAC(nn.Module):
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         self.config = config
+
+        if config.adaptive_window:
+            warnings.warn(
+                "config.adaptive_window=True has no effect with the MAC variant: "
+                "SegmentedAttention is full-causal per chunk and does not consume "
+                "the adaptive window mask. adaptive_window is only honored by the "
+                "MAG and MAL variants (SlidingWindowAttention). The flag will be "
+                "stored in the config but silently ignored at runtime.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         self.embed = nn.Embedding(config.vocab_size, config.dim)
         self.blocks = nn.ModuleList(
