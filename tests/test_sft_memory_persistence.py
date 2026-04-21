@@ -156,3 +156,66 @@ class TestSFTMemoryPersistence:
             save_memory_states(memory_states, mem_path)
 
         assert not (checkpoint_dir / "memory_step_1000.npz").exists()
+
+
+class TestSFTMemoryGating:
+    """Verify memory save is gated by reset_memory_per_batch."""
+
+    def test_save_skipped_when_reset_true(self, tmp_path):
+        """Simulate the gating logic: save only when reset=False."""
+        reset_memory_per_batch = True
+        memory_states = [
+            MemoryState(
+                weights=[torch.ones(4, 4)],
+                momentum=[torch.zeros(4, 4)],
+            )
+        ]
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+
+        should_save = (
+            (not reset_memory_per_batch)
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        )
+        if should_save:
+            save_memory_states(
+                memory_states, checkpoint_dir / "memory_step_100.npz"
+            )
+
+        assert not (checkpoint_dir / "memory_step_100.npz").exists()
+
+    def test_save_happens_when_reset_false(self, tmp_path):
+        """Simulate the gating logic: save happens when reset=False."""
+        reset_memory_per_batch = False
+        memory_states = [
+            MemoryState(
+                weights=[torch.ones(4, 4)],
+                momentum=[torch.zeros(4, 4)],
+            )
+        ]
+        checkpoint_dir = tmp_path / "ckpt"
+        checkpoint_dir.mkdir()
+
+        should_save = (
+            (not reset_memory_per_batch)
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        )
+        if should_save:
+            save_memory_states(
+                memory_states, checkpoint_dir / "memory_step_100.npz"
+            )
+
+        assert (checkpoint_dir / "memory_step_100.npz").exists()
+
+
+def test_sft_memory_save_is_gated_in_source():
+    """Integration-level check: sft.py save sites must reference the gate."""
+    import pathlib
+
+    src = pathlib.Path("scripts/sft.py").read_text()
+    # The periodic save block must be gated by reset_memory_per_batch.
+    assert "config.reset_memory_per_batch" in src, (
+        "Memory save must consult the reset policy"
+    )

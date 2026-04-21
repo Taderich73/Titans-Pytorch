@@ -52,6 +52,14 @@ from titans import TitansConfig, TitansMAC, TitansMAG, TitansMAL, TitansLMM
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "sft").
+# Try the package-style import first; fall back to sibling-module import.
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -395,6 +403,10 @@ class SFTConfig:
     wandb_project: str = "titans-sft"
     wandb_run_name: str | None = None
 
+    # --- Memory state lifecycle ---
+    reset_memory_per_batch: bool = True
+    state_carry_warmup_steps: int = 0
+
     # --- Misc ---
     seed: int = 42
     synthetic_samples: int = 5000
@@ -647,33 +659,52 @@ def evaluate(
     total_loss = 0.0
     total_tokens = 0
     memory_states = None
+    chunk_size = accelerator.unwrap_model(model).config.chunk_size
 
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             if i >= max_batches:
                 break
 
-            logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
-            logits_flat = logits.view(-1, vocab_size)
-            labels_flat = batch["labels"].view(-1)
-            mask_flat = batch["loss_mask"].view(-1).float()
+            lbl_chunks = batch["labels"].split(chunk_size, dim=1)
+            msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
-            per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-            batch_loss = (per_token * mask_flat).sum()
-            batch_tokens = mask_flat.sum()
+            batch_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
+            batch_tokens_num = torch.tensor(
+                0.0, device=batch["input_ids"].device
+            )
+
+            chunk_iter = chunked_forward(
+                model,
+                batch["input_ids"],
+                chunk_size,
+                states=memory_states,
+                detach_between=True,
+            )
+            for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+                chunk_iter, lbl_chunks, msk_chunks
+            ):
+                memory_states = new_states
+                logits_flat = logits.reshape(-1, vocab_size)
+                labels_flat = lbl_c.reshape(-1)
+                mask_flat = msk_c.reshape(-1).float()
+
+                per_token = F.cross_entropy(
+                    logits_flat, labels_flat, reduction="none"
+                )
+                batch_loss_num = batch_loss_num + (per_token * mask_flat).sum()
+                batch_tokens_num = batch_tokens_num + mask_flat.sum()
 
             # Gather across processes
-            batch_loss = accelerator.gather(batch_loss.unsqueeze(0)).sum().item()
-            batch_tokens = accelerator.gather(batch_tokens.unsqueeze(0)).sum().item()
+            batch_loss = (
+                accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
+            )
+            batch_tokens = (
+                accelerator.gather(batch_tokens_num.unsqueeze(0)).sum().item()
+            )
 
             total_loss += batch_loss
             total_tokens += batch_tokens
-
-            if memory_states is not None:
-                memory_states = [
-                    s.detach() if s is not None else None
-                    for s in memory_states
-                ]
 
     model.train()
     if total_tokens == 0:
@@ -964,17 +995,66 @@ def train(config: SFTConfig) -> None:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
 
+            # Reset memory at batch boundary per lifecycle policy.
+            reset_this_batch = (
+                config.reset_memory_per_batch
+                or global_step < config.state_carry_warmup_steps
+            )
+            if reset_this_batch:
+                memory_states = None
+
             with accelerator.accumulate(model):
-                logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
+                chunk_size = config.chunk_size
+                lbl_chunks = batch["labels"].split(chunk_size, dim=1)
+                msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
+                num_chunks = len(lbl_chunks)
 
-                logits_flat = logits.view(-1, config.vocab_size)
-                labels_flat = batch["labels"].view(-1)
-                mask_flat = batch["loss_mask"].view(-1).float()
+                # Aggregate numerator/denominator across chunks so the final
+                # reported loss equals the masked-token-weighted mean CE
+                # over the full sequence (matches a single-shot reference
+                # when seq_len <= chunk_size).
+                total_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
+                total_tokens = torch.tensor(0.0, device=batch["input_ids"].device)
+                loss_accum_for_backward = torch.tensor(
+                    0.0, device=batch["input_ids"].device
+                )
 
-                per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
-                loss = (per_token * mask_flat).sum() / mask_flat.sum().clamp(min=1.0)
+                chunk_iter = chunked_forward(
+                    model,
+                    batch["input_ids"],
+                    chunk_size,
+                    states=memory_states,
+                    detach_between=True,
+                )
+                for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+                    chunk_iter, lbl_chunks, msk_chunks
+                ):
+                    # Truncated BPTT: helper already detached new_states.
+                    memory_states = new_states
 
-                accelerator.backward(loss)
+                    logits_flat = logits.reshape(-1, config.vocab_size)
+                    labels_flat = lbl_c.reshape(-1)
+                    mask_flat = msk_c.reshape(-1).float()
+
+                    per_token = F.cross_entropy(
+                        logits_flat, labels_flat, reduction="none"
+                    )
+                    chunk_loss_num = (per_token * mask_flat).sum()
+                    chunk_tokens = mask_flat.sum()
+
+                    total_loss_num = total_loss_num + chunk_loss_num.detach()
+                    total_tokens = total_tokens + chunk_tokens.detach()
+
+                    # Per-chunk backward would be more memory-efficient but
+                    # changes accumulation semantics; keep full-graph backward
+                    # here to match pretrain.py's loss-averaging behavior.
+                    chunk_loss = chunk_loss_num / chunk_tokens.clamp(min=1.0)
+                    loss_accum_for_backward = loss_accum_for_backward + chunk_loss
+
+                loss = total_loss_num / total_tokens.clamp(min=1.0)
+                backward_loss = loss_accum_for_backward / max(num_chunks, 1)
+
+                accelerator.backward(backward_loss)
 
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
@@ -993,7 +1073,7 @@ def train(config: SFTConfig) -> None:
                 ]
 
             loss_val = loss.item()
-            masked_tokens = mask_flat.sum().item()
+            masked_tokens = total_tokens.item()
             epoch_loss += loss_val * masked_tokens
             epoch_tokens += masked_tokens
 
@@ -1064,7 +1144,12 @@ def train(config: SFTConfig) -> None:
                         },
                     )
                     logger.info(f"Saved checkpoint: step {global_step}")
-                    if memory_states is not None:
+                    should_save_memory = (
+                        not config.reset_memory_per_batch
+                        and memory_states is not None
+                        and any(s is not None for s in memory_states)
+                    )
+                    if should_save_memory:
                         mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
                         save_memory_states(memory_states, mem_path)
                         logger.info(f"Saved memory states: step {global_step}")
@@ -1096,7 +1181,12 @@ def train(config: SFTConfig) -> None:
             },
         )
         logger.info(f"SFT training complete. Final checkpoint: {paths[0]}")
-        if memory_states is not None:
+        should_save_memory = (
+            not config.reset_memory_per_batch
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        )
+        if should_save_memory:
             mem_path = checkpoint_dir / "memory_final.npz"
             save_memory_states(memory_states, mem_path)
 
@@ -1268,6 +1358,28 @@ def parse_args() -> SFTConfig:
     log.add_argument("--wandb-project", type=str, default="titans-sft")
     log.add_argument("--wandb-run-name", type=str, default=None)
 
+    # Memory state lifecycle
+    mem = parser.add_argument_group("Memory lifecycle")
+    mem.add_argument(
+        "--reset-memory-per-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "If True (default), reset Titans memory states to None at the "
+            "start of each batch. Set --no-reset-memory-per-batch to carry "
+            "detached state across batches (streaming / long-context regime)."
+        ),
+    )
+    mem.add_argument(
+        "--state-carry-warmup-steps",
+        type=int,
+        default=0,
+        help=(
+            "When --no-reset-memory-per-batch is set, still reset memory for "
+            "the first N steps (warmup before carrying state)."
+        ),
+    )
+
     # Misc
     misc = parser.add_argument_group("Misc")
     misc.add_argument("--seed", type=int, default=42)
@@ -1349,6 +1461,9 @@ def parse_args() -> SFTConfig:
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
+        # Memory lifecycle
+        reset_memory_per_batch=args.reset_memory_per_batch,
+        state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Misc
         seed=args.seed,
         synthetic_samples=args.synthetic_samples,

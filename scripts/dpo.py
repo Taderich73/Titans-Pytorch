@@ -71,6 +71,13 @@ from titans.lora import (
     wrap_lora_layers,
 )
 
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "dpo").
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
+
 # ---------------------------------------------------------------------------
 # Optional dependency guards
 # ---------------------------------------------------------------------------
@@ -413,42 +420,65 @@ def compute_log_probs(
     labels: torch.Tensor,
     loss_mask: torch.Tensor,
     vocab_size: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute per-example sum log-probabilities and response token counts.
+    states: list | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, list | None]:
+    """Compute per-example sum log-probabilities with memory-aware chunking.
+
+    The fused ``(prompt, response)`` sequence is split into ``chunk_size``
+    slices along the time axis, and memory is threaded through successive
+    chunks.  This matches the memory-carrying regime the base model was
+    trained in and avoids OOMs / shape errors when
+    ``seq_len > chunk_size``.
 
     Args:
-        model: The language model.  Must accept ``(input_ids,)`` and return
-            ``(logits, memory_states)`` with logits of shape (B, T, V).
-        input_ids: Token input ids of shape (B, T).
-        labels: Target token ids of shape (B, T).
+        model: Titans model returning ``(logits, states, *_)``. Must expose
+            ``config.chunk_size`` on either the model or its ``.module``.
+        input_ids: Token input IDs of shape (B, T).
+        labels: Target token IDs of shape (B, T).
         loss_mask: Binary float mask of shape (B, T) where 1 = response token.
-        vocab_size: Vocabulary size (used to reshape logits).
+        vocab_size: Vocabulary size (used to clamp label indices).
+        states: Optional initial memory states.  When ``None``, memory starts
+            fresh; when provided, log-probs are computed from that state.
 
     Returns:
-        Tuple of:
-        - ``sum_logps``: Per-example sum of log-probs over response tokens.
+        Tuple ``(sum_logps, lengths, final_states)``:
+        - ``sum_logps``: Per-example sum of log-probs over ``mask==1`` tokens.
           Shape: (B,).
-        - ``lengths``: Number of response tokens per example. Shape: (B,).
+        - ``lengths``: Number of ``mask==1`` tokens per example. Shape: (B,).
+        - ``final_states``: Memory state after processing the full sequence.
     """
-    logits, _, _ = model(input_ids)
-    logits = logits.float()  # ensure fp32 for numerical stability
+    # Locate chunk_size on the unwrapped model config (handles
+    # accelerator / DDP wrappers).
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
 
-    # log-softmax over vocabulary
-    log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
+    lbl_chunks = labels.split(chunk_size, dim=1)
+    msk_chunks = loss_mask.split(chunk_size, dim=1)
 
-    # Gather log-prob of the target token at each position
-    # labels shape: (B, T) — clamp to avoid index errors from padding
-    labels_clamped = labels.clamp(min=0, max=vocab_size - 1)
-    token_log_probs = log_probs.gather(
-        dim=-1, index=labels_clamped.unsqueeze(-1)
-    ).squeeze(-1)  # (B, T)
+    batch_size = input_ids.shape[0]
+    sum_logps = torch.zeros(batch_size, device=input_ids.device)
+    lengths = torch.zeros(batch_size, device=input_ids.device)
 
-    # Mask and sum over response tokens only
-    masked_log_probs = token_log_probs * loss_mask
-    sum_logps = masked_log_probs.sum(dim=-1)  # (B,)
-    lengths = loss_mask.sum(dim=-1)  # (B,)
+    # detach_between=False: DPO backward needs gradients to flow through
+    # the full fused (prompt, response) sequence.
+    chunk_iter = chunked_forward(
+        model, input_ids, chunk_size, states=states, detach_between=False
+    )
+    for (logits, _ids_c, new_states), lbl_c, msk_c in zip(
+        chunk_iter, lbl_chunks, msk_chunks
+    ):
+        states = new_states
+        logits = logits.float()  # fp32 for numerical stability
+        log_probs = F.log_softmax(logits, dim=-1)
+        lbl_clamped = lbl_c.clamp(min=0, max=vocab_size - 1)
+        token_lp = log_probs.gather(
+            dim=-1, index=lbl_clamped.unsqueeze(-1)
+        ).squeeze(-1)
+        msk_f = msk_c.float()
+        sum_logps = sum_logps + (token_lp * msk_f).sum(dim=-1)
+        lengths = lengths + msk_f.sum(dim=-1)
 
-    return sum_logps, lengths
+    return sum_logps, lengths, states
 
 
 # ---------------------------------------------------------------------------
@@ -1222,19 +1252,26 @@ def train(config: DPOConfig) -> None:
                 if use_lora:
                     set_lora_enabled(accelerator.unwrap_model(model), True)
 
-                policy_chosen_logps, chosen_lengths = compute_log_probs(
+                # Chosen and rejected are each evaluated starting from a
+                # fresh memory state (reset_memory_per_batch semantics).
+                # Sharing a prompt_state across chosen/rejected is a Plan 8
+                # performance win; here we only need correctness of the
+                # fused-sequence chunked forward.
+                policy_chosen_logps, chosen_lengths, _ = compute_log_probs(
                     model,
                     chosen_input_ids,
                     chosen_labels,
                     chosen_loss_mask,
                     config.vocab_size,
+                    states=None,
                 )
-                policy_rejected_logps, rejected_lengths = compute_log_probs(
+                policy_rejected_logps, rejected_lengths, _ = compute_log_probs(
                     model,
                     rejected_input_ids,
                     rejected_labels,
                     rejected_loss_mask,
                     config.vocab_size,
+                    states=None,
                 )
 
                 # ----------------------------------------------------------
@@ -1256,38 +1293,42 @@ def train(config: DPOConfig) -> None:
                             set_lora_enabled(
                                 accelerator.unwrap_model(model), False
                             )
-                            ref_chosen_logps, _ = compute_log_probs(
+                            ref_chosen_logps, _, _ = compute_log_probs(
                                 model,
                                 chosen_input_ids,
                                 chosen_labels,
                                 chosen_loss_mask,
                                 config.vocab_size,
+                                states=None,
                             )
-                            ref_rejected_logps, _ = compute_log_probs(
+                            ref_rejected_logps, _, _ = compute_log_probs(
                                 model,
                                 rejected_input_ids,
                                 rejected_labels,
                                 rejected_loss_mask,
                                 config.vocab_size,
+                                states=None,
                             )
                         # Re-enable LoRA for the backward pass
                         set_lora_enabled(accelerator.unwrap_model(model), True)
                     else:
                         # Separate frozen reference model
                         with torch.no_grad():
-                            ref_chosen_logps, _ = compute_log_probs(
+                            ref_chosen_logps, _, _ = compute_log_probs(
                                 ref_model,
                                 chosen_input_ids,
                                 chosen_labels,
                                 chosen_loss_mask,
                                 config.vocab_size,
+                                states=None,
                             )
-                            ref_rejected_logps, _ = compute_log_probs(
+                            ref_rejected_logps, _, _ = compute_log_probs(
                                 ref_model,
                                 rejected_input_ids,
                                 rejected_labels,
                                 rejected_loss_mask,
                                 config.vocab_size,
+                                states=None,
                             )
 
                     loss, chosen_rewards, rejected_rewards = dpo_loss(

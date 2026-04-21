@@ -71,6 +71,7 @@ from tqdm import tqdm
 
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.memory_dump import load_memory_states, save_memory_states
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -78,6 +79,13 @@ from titans.lora import (
     set_lora_enabled,
     wrap_lora_layers,
 )
+
+# scripts/ is imported both as a namespace package ("scripts._common") and as
+# a flat directory (when tests add scripts/ onto sys.path and import "rlvr").
+try:
+    from scripts._common import chunked_forward  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
+    from _common import chunked_forward  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -277,27 +285,48 @@ def compute_token_log_probs(
     model: nn.Module,
     input_ids: torch.Tensor,
     vocab_size: int,
-) -> torch.Tensor:
-    """Compute per-token log-probabilities over the sequence.
+    states: list | None = None,
+) -> tuple[torch.Tensor, list | None]:
+    """Compute per-token log-probs with memory-aware chunking.
+
+    Chunks the sequence along dim=1 by the model's ``config.chunk_size``,
+    threading Titans memory state through successive chunks. This both
+    avoids the per-forward single-chunk limit and preserves the memory
+    accumulation regime the model was trained under.
 
     Args:
-        model: Language model returning (logits, memory_states).
+        model: Titans model with ``config.chunk_size``.
         input_ids: Token IDs of shape (B, T).
-        vocab_size: Vocabulary size (for logit reshaping).
+        vocab_size: Vocabulary size (for target clamping).
+        states: Optional initial memory states; ``None`` means start fresh.
 
     Returns:
-        Per-token log-probs of shape (B, T-1) corresponding to predicting
-        each next token from the previous one.
+        Tuple of:
+        - Per-token log-probs of shape (B, T-1).
+        - Final memory states after processing the full sequence.
     """
-    logits, _, _ = model(input_ids)
-    logits = logits.float()  # fp32 for numerical stability
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
+
+    # Chunk input_ids, run model per-chunk, collect logits, then compute
+    # shifted log-probs over the concatenated logits. detach_between=False
+    # because downstream log-probs must remain in the autograd graph for
+    # policy-gradient backward passes.
+    all_logits: list[torch.Tensor] = []
+    for logits, _ids_c, new_states in chunked_forward(
+        model, input_ids, chunk_size, states=states, detach_between=False
+    ):
+        all_logits.append(logits)
+        states = new_states
+
+    logits = torch.cat(all_logits, dim=1).float()  # (B, T, V) fp32 for stability
     # Shift: logits[:, :-1] predicts input_ids[:, 1:]
     log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (B, T-1, V)
     targets = input_ids[:, 1:].clamp(min=0, max=vocab_size - 1)  # (B, T-1)
     token_log_probs = log_probs.gather(
         dim=-1, index=targets.unsqueeze(-1)
     ).squeeze(-1)  # (B, T-1)
-    return token_log_probs
+    return token_log_probs, states
 
 
 def sum_log_probs_for_completion(
@@ -336,15 +365,17 @@ def generate_rollouts(
     eos_token_id: int | None = None,
     pad_token_id: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Generate multiple completions per prompt via temperature sampling.
+    """Generate rollouts with memory-aware prefill->buffer->commit decoding.
 
-    Runs ``num_samples`` independent forward passes (one per sample), each
-    generating up to ``max_new_tokens`` tokens. All outputs are padded to the
-    same length.
+    Mirrors the inference.py generation pattern: prefill the prompt once
+    per sample to produce an initial committed memory state, then
+    autoregressively decode, re-feeding the since-commit buffer each step
+    from the committed state so memory sees each completed chunk exactly
+    once.
 
     Args:
-        model: Language model (must accept ``(input_ids,)`` and return
-            ``(logits, states)``).
+        model: Titans model with ``config.chunk_size``. Must accept
+            ``(input_ids, states=...)`` and return ``(logits, states, _)``.
         input_ids: Prompt token IDs of shape (B, prompt_len). Must be on the
             correct device already.
         max_new_tokens: Maximum tokens to generate per sample.
@@ -362,6 +393,9 @@ def generate_rollouts(
           the generated completion (post-prompt) tokens only.
     """
     model.eval()
+    base_model = model.module if hasattr(model, "module") else model
+    chunk_size = base_model.config.chunk_size
+
     batch_size, prompt_len = input_ids.shape
     device = input_ids.device
 
@@ -375,8 +409,46 @@ def generate_rollouts(
         # Track which sequences have hit EOS
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
+        # ---- Prefill: iterate only FULL prompt chunks so memory commits
+        # are aligned to chunk boundaries. Any partial tail is handled
+        # uniformly via the re-feed path below (the same pattern used in
+        # the decode loop). Iterating input_ids.split(chunk_size) would
+        # commit the partial tail here AND re-feed it, double-counting
+        # those tokens once the first decode chunk commits. ----
+        n_full = prompt_len // chunk_size
+        buffer_start = n_full * chunk_size
+        states = None
+        last_chunk_logits = None
+        for i in range(n_full):
+            chunk_ids = input_ids[:, i * chunk_size : (i + 1) * chunk_size]
+            last_chunk_logits, states, _ = model(chunk_ids, states=states)
+            if states is not None:
+                states = [
+                    s.detach() if s is not None else None for s in states
+                ]
+
+        committed_states = (
+            [s.detach() if s is not None else None for s in states]
+            if states is not None
+            else None
+        )
+
+        # Derive next-token logits (for sampling the first generated token).
+        # If the prompt has a partial tail, re-feed it from committed_states
+        # so memory only ever sees it once (when the chunk completes during
+        # decode). If the prompt is chunk-aligned, the last committed chunk's
+        # final-position logits are already the next-token prediction.
+        if buffer_start < prompt_len:
+            buf = tokens[:, buffer_start:]
+            logits, _, _ = model(buf, states=committed_states)
+        else:
+            assert last_chunk_logits is not None, (
+                "chunk-aligned prompt must have at least one full chunk"
+            )
+            logits = last_chunk_logits
+
+        # ---- Decode loop ----
         for _ in range(max_new_tokens):
-            logits, _, _ = model(tokens)
             next_logits = logits[:, -1, :].float() / max(temperature, 1e-8)
             # Multinomial sampling
             probs = F.softmax(next_logits, dim=-1)
@@ -388,6 +460,34 @@ def generate_rollouts(
             completion_logps = completion_logps + token_logp * (~finished).float()
 
             tokens = torch.cat([tokens, next_token], dim=-1)  # (B, T+1)
+
+            buffer = tokens[:, buffer_start:]
+            buffer_len = buffer.shape[1]
+
+            if buffer_len >= chunk_size:
+                # Full chunk ready — process and commit memory update
+                chunk = buffer[:, :chunk_size]
+                logits, states, _ = model(chunk, states=committed_states)
+                states = (
+                    [s.detach() if s is not None else None for s in states]
+                    if states is not None
+                    else None
+                )
+                committed_states = (
+                    [s.detach() if s is not None else None for s in states]
+                    if states is not None
+                    else None
+                )
+                buffer_start += chunk_size
+                if buffer_len > chunk_size:
+                    remainder = buffer[:, chunk_size:]
+                    logits, states, _ = model(
+                        remainder, states=committed_states
+                    )
+            else:
+                # Partial buffer — re-feed from committed state so memory
+                # only sees these tokens once when the chunk completes
+                logits, states, _ = model(buffer, states=committed_states)
 
             if eos_token_id is not None:
                 finished = finished | (next_token.squeeze(-1) == eos_token_id)
@@ -497,7 +597,9 @@ def compute_log_probs_for_generated(
     """Compute sum log-probs over the completion portion of each generated sequence.
 
     Processes each sample in the group separately to avoid GPU memory issues with
-    large batches.
+    large batches. Each sample is processed independently with a fresh memory
+    state, matching the RLVR rollout regime where each rollout begins from a
+    common initial memory.
 
     Args:
         model: Language model.
@@ -514,7 +616,9 @@ def compute_log_probs_for_generated(
 
     for s in range(num_samples):
         seqs = generated_ids[:, s, :]  # (B, T)
-        token_logps = compute_token_log_probs(model, seqs, vocab_size)  # (B, T-1)
+        token_logps, _ = compute_token_log_probs(
+            model, seqs, vocab_size, states=None
+        )  # (B, T-1)
         sum_logps = sum_log_probs_for_completion(token_logps, prompt_len)  # (B,)
         all_logps.append(sum_logps)
 
@@ -631,6 +735,10 @@ class RLVRConfig:
     save_format: str = "pt"
     resume: str | None = None
     init_weights: str | None = None
+
+    # --- Memory state lifecycle ---
+    reset_memory_per_batch: bool = True
+    state_carry_warmup_steps: int = 0
 
     # --- Logging ---
     log_every: int = 10
@@ -1386,6 +1494,7 @@ def train(config: RLVRConfig) -> None:
     # ------------------------------------------------------------------
     global_step = 0
     start_epoch = 0
+    memory_states: list | None = None
 
     if config.resume is not None:
         resume_path = Path(config.resume)
@@ -1403,6 +1512,22 @@ def train(config: RLVRConfig) -> None:
                 f"Resumed from {resume_path} at step {global_step}, "
                 f"epoch {start_epoch}"
             )
+
+        if not config.reset_memory_per_batch:
+            mem_path = resume_path.parent / f"memory_step_{global_step}.npz"
+            if not mem_path.exists():
+                mem_path = resume_path.parent / "memory_final.npz"
+            try:
+                memory_states = load_memory_states(
+                    mem_path, device=accelerator.device
+                )
+                if accelerator.is_main_process:
+                    logger.info(f"Loaded memory states from {mem_path}")
+            except Exception as exc:  # noqa: BLE001
+                if accelerator.is_main_process:
+                    logger.info(
+                        f"No memory states found ({exc}), starting fresh"
+                    )
 
     # ------------------------------------------------------------------
     # Training loop
@@ -1423,6 +1548,13 @@ def train(config: RLVRConfig) -> None:
         for batch in pbar:
             if config.max_steps > 0 and global_step >= config.max_steps:
                 break
+
+            reset_this_batch = (
+                config.reset_memory_per_batch
+                or global_step < config.state_carry_warmup_steps
+            )
+            if reset_this_batch:
+                memory_states = None
 
             with accelerator.accumulate(model):
                 unwrapped_model = accelerator.unwrap_model(model)
@@ -1633,6 +1765,20 @@ def train(config: RLVRConfig) -> None:
                             "adapter-only save."
                         )
 
+                    if (
+                        not config.reset_memory_per_batch
+                        and memory_states is not None
+                        and any(s is not None for s in memory_states)
+                    ):
+                        mem_path = (
+                            checkpoint_dir
+                            / f"memory_step_{global_step}.npz"
+                        )
+                        save_memory_states(memory_states, mem_path)
+                        logger.info(
+                            f"Saved memory states: step {global_step}"
+                        )
+
         # End-of-epoch summary
         if accelerator.is_main_process:
             n = num_optimizer_steps if num_optimizer_steps > 0 else 1
@@ -1687,6 +1833,15 @@ def train(config: RLVRConfig) -> None:
                 "safetensors not installed — skipping adapter-only save. "
                 "Install with: pip install safetensors"
             )
+
+        if (
+            not config.reset_memory_per_batch
+            and memory_states is not None
+            and any(s is not None for s in memory_states)
+        ):
+            mem_path = checkpoint_dir / "memory_final.npz"
+            save_memory_states(memory_states, mem_path)
+            logger.info(f"Saved final memory states to {mem_path}")
 
         if config.merge_and_save is not None:
             merge_path = Path(config.merge_and_save)
@@ -1961,6 +2116,24 @@ def parse_args() -> RLVRConfig:
         metavar="PATH",
         help="Load pretrained or SFT weights before RLVR",
     )
+    ckpt.add_argument(
+        "--reset-memory-per-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reset Titans memory at the start of each batch. "
+            "Default True because rollouts are typically independent."
+        ),
+    )
+    ckpt.add_argument(
+        "--state-carry-warmup-steps",
+        type=int,
+        default=0,
+        help=(
+            "Steps to force memory reset at training start even when "
+            "--no-reset-memory-per-batch is set."
+        ),
+    )
 
     # Logging
     log = parser.add_argument_group("Logging")
@@ -2059,6 +2232,8 @@ def parse_args() -> RLVRConfig:
         save_format=args.save_format,
         resume=args.resume,
         init_weights=args.init_weights,
+        reset_memory_per_batch=args.reset_memory_per_batch,
+        state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Logging
         log_every=args.log_every,
         wandb=args.wandb,

@@ -33,7 +33,12 @@ def test_detach_guarded_passes_through_none():
 def test_all_training_scripts_use_guarded_pattern():
     """Static check: every training/inference script that threads memory
     state must use the guarded detach form and must NOT contain the
-    unguarded form for `memory_states` or `states` iterators."""
+    unguarded form for `memory_states` or `states` iterators.
+
+    Callers that delegate per-chunk detach to ``scripts/_common.chunked_forward``
+    satisfy the guard requirement transitively — ``_common.py`` owns the
+    canonical guarded comprehension for them.
+    """
     import re
     from pathlib import Path
 
@@ -45,6 +50,7 @@ def test_all_training_scripts_use_guarded_pattern():
         root / "src" / "titans" / "hf" / "modeling.py",
         root / "src" / "titans" / "hf" / "trainer.py",
     ]
+    common_path = root / "scripts" / "_common.py"
     # Match unguarded comprehensions that iterate over memory_states or states.
     # Narrow to those iterator names to avoid false positives from unrelated
     # detach comprehensions (e.g., dataclass .detach() methods in memory.py).
@@ -54,12 +60,24 @@ def test_all_training_scripts_use_guarded_pattern():
     guarded_pat = re.compile(
         r"\.detach\(\)\s+if\s+[a-zA-Z_]+\s+is\s+not\s+None\s+else\s+None"
     )
+    # _common.py must contain the canonical guarded form (so delegating
+    # callers inherit the None-safety guarantee).
+    common_txt = common_path.read_text()
+    assert guarded_pat.search(common_txt), (
+        f"{common_path} is missing the canonical guarded detach pattern"
+    )
+    delegation_pat = re.compile(r"\bchunked_forward\b")
     for p in targets:
         txt = p.read_text()
         assert not unguarded_pat.search(txt), (
             f"{p} contains an unguarded detach comprehension — add "
             f"'if s is not None'"
         )
-        assert guarded_pat.search(txt), (
-            f"{p} is missing the guarded detach pattern — regression?"
+        # Either the file inlines the guarded pattern, or it delegates to
+        # chunked_forward (which owns the canonical guarded form).
+        has_inline_guard = bool(guarded_pat.search(txt))
+        delegates_to_common = bool(delegation_pat.search(txt))
+        assert has_inline_guard or delegates_to_common, (
+            f"{p} is missing the guarded detach pattern and does not "
+            f"delegate to chunked_forward — regression?"
         )
