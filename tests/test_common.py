@@ -673,9 +673,8 @@ class TestPretrainMigrationSmoke:
 
     def test_pretrain_imports_setup_checkpoint_dir(self) -> None:
         """pretrain.py must import setup_checkpoint_dir from scripts._common."""
-        import pathlib
-        src = pathlib.Path("scripts/pretrain.py").read_text()
-        assert "setup_checkpoint_dir" in src, (
+        src = (_REPO_ROOT / "scripts" / "pretrain.py").read_text()
+        assert "setup_checkpoint_dir," in src or "    setup_checkpoint_dir," in src, (
             "pretrain.py did not import setup_checkpoint_dir; "
             "plan 3 Task 13 Step 5 required it."
         )
