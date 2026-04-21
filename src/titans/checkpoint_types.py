@@ -3,6 +3,11 @@
 
 """Data structures for the memory auto-checkpointing system.
 
+Paper alignment: N/A — novel engineering. ``GateSnapshot``, ``SignalFrame``,
+``CheckpointEntry``, and ``TransitionRecord`` are project-specific dataclasses
+used by the auto-checkpointing pipeline documented in
+``docs/memory_auto_checkpointing.md``.
+
 Provides dataclasses that capture gate values, per-chunk signal records,
 saved checkpoint snapshots, phase-transition records, and configuration for
 the auto-checkpointing subsystem.

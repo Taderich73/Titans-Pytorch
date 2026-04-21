@@ -92,3 +92,54 @@ For MAG/MAL: `window_size` controls the attention cost. With `--adaptive-window`
 | Persistent memory | Learned prefix tokens | Always accessible | Fixed (num_persistent_tokens) |
 | Sliding window attention | Local attention | Last W tokens (fixed or adaptive) | O(W) per token |
 | Neural long-term memory | Compressed state | Entire history | Fixed per chunk |
+
+---
+
+## Paper Origin Tags for Configuration Flags
+
+Each flag is tagged with its origin so you can tell at a glance whether tuning
+it affects a paper-faithful behavior or a project-specific knob.
+
+Legend: **[Faithful]** matches a specific equation in the cited paper. **[Deviation (deliberate)]** intentionally diverges and is documented. **[Novel]** has no paper counterpart.
+
+### Core memory (Titans, Titans Revisited)
+
+- `num_layers`, `dim`, `num_heads`, `ffn_dim` — **[Faithful]** standard transformer hyperparameters.
+- `block_type` ∈ {MAC, MAG, MAL} — **[Faithful]** Titans §4, post-Plan-5 alignment for MAC/MAG/MAL ordering and gating.
+- `chunk_size` (a.k.a. `S`) — **[Faithful]** Titans Revisited chunking.
+- `memory_depth`, `memory_hidden_dim` — **[Faithful]** Titans deep-memory MLP depth/width.
+- `memory_inner_steps` (K=4–8) — **[Faithful (Plan 5)]** per-token inner loop within a chunk.
+- `per_chunk_decay` — **[Deviation (deliberate)]** algebraic reparameterization `token_alpha = 1 − (1 − chunk_alpha)^(1/S)` — equivalent to per-token form.
+- `memory_grad_clip`, `memory_error_clip` — **[Novel]** stability clips; papers silent.
+- `memory_objective` ∈ {"mse", "huber"} — `"mse"` **[Faithful]**; `"huber"` **[Novel]** (see `docs/yaad_huber_bias.md`).
+- `huber_delta` — **[Novel]** threshold for the Huber objective.
+- `delta_memory_param` — **[Novel]** base W + δW decomposition for inner-loop stability.
+- `persistent_memory_std`, `init_std` — **[Deviation (deliberate)]** papers silent on init.
+
+### TNT
+
+- `use_tnt`, `tnt_num_local`, `tnt_chunk_global` (C_G), `tnt_chunk_local` (C_L) — **[Faithful]** TNT §4.
+- `tnt_reset_cadence` — **[Faithful (Plan 6 fix)]** per-token reset at `t ≡ 0 (mod S_L)`.
+
+### AttnRes
+
+- `use_attn_res` — **[Faithful]** AttnRes depth-wise softmax residual.
+- `attn_res_memory_gate` — **[Novel]** scalar importance modulating memory LR; not in the AttnRes paper.
+
+### Sliding window and RoPE
+
+- `window_size` — **[Faithful]** standard local attention.
+- `adaptive_window`, `min_window`, `max_window`, `window_temperature` — **[Novel]** `AdaptiveWindowPredictor` is project-specific.
+- `rope_proportion` — **[Novel]** p-RoPE is inspired by Gemma 4 but not specified by any Titans paper.
+
+### Memory cross-attention
+
+- `use_mca` — **[Novel]** no paper defines MCA; it is an additional read interface.
+
+### Quantization
+
+- `quantize_memory_state`, `quantize_bits` ∈ {4, 8} — **[Deviation (deliberate — baseline)]** min-max baseline, not TurboQuant.
+
+### Auto-checkpointing
+
+- `auto_checkpoint`, `novelty_z_threshold`, `novelty_window`, `cooldown_chunks`, `checkpoint_ring_size`, `capture_after_chunks`, `signal_log_compression` — **[Novel]** the entire auto-checkpointing pipeline is project-specific.

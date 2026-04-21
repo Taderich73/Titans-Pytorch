@@ -3,6 +3,12 @@
 
 """Attention Residuals for Titans (PyTorch Implementation).
 
+Paper alignment: Kimi Team (2025), AttnRes (arXiv 2603.15031).
+    * Depth-wise softmax residual (Eq. 2–6): Faithful.
+    * AttnResMemoryGate: NOVEL EXTENSION. The paper defines per-layer softmax
+      weights for residual mixing only; reusing a scalar summary of those
+      weights as a neural-memory learning-rate modulator is project-specific.
+
 Block Attention Residuals (AttnRes paper, arXiv 2603.15031) replace fixed
 residual connections with learned softmax attention over prior block
 representations.

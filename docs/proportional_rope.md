@@ -2,6 +2,12 @@
 
 > **Reference**: Gemma Team, Google (2025). *Gemma 4 Technical Report*. [google/gemma-4-E2B](https://huggingface.co/google/gemma-4-E2B)
 
+> **Paper alignment:** Gemma 4 technical report (inspiration only; not a Titans paper).
+>
+> **Implementation status:** Novel extension relative to the Titans / TNT / AttnRes papers — the Gemma report documents the *idea* of partial RoPE but not the precise formulation used here.
+>
+> **Details:** `rotate_dim = 2 * floor(head_dim * p / 2)` and the "low-frequency pairs carry negligible positional signal" framing come from the Gemma 4 reports as inspiration. The exact dimension-split, the rope-proportion grid search, and the composition with all other Titans flags are project-local decisions. None of the primary reference papers (Titans, Titans Revisited, TNT, AttnRes, Miras) prescribe any form of p-RoPE. Treat this as a project-specific knob.
+
 ## Overview
 
 Standard RoPE applies rotary position embeddings to all dimension pairs in each attention head. Research shows that low-frequency pairs (later dimensions) carry negligible positional signal and can disturb semantic representations, especially over long sequences.

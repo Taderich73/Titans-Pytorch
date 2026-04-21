@@ -3,6 +3,10 @@
 
 """NoveltyDetector protocol and statistical implementation for auto-checkpointing.
 
+Paper alignment: N/A — novel engineering. No reference paper specifies a
+novelty-detection interface or a z-score cascade trigger. See
+``docs/memory_auto_checkpointing.md`` for rationale.
+
 This module provides:
 - ``TriggerDecision`` — the result dataclass returned by any novelty detector.
 - ``NoveltyDetector`` — a structural Protocol defining the detector interface.

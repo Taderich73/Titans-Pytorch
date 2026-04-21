@@ -1,5 +1,11 @@
 # Memory Cross-Attention (MCA)
 
+> **Paper alignment:** N/A — novel extension.
+>
+> **Implementation status:** Novel extension. No reference paper defines this component.
+>
+> **Details:** MCA adds cross-attention from the residual stream to the neural memory's weight-matrix rows, giving the model a second read interface in addition to the paper's MLP retrieval. The Titans paper only prescribes MLP-based retrieval; this is a project-specific augmentation. It is orthogonal to MAC/MAG/MAL and can be enabled via `use_mca=True`.
+
 ## Overview
 
 MCA adds cross-attention from token representations to the NeuralLongTermMemory's weight matrix rows. This gives the model a second read interface into the same memory that is already being written to by the surprise-driven update mechanism.

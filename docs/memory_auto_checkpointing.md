@@ -1,5 +1,11 @@
 # Memory Auto-Checkpointing
 
+> **Paper alignment:** N/A — novel engineering layer.
+>
+> **Implementation status:** Novel extension. No reference paper specifies any part of this subsystem.
+>
+> **Details:** `MemoryCheckpointer`, `StatisticalNoveltyDetector`, `SignalFrame`, `TransitionRecord`, and the four-state ring-buffer machine (MONITORING → TRIGGERED → CAPTURING_AFTER → COOLDOWN) are all project-specific. Their purpose is training observability (capturing before/during/after snapshots of grokking-like transitions) and crash resilience during long inference runs. The Titans paper offers no mechanism for either; this is plumbing the project chose to build on top. Disabled by default (`auto_checkpoint=False`); zero overhead when off.
+
 Automatic, novelty-triggered checkpointing of Titans neural memory state during inference. Designed for two use cases:
 
 1. **Crash resilience** — preserve accumulated memory state during long inference runs so it survives power loss, OOM, or process kill without re-processing the full input stream

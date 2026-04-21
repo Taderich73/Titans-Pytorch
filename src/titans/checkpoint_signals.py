@@ -3,6 +3,9 @@
 
 """Pure signal-extraction functions for the memory auto-checkpointing system.
 
+Paper alignment: N/A — novel engineering. The Frobenius-norm signal set and
+the ``SignalFrame`` aggregation are project-specific observability plumbing.
+
 Computes per-layer Frobenius-norm signals (weight delta, momentum shift,
 absolute weight / momentum norms) from :class:`~titans.memory.MemoryState`
 and :class:`~titans.memory.TNTMemoryState` snapshots, and assembles them
