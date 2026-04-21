@@ -28,13 +28,11 @@ try:
     from scripts._common import (  # type: ignore[import-not-found]
         MODEL_CLASSES,
         create_model,
-        setup_checkpoint_dir,
     )
 except ModuleNotFoundError:  # pragma: no cover
     from _common import (  # type: ignore[no-redef]
         MODEL_CLASSES,
         create_model,
-        setup_checkpoint_dir,
     )
 
 logging.basicConfig(
@@ -268,13 +266,16 @@ def main() -> None:
 
     logger.info(f"Device: {device}")
 
-    # Validate --checkpoint exists via the shared helper (raises
-    # FileNotFoundError with a helpful message when the file is missing).
-    # Using the parent directory as output_dir is a no-op in inference
-    # (we never write to it); the helper is here purely for its
-    # resume_path existence check and filename step parsing.
-    ckpt_file = Path(args.checkpoint)
-    setup_checkpoint_dir(str(ckpt_file.parent), resume_path=str(ckpt_file))
+    # Validate --checkpoint exists up front with a clear error message.
+    # load_checkpoint supports extensionless paths (auto-resolves .safetensors
+    # or .pt), so mirror that lookup here instead of requiring an exact file.
+    ckpt_candidates = [Path(args.checkpoint)]
+    if not ckpt_candidates[0].suffix:
+        ckpt_candidates.extend(
+            [Path(f"{args.checkpoint}.safetensors"), Path(f"{args.checkpoint}.pt")]
+        )
+    if not any(p.exists() for p in ckpt_candidates):
+        raise FileNotFoundError(f"--checkpoint file not found: {args.checkpoint}")
 
     model, config = load_model(args.checkpoint, device, variant=args.model)
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")

@@ -700,12 +700,24 @@ class TestInferenceMigrationSmoke:
         )
         assert r.returncode == 0
 
-    def test_inference_imports_setup_checkpoint_dir(self) -> None:
-        """inference.py must import setup_checkpoint_dir for --checkpoint validation."""
+    def test_inference_validates_checkpoint_existence(self) -> None:
+        """inference.py must surface a clear FileNotFoundError for a missing --checkpoint.
+
+        Plan 3 Task 14 originally asked for setup_checkpoint_dir here, but
+        inference is a read path (no output_dir, no resume_path concept, and
+        load_checkpoint supports extensionless lookup). A direct existence
+        check with a --checkpoint-specific error message is the right fit.
+        """
         src = (_REPO_ROOT / "scripts" / "inference.py").read_text()
-        assert "setup_checkpoint_dir," in src, (
-            "inference.py did not import setup_checkpoint_dir; "
-            "plan 3 Task 14 Step 3 required it for --checkpoint validation."
+        # Must not import the training-script helper.
+        assert "setup_checkpoint_dir" not in src, (
+            "inference.py re-imported setup_checkpoint_dir; it is a training-script "
+            "helper and its FileNotFoundError message mis-labels --checkpoint as --resume."
+        )
+        # Must surface a --checkpoint-specific error.
+        assert '"--checkpoint file not found:' in src, (
+            "inference.py must raise a --checkpoint-specific FileNotFoundError "
+            "for missing checkpoints (see plan-audit-gap-fixes Task 2 pivot)."
         )
 
 
