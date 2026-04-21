@@ -707,7 +707,10 @@ def evaluate(
             total_tokens += batch_tokens
 
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
     model.train()
     if total_tokens == 0:
@@ -967,7 +970,11 @@ def train(config: SFTConfig) -> None:
         try:
             from titans.memory_dump import load_memory_states
 
-            memory_states = load_memory_states(mem_path, device=accelerator.device)
+            memory_states = load_memory_states(
+                mem_path,
+                device=accelerator.device,
+                reset_for_inference=False,
+            )
             if accelerator.is_main_process:
                 logger.info(f"Loaded memory states from {mem_path}")
         except Exception as e:
@@ -1019,7 +1026,10 @@ def train(config: SFTConfig) -> None:
 
             # Detach memory states to prevent BPTT across batch boundaries
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
             loss_val = loss.item()
             masked_tokens = mask_flat.sum().item()

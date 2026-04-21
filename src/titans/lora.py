@@ -303,8 +303,14 @@ def load_adapters(model: nn.Module, path: Path) -> dict[str, Any]:
             continue
 
         param = getattr(lora_modules[module_path], param_name)
+        if tensor.dtype != param.dtype:
+            logger.warning(
+                "load_adapters: dtype mismatch for %s (ckpt=%s, "
+                "param=%s); casting to param dtype",
+                key, tensor.dtype, param.dtype,
+            )
         with torch.no_grad():
-            param.copy_(tensor)
+            param.data.copy_(tensor.to(param.device, param.dtype))
         loaded_count += 1
 
     logger.info(f"Loaded {loaded_count} LoRA tensors from {path}")

@@ -93,9 +93,9 @@ class GateSnapshot:
 class SignalFrame:
     """Lightweight per-chunk signal record for novelty detection and logging.
 
-    All list fields are per-layer (not aggregated). TNT-only fields
-    (``global_signal_norms``, ``local_signal_norms``, ``local_reset_flags``)
-    are ``None`` for non-TNT memory variants (MAC, MAG, MAL).
+    All list fields are per-layer (not aggregated). The TNT-only field
+    ``local_signal_norms`` is ``None`` for non-TNT memory variants
+    (MAC, MAG, MAL).
 
     Attributes:
         chunk_index: Which chunk this frame corresponds to.
@@ -110,13 +110,9 @@ class SignalFrame:
         gate_eta_means: Mean eta gate value per layer.
         batch_variance: Variance across the batch dimension, or None if not
             computed.
-        global_signal_norms: TNT only — global memory signal norms per step.
-            None for MAC/MAG/MAL.
         local_signal_norms: TNT only — per-local-memory signal norms.
             Outer list indexes local memories; inner list indexes time steps.
             None for MAC/MAG/MAL.
-        local_reset_flags: TNT only — whether each local memory was reset this
-            chunk. None for MAC/MAG/MAL.
     """
 
     chunk_index: int
@@ -130,9 +126,7 @@ class SignalFrame:
     gate_theta_means: list[float]
     gate_eta_means: list[float]
     batch_variance: float | None
-    global_signal_norms: list[float] | None
     local_signal_norms: list[list[float]] | None
-    local_reset_flags: list[bool] | None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict representation of this frame.
@@ -152,9 +146,7 @@ class SignalFrame:
             "gate_theta_means": self.gate_theta_means,
             "gate_eta_means": self.gate_eta_means,
             "batch_variance": self.batch_variance,
-            "global_signal_norms": self.global_signal_norms,
             "local_signal_norms": self.local_signal_norms,
-            "local_reset_flags": self.local_reset_flags,
         }
 
 

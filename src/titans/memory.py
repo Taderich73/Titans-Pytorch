@@ -411,10 +411,10 @@ class NeuralLongTermMemory(nn.Module):
         theta = torch.mean(theta)
         eta = torch.mean(eta)
 
+        delta_val: torch.Tensor | None = None
         if self.memory_objective == "huber":
             delta_val = torch.sigmoid(self.gate_delta_proj(x_mean))
             delta_val = torch.mean(delta_val) * self.config.memory_error_clip
-            self._current_delta = delta_val
 
         gate_snapshot = None
         if self.config.auto_checkpoint:
@@ -446,10 +446,9 @@ class NeuralLongTermMemory(nn.Module):
                 seq_len = float(x.shape[1])
                 alpha = 1.0 - torch.pow(1.0 - chunk_alpha, 1.0 / seq_len)
             new_state = self._parallel_memory_update_linear(
-                k, v, state, alpha, theta, eta
+                k, v, state, alpha, theta, eta, delta=delta_val
             )
         else:
-            delta_val = getattr(self, "_current_delta", None)
             grads = self._compute_gradients(k, v, state.weights, delta=delta_val)
             new_momentum = [eta * m - theta * g for m, g in zip(state.momentum, grads)]
             new_weights = [
@@ -503,6 +502,7 @@ class NeuralLongTermMemory(nn.Module):
         alpha: torch.Tensor,
         theta: torch.Tensor,
         eta: torch.Tensor,
+        delta: torch.Tensor | None = None,
     ) -> MemoryState:
         """Tensorized parallel memory update for linear memory (Section 3.2)."""
         B, S, D = keys.shape
@@ -520,7 +520,7 @@ class NeuralLongTermMemory(nn.Module):
         errors = torch.clamp(preds - values, -err_clip, err_clip)
 
         if self.memory_objective == "huber":
-            hub_delta = getattr(self, "_current_delta", None)
+            hub_delta = delta
             if hub_delta is not None:
                 abs_errors = torch.abs(errors)
                 errors = torch.where(abs_errors <= hub_delta, errors, hub_delta * torch.sign(errors))

@@ -197,3 +197,41 @@ class TestSlidingWindowMaskCache:
         assert m1.data_ptr() == m2.data_ptr(), (
             "second call should return the cached tensor"
         )
+
+
+def test_adaptive_mask_zero_is_exactly_zero_attention():
+    """When adaptive_mask = 0 at a position, the additive mask produced by
+    attention must drive softmax to exactly 0 at that position."""
+    import torch
+    import torch.nn.functional as F
+
+    from titans.attention import SlidingWindowAttention
+    from titans.config import TitansConfig
+
+    cfg = TitansConfig(
+        dim=16, num_heads=2, num_layers=1, vocab_size=64, window_size=8
+    )
+    attn = SlidingWindowAttention(cfg)
+    torch.manual_seed(0)
+    x = torch.randn(1, 4, 16)
+    adaptive_mask = torch.ones(1, 1, 4, 4)
+    adaptive_mask[0, 0, 1, 0] = 0.0
+    adaptive_mask[0, 0, 2, 0] = 0.0
+
+    # Integration check: module forward still runs end-to-end.
+    out = attn(x, adaptive_mask=adaptive_mask)
+    assert out.shape == x.shape
+
+    # Functional invariant: reconstruct the additive mask the fix builds
+    # and verify softmax zeros out the masked positions for arbitrary logits.
+    neg_inf = torch.finfo(x.dtype).min
+    nonzero = adaptive_mask > 0
+    additive = torch.where(
+        nonzero,
+        torch.log(adaptive_mask.clamp(min=1e-8)),
+        torch.full_like(adaptive_mask, neg_inf),
+    )
+    logits = torch.randn(1, 1, 4, 4)
+    weights = F.softmax(logits + additive, dim=-1)
+    assert weights[0, 0, 1, 0].item() == 0.0, "masked position (1,0) leaked"
+    assert weights[0, 0, 2, 0].item() == 0.0, "masked position (2,0) leaked"

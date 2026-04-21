@@ -35,6 +35,32 @@ except ImportError:
     HAS_TRANSFORMERS = False
 
 
+def _save_final_memory(
+    path: str,
+    final_states,
+    *,
+    logger: logging.Logger,
+) -> None:
+    """Persist final_states to path, logging clearly when the list is empty.
+
+    Args:
+        path: Target .npz path.
+        final_states: List of memory states returned from generate().
+        logger: Module logger to report through.
+    """
+    if not final_states:
+        logger.warning(
+            "--save-memory=%s was set but generate() returned an empty list "
+            "of final states (no memory to save). Check that your model is "
+            "memory-bearing and that generate() threads states through.",
+            path,
+        )
+        return
+
+    save_memory_states(final_states, Path(path))
+    logger.info("Saved memory state to %s", path)
+
+
 def load_model(
     checkpoint_path: str, device: torch.device
 ) -> tuple[TitansMAC, TitansConfig]:
@@ -102,12 +128,16 @@ def generate(
     # Prefill: process full prompt, updating memory per-chunk (handled by model)
     logits, states, gate_snapshots = model(generated, states=states)
     if states is not None:
-        states = [s.detach() for s in states]
+        states = [s.detach() if s is not None else None for s in states]
 
     # committed_states: memory after the last full chunk was processed
     # We restore from this each step so partial-buffer re-processing
     # doesn't compound memory updates
-    committed_states = [s.detach() for s in states] if states else None
+    committed_states = (
+        [s.detach() if s is not None else None for s in states]
+        if states
+        else None
+    )
     buffer_start = generated.shape[1]  # where the decode buffer begins
     chunk_idx = 0
 
@@ -130,8 +160,13 @@ def generate(
             # Full chunk ready — process and commit memory update
             chunk = buffer[:, :chunk_size]
             logits, states, gate_snapshots = model(chunk, states=committed_states)
-            states = [s.detach() for s in states]
-            committed_states = [s.detach() for s in states]
+            if states is not None:
+                states = [s.detach() if s is not None else None for s in states]
+            committed_states = (
+                [s.detach() if s is not None else None for s in states]
+                if states is not None
+                else None
+            )
             buffer_start += chunk_size
 
             if checkpointer is not None:
@@ -145,12 +180,14 @@ def generate(
             if buffer_len > chunk_size:
                 remainder = buffer[:, chunk_size:]
                 logits, states, gate_snapshots = model(remainder, states=committed_states)
-                states = [s.detach() for s in states]
+                if states is not None:
+                    states = [s.detach() if s is not None else None for s in states]
         else:
             # Partial buffer — re-feed from committed state so memory
             # only sees these tokens once when the chunk completes
             logits, states, gate_snapshots = model(buffer, states=committed_states)
-            states = [s.detach() for s in states]
+            if states is not None:
+                states = [s.detach() if s is not None else None for s in states]
 
     if checkpointer is not None:
         checkpointer.flush()
@@ -220,7 +257,9 @@ def main() -> None:
 
     memory_states = None
     if args.memory_state:
-        memory_states = load_memory_states(args.memory_state, device=device)
+        memory_states = load_memory_states(
+            args.memory_state, device=device, reset_for_inference=True
+        )
         logger.info(f"Loaded memory state from {args.memory_state}")
 
     generated, final_states = generate(
@@ -236,9 +275,8 @@ def main() -> None:
     output_text = tokenizer.decode(generated[0], skip_special_tokens=True)
     print(output_text)
 
-    if args.save_memory and final_states:
-        save_memory_states(final_states, Path(args.save_memory))
-        logger.info(f"Saved memory state to {args.save_memory}")
+    if args.save_memory:
+        _save_final_memory(args.save_memory, final_states, logger=logger)
 
 
 if __name__ == "__main__":

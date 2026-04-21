@@ -882,7 +882,11 @@ def train(config: LoRATrainingConfig) -> None:
         try:
             from titans.memory_dump import load_memory_states
 
-            memory_states = load_memory_states(mem_path, device=accelerator.device)
+            memory_states = load_memory_states(
+                mem_path,
+                device=accelerator.device,
+                reset_for_inference=False,
+            )
             if accelerator.is_main_process:
                 logger.info(f"Loaded memory states from {mem_path}")
         except Exception as e:
@@ -932,18 +936,21 @@ def train(config: LoRATrainingConfig) -> None:
                     accelerator.clip_grad_norm_(
                         model.parameters(), config.grad_clip
                     )
+                    global_step += 1
 
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
             if memory_states is not None:
-                memory_states = [s.detach() for s in memory_states]
+                memory_states = [
+                    s.detach() if s is not None else None
+                    for s in memory_states
+                ]
 
             loss_val = loss.item()
             epoch_loss += loss_val
             num_batches += 1
-            global_step += 1
 
             if global_step % config.log_every == 0 and accelerator.is_main_process:
                 avg_loss = epoch_loss / num_batches

@@ -1,5 +1,6 @@
 """Tests for Neural Long-term Memory module."""
 
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -619,3 +620,31 @@ class TestNeuralLongTermMemoryLegacy:
         # Sanity: main retrieval-path gradients still flow under legacy flag.
         assert mem.proj_q.weight.grad is not None
         assert mem.proj_out.weight.grad is not None
+
+
+@pytest.mark.parametrize("num_memory_layers", [1, 2])
+def test_memory_module_no_module_state_stash(num_memory_layers):
+    """Regression: self._current_delta was assigned inside forward() so that
+    _parallel_memory_update_linear (linear path, num_memory_layers=1) and
+    _compute_gradients (deep path, num_memory_layers>=2) could read it later.
+    That's a torch.compile and concurrency hazard. The field must not be set
+    on the module after forward, regardless of which consumer path ran.
+    """
+    import torch
+    from titans.memory import NeuralLongTermMemory
+    from titans.config import TitansConfig
+
+    cfg = TitansConfig(
+        dim=16,
+        num_heads=2,
+        num_layers=1,
+        vocab_size=64,
+        num_memory_layers=num_memory_layers,
+        memory_objective="huber",
+    )
+    mem = NeuralLongTermMemory(cfg)
+    x = torch.randn(1, 4, 16)
+    _ = mem(x, return_state=False)
+    assert not hasattr(mem, "_current_delta") or mem._current_delta is None, (
+        "forward() is stashing delta on the module — thread it as an argument"
+    )

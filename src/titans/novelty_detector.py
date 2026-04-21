@@ -416,14 +416,19 @@ class StatisticalNoveltyDetector:
         Returns:
             A :class:`TriggerDecision`.
         """
-        best_z: float | None = None
+        best_abs_z: float | None = None
+        best_signed_z: float | None = None
+        best_direction: str = "spike"
 
-        for layer_idx, (val, lw) in enumerate(zip(values, layer_windows)):
-            # Spike check
+        for _layer_idx, (val, lw) in enumerate(zip(values, layer_windows)):
+            # Spike check — signed z-score filtered above +sigma.
             z_spike = _z_score_spike(val, lw.values, self.sigma_threshold)
             if z_spike is not None:
-                if best_z is None or z_spike > best_z:
-                    best_z = z_spike
+                abs_z = abs(z_spike)
+                if best_abs_z is None or abs_z > best_abs_z:
+                    best_abs_z = abs_z
+                    best_signed_z = z_spike
+                    best_direction = "spike"
 
             # Drop check via rate-of-change.
             # The current RoC was already appended to lw.roc_values during push();
@@ -433,14 +438,22 @@ class StatisticalNoveltyDetector:
                 current_roc = lw.roc_values[-1]
                 z_drop = _z_score_drop(current_roc, lw.roc_values, self.sigma_threshold)
                 if z_drop is not None:
-                    if best_z is None or z_drop > best_z:
-                        best_z = z_drop
+                    abs_z = abs(z_drop)
+                    if best_abs_z is None or abs_z > best_abs_z:
+                        best_abs_z = abs_z
+                        # _z_score_drop returns magnitude; the underlying z was
+                        # strongly negative, so the signed value is -abs_z.
+                        best_signed_z = -abs_z
+                        best_direction = "drop"
 
-        if best_z is not None:
-            confidence = _compute_confidence(best_z, self.sigma_threshold)
+        if best_abs_z is not None and best_signed_z is not None:
+            confidence = _compute_confidence(best_abs_z, self.sigma_threshold)
             return TriggerDecision(
                 triggered=True,
-                reason=f"{signal_name} anomaly (z={best_z:.2f})",
+                reason=(
+                    f"{signal_name} {best_direction} "
+                    f"(|z|={best_abs_z:.2f}, signed={best_signed_z:+.2f})"
+                ),
                 confidence=confidence,
                 signal_source=signal_name,
             )
@@ -482,28 +495,42 @@ class StatisticalNoveltyDetector:
 
         current_mean = sum(values) / n
 
+        best_abs_z: float | None = None
+        best_signed_z: float | None = None
+        best_direction: str = "spike"
+
         # Spike check on aggregated scalar
         z_spike = _z_score_spike(current_mean, agg_values, self.sigma_threshold)
+        if z_spike is not None:
+            abs_z = abs(z_spike)
+            if best_abs_z is None or abs_z > best_abs_z:
+                best_abs_z = abs_z
+                best_signed_z = z_spike
+                best_direction = "spike"
 
         # Drop check on aggregated rate-of-change.
         # Use the last entry of the aggregated roc window (already computed) rather
         # than recomputing from _prev (which has been updated by push()).
-        z_drop: float | None = None
         if agg_roc:
             current_agg_roc = agg_roc[-1]
             z_drop = _z_score_drop(current_agg_roc, agg_roc, self.sigma_threshold)
+            if z_drop is not None:
+                abs_z = abs(z_drop)
+                if best_abs_z is None or abs_z > best_abs_z:
+                    best_abs_z = abs_z
+                    # _z_score_drop returns magnitude; the underlying z was
+                    # strongly negative, so the signed value is -abs_z.
+                    best_signed_z = -abs_z
+                    best_direction = "drop"
 
-        best_z = None
-        if z_spike is not None:
-            best_z = z_spike
-        if z_drop is not None and (best_z is None or z_drop > best_z):
-            best_z = z_drop
-
-        if best_z is not None:
-            confidence = _compute_confidence(best_z, self.sigma_threshold)
+        if best_abs_z is not None and best_signed_z is not None:
+            confidence = _compute_confidence(best_abs_z, self.sigma_threshold)
             return TriggerDecision(
                 triggered=True,
-                reason=f"{signal_name} anomaly (z={best_z:.2f})",
+                reason=(
+                    f"{signal_name} {best_direction} "
+                    f"(|z|={best_abs_z:.2f}, signed={best_signed_z:+.2f})"
+                ),
                 confidence=confidence,
                 signal_source=signal_name,
             )

@@ -213,15 +213,28 @@ class SlidingWindowAttention(nn.Module):
 
         if adaptive_mask is not None:
             # adaptive_mask: (batch, 1, seq_len, seq_len) with values in [0, 1]
-            # Convert to additive: log(mask + eps) so 1->0.0, 0->-inf
+            # Build an additive mask: log(mask) where the soft mask is > 0,
+            # -inf where the soft mask is exactly 0. This removes the ~-18.4
+            # log-leak that torch.log(mask + 1e-8) produced at zero entries,
+            # which allowed ~1e-8 probability to bleed through supposedly
+            # fully-masked positions after softmax.
+            neg_inf = torch.finfo(x.dtype).min
+            nonzero = adaptive_mask > 0
+            # Single where: log on nonzero entries, -inf on zeros. Clamp guards
+            # fp16 subnormals; nonzero entries dominate, zeros get exactly -inf.
+            additive = torch.where(
+                nonzero,
+                torch.log(adaptive_mask.clamp(min=1e-8)),
+                torch.full_like(adaptive_mask, neg_inf),
+            )
+
             if prefix_len > 0:
                 prefix_attn = torch.zeros(
                     (batch_size, 1, seq_len, prefix_len), device=x.device
                 )
-                additive = torch.log(adaptive_mask + 1e-8)
                 mask = torch.cat([prefix_attn, additive], dim=-1)
             else:
-                mask = torch.log(adaptive_mask + 1e-8)
+                mask = additive
         else:
             mask = self._create_extended_mask(
                 seq_len, full_x.shape[1], prefix_len, x.device

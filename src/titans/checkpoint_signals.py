@@ -169,10 +169,9 @@ def build_signal_frame(
     signals (prediction errors, gradients) that require access to model
     internals unavailable in this module.
 
-    For :class:`TNTMemoryState` inputs, the TNT-specific fields
-    (``global_signal_norms``, ``local_signal_norms``, ``local_reset_flags``)
-    are populated; for plain :class:`MemoryState` inputs they are set to
-    ``None``.
+    For :class:`TNTMemoryState` inputs, the TNT-specific field
+    ``local_signal_norms`` is populated; for plain :class:`MemoryState`
+    inputs it is set to ``None``.
 
     Args:
         old_state: Memory state before the update.
@@ -207,16 +206,12 @@ def build_signal_frame(
         gradient_norms = [0.0] * n_layers
 
     # TNT-specific fields.
-    global_signal_norms: list[float] | None = None
     local_signal_norms: list[list[float]] | None = None
-    local_reset_flags: list[bool] | None = None
 
     if isinstance(new_state, TNTMemoryState):
-        global_signal_norms = compute_weight_norms(new_state)  # global weight norms
         local_signal_norms = [
             [_frobenius(w) for w in local.weights] for local in new_state.local_states
         ]
-        local_reset_flags = [False] * len(new_state.local_states)
 
     return SignalFrame(
         chunk_index=chunk_index,
@@ -230,7 +225,5 @@ def build_signal_frame(
         gate_theta_means=gate_theta_means,
         gate_eta_means=gate_eta_means,
         batch_variance=batch_variance,
-        global_signal_norms=global_signal_norms,
         local_signal_norms=local_signal_norms,
-        local_reset_flags=local_reset_flags,
     )

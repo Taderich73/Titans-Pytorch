@@ -135,9 +135,13 @@ class TitansMACForCausalLM(PreTrainedModel):
         for chunk in prompt_chunks:
             logits, states, _ = self.model(chunk, states=states)
             if states is not None:
-                states = [s.detach() for s in states]
+                states = [s.detach() if s is not None else None for s in states]
 
-        committed_states = [s.detach() for s in states] if states else None
+        committed_states = (
+            [s.detach() if s is not None else None for s in states]
+            if states
+            else None
+        )
         buffer_start = generated.shape[1]
 
         for _ in range(max_new_tokens):
@@ -181,8 +185,15 @@ class TitansMACForCausalLM(PreTrainedModel):
                 logits, states, _ = self.model(
                     chunk, states=committed_states
                 )
-                states = [s.detach() for s in states]
-                committed_states = [s.detach() for s in states]
+                if states is not None:
+                    states = [
+                        s.detach() if s is not None else None for s in states
+                    ]
+                committed_states = (
+                    [s.detach() if s is not None else None for s in states]
+                    if states is not None
+                    else None
+                )
                 buffer_start += chunk_size
 
                 if buffer_len > chunk_size:
@@ -190,11 +201,18 @@ class TitansMACForCausalLM(PreTrainedModel):
                     logits, states, _ = self.model(
                         remainder, states=committed_states
                     )
-                    states = [s.detach() for s in states]
+                    if states is not None:
+                        states = [
+                            s.detach() if s is not None else None
+                            for s in states
+                        ]
             else:
                 logits, states, _ = self.model(
                     buffer, states=committed_states
                 )
-                states = [s.detach() for s in states]
+                if states is not None:
+                    states = [
+                        s.detach() if s is not None else None for s in states
+                    ]
 
         return generated

@@ -11,6 +11,7 @@ detection on load.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,10 +40,21 @@ def _save_pt(
         List containing the single ``.pt`` file written.
     """
     pt_path = path.with_suffix(".pt")
+    tmp_path = pt_path.with_name(pt_path.name + ".tmp")
     payload: dict[str, Any] = {"model": state_dict}
     if metadata:
         payload.update(metadata)
-    torch.save(payload, pt_path)
+    try:
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, pt_path)
+    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+        # Clean up partial tmp file so subsequent runs don't stumble on it.
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
     logger.info("Saved pt checkpoint: %s", pt_path)
     return [pt_path]
 
@@ -76,19 +88,50 @@ def _save_safetensors(
     seen: dict[int, str] = {}
     prepared: dict[str, torch.Tensor] = {}
     for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            raise TypeError(
+                f"_save_safetensors: entry {k!r} is a "
+                f"{type(v).__name__}, not a torch.Tensor. "
+                "safetensors format only supports flat tensor state "
+                "dicts. If this is a QuantizedMemoryState or similar "
+                "composite, call .dequantize() first or save in 'pt' "
+                "format."
+            )
         data_ptr = v.data_ptr()
         if data_ptr in seen:
             prepared[k] = v.clone().contiguous()
         else:
             seen[data_ptr] = k
             prepared[k] = v.contiguous()
-    save_file(prepared, sf_path)
+    sf_tmp = sf_path.with_name(sf_path.name + ".tmp")
+    try:
+        save_file(prepared, sf_tmp)
+        os.replace(sf_tmp, sf_path)
+    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+        # Clean up partial tmp file so subsequent runs don't stumble on it.
+        try:
+            if sf_tmp.exists():
+                sf_tmp.unlink()
+        except OSError:
+            pass
+        raise
     written: list[Path] = [sf_path]
     logger.info("Saved safetensors checkpoint: %s", sf_path)
 
     if metadata:
         sidecar = path.with_suffix(".meta.pt")
-        torch.save(metadata, sidecar)
+        sidecar_tmp = sidecar.with_name(sidecar.name + ".tmp")
+        try:
+            torch.save(metadata, sidecar_tmp)
+            os.replace(sidecar_tmp, sidecar)
+        except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+            # Clean up partial tmp file so subsequent runs don't stumble on it.
+            try:
+                if sidecar_tmp.exists():
+                    sidecar_tmp.unlink()
+            except OSError:
+                pass
+            raise
         written.append(sidecar)
         logger.info("Saved metadata sidecar: %s", sidecar)
 
