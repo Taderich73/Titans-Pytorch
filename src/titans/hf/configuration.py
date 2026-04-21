@@ -82,6 +82,8 @@ class TitansMACConfig(PretrainedConfig):
         init_std: float = 0.02,
         auto_checkpoint: bool = False,
         checkpoint_config: Any | None = None,
+        mac_per_position_memory_query: bool = True,
+        num_memory_inner_steps: int = 1,
         **kwargs,
     ) -> None:
         # Set architectures before super().__init__ so save_pretrained includes it.
@@ -145,6 +147,8 @@ class TitansMACConfig(PretrainedConfig):
         self.dropout = dropout
         self.activation = activation
         self.init_std = init_std
+        self.mac_per_position_memory_query = mac_per_position_memory_query
+        self.num_memory_inner_steps = num_memory_inner_steps
         self.auto_checkpoint = auto_checkpoint
         # Serialize MemoryCheckpointConfig as a dict on the HF side so it
         # survives JSON round-trips (config.json); rehydrate in

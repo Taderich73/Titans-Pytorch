@@ -191,6 +191,62 @@ def test_safe_register_propagates_unrelated_valueerror():
             _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
 
 
+class TestNewFieldsRoundTrip:
+    """New Plan 5 config fields survive HF serialization.
+
+    Covers ``mac_per_position_memory_query`` (Task 5) and
+    ``num_memory_inner_steps`` (Task 9). Guards the round-trip in both
+    directions so future config additions cannot silently drop these
+    fields.
+    """
+
+    def test_per_position_query_roundtrip(self):
+        """``mac_per_position_memory_query`` survives TitansConfig <-> HF."""
+        tc = TitansConfig(mac_per_position_memory_query=False)
+        hf = TitansMACConfig.from_titans_config(tc)
+        tc2 = hf.to_titans_config()
+        assert tc2.mac_per_position_memory_query is False
+
+    def test_inner_steps_roundtrip(self):
+        """``num_memory_inner_steps`` survives TitansConfig <-> HF."""
+        tc = TitansConfig(num_memory_inner_steps=16)
+        hf = TitansMACConfig.from_titans_config(tc)
+        tc2 = hf.to_titans_config()
+        assert tc2.num_memory_inner_steps == 16
+
+    def test_old_hf_config_loads_with_defaults(self):
+        """Omitting the new fields yields the paper-aligned defaults."""
+        hf = TitansMACConfig(dim=64, num_heads=4)
+        tc = hf.to_titans_config()
+        assert tc.mac_per_position_memory_query is True  # new default
+        assert tc.num_memory_inner_steps == 1
+
+    def test_new_fields_survive_save_pretrained(self):
+        """Full save_pretrained / from_pretrained round-trip preserves
+        both new fields, not just in-memory conversion."""
+        tc = TitansConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            mac_per_position_memory_query=False,
+            num_memory_inner_steps=8,
+        )
+        hf = TitansMACConfig.from_titans_config(tc)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hf.save_pretrained(tmpdir)
+            loaded = TitansMACConfig.from_pretrained(tmpdir)
+
+        # Raw HF attributes
+        assert loaded.mac_per_position_memory_query is False
+        assert loaded.num_memory_inner_steps == 8
+
+        # And they come back correctly through to_titans_config
+        restored = loaded.to_titans_config()
+        assert restored.mac_per_position_memory_query is False
+        assert restored.num_memory_inner_steps == 8
+
+
 def test_titans_hf_double_import_is_idempotent():
     """Re-importing titans.hf in the same process must not raise.
 

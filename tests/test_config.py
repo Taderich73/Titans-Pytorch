@@ -133,3 +133,46 @@ class TestAutoCheckpointConfig:
         d["some_future_field"] = "value"
         config = TitansConfig.from_dict(d)  # should not raise
         assert config.dim == 512
+
+
+class TestMemoryInnerSteps:
+    """Config field num_memory_inner_steps with validation."""
+
+    def test_default_is_one(self):
+        from titans.config import TitansConfig
+        config = TitansConfig()
+        assert config.num_memory_inner_steps == 1
+
+    def test_explicit_value(self):
+        from titans.config import TitansConfig
+        config = TitansConfig(num_memory_inner_steps=8)
+        assert config.num_memory_inner_steps == 8
+
+    def test_rejects_zero(self):
+        from titans.config import TitansConfig
+        import pytest
+        with pytest.raises(ValueError, match="num_memory_inner_steps"):
+            TitansConfig(num_memory_inner_steps=0)
+
+    def test_rejects_negative(self):
+        from titans.config import TitansConfig
+        import pytest
+        with pytest.raises(ValueError, match="num_memory_inner_steps"):
+            TitansConfig(num_memory_inner_steps=-2)
+
+    def test_to_dict_roundtrip(self):
+        from titans.config import TitansConfig
+        c1 = TitansConfig(num_memory_inner_steps=4)
+        d = c1.to_dict()
+        assert d["num_memory_inner_steps"] == 4
+        c2 = TitansConfig.from_dict(d)
+        assert c2.num_memory_inner_steps == 4
+
+    def test_hf_config_roundtrip(self):
+        from titans.config import TitansConfig
+        from titans.hf.configuration import TitansMACConfig
+        titans_cfg = TitansConfig(num_memory_inner_steps=8)
+        hf_cfg = TitansMACConfig.from_titans_config(titans_cfg)
+        assert hf_cfg.num_memory_inner_steps == 8
+        round_tripped = hf_cfg.to_titans_config()
+        assert round_tripped.num_memory_inner_steps == 8

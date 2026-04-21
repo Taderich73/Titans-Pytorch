@@ -184,9 +184,15 @@ class MACBlock(nn.Module):
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
-        self.memory_query = nn.Parameter(
-            torch.randn(1, 1, config.dim) * config.init_std
-        )
+        if config.mac_per_position_memory_query:
+            # Paper Eq. 21: q_t = S^(t) W_Q (per-position linear projection).
+            self.memory_query_proj = nn.Linear(config.dim, config.dim, bias=False)
+            nn.init.normal_(self.memory_query_proj.weight, std=config.init_std)
+        else:
+            # Legacy: single learned query broadcast across batch and positions.
+            self.memory_query = nn.Parameter(
+                torch.randn(1, 1, config.dim) * config.init_std
+            )
         self.persistent = PersistentMemory(config)
         self.attention = SegmentedAttention(config)
         self.ffn = FeedForward(config)
@@ -194,9 +200,6 @@ class MACBlock(nn.Module):
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
         self.norm_mem = RMSNorm(config.dim)
-
-        self.gate_norm_attn = RMSNorm(config.dim)
-        self.gate_norm_mem = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         _init_mca(self, config, layer_idx)
@@ -226,25 +229,43 @@ class MACBlock(nn.Module):
         if state is None:
             state = self.memory.init_state(batch_size)
 
-        query = self.memory_query.expand(batch_size, -1, -1)
+        normed = self.norm1(h)
+        if self.config.mac_per_position_memory_query:
+            # Paper Eq. 21: per-position query q_t = S^(t) W_Q.  The query
+            # lives in the same normalized space as the attention input.
+            query = self.memory_query_proj(normed)
+        else:
+            # Legacy: single learned query broadcast across batch and positions.
+            query = self.memory_query.expand(batch_size, -1, -1)
         memory_retrieved = self.memory.retrieve(query, state)
         memory_tokens = self.norm_mem(memory_retrieved)
 
         persistent = self.persistent(batch_size)
-        normed = self.norm1(h)
         attn_out = self.attention(normed, persistent=persistent, memory=memory_tokens)
         if self.dropout is not None:
             attn_out = self.dropout(attn_out)
 
         y_t = h + attn_out
 
-        mem_out, new_state, gate_snapshot = self.memory(y_t, state=state, memory_gate=memory_gate)
+        # Paper Eq. 24: retrieve from M_{t-1} (pre-update), not post-update.
+        # The memory is still UPDATED with y_t; only the output path reads
+        # from the incoming state. TNT's HierarchicalMemory does not expose
+        # this flag, so we only pass it when using NeuralLongTermMemory.
+        if self.config.use_tnt:
+            mem_out, new_state, gate_snapshot = self.memory(
+                y_t, state=state, memory_gate=memory_gate
+            )
+        else:
+            mem_out, new_state, gate_snapshot = self.memory(
+                y_t,
+                state=state,
+                memory_gate=memory_gate,
+                retrieve_after_update=False,
+            )
 
-        gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
-            self.gate_norm_mem(mem_out)
-        )
-
-        core_out = attn_out + gated
+        # Paper Eq. 25: o_t = y_t ⊗ M_t*(y_t) (element-wise multiply).
+        # After Task 5, mem_out is per-position with shape matching y_t.
+        core_out = y_t * mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
@@ -331,8 +352,7 @@ class MAGBlock(nn.Module):
     Architecture:
     1. y_t = SW-Attn([persistent || norm(h)]) — sliding window attention
     2. mem_out = M([persistent || normed]) — memory on normed input (NOT y_t)
-    3. gated = sigmoid(gate_attn(y_t)) * sigmoid(gate_mem(mem_out))
-    4. core_out = attn_out + gated
+    3. core_out = y_t * mem_out — element-wise multiplicative gate (Eq. 28)
     """
 
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
@@ -351,9 +371,6 @@ class MAGBlock(nn.Module):
 
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
-
-        self.gate_norm_attn = RMSNorm(config.dim)
-        self.gate_norm_mem = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
@@ -416,12 +433,10 @@ class MAGBlock(nn.Module):
         else:
             mem_out = mem_out_full
 
-        # Eq. 28: Gated output
-        gated = torch.sigmoid(self.gate_norm_attn(y_t)) * torch.sigmoid(
-            self.gate_norm_mem(mem_out)
-        )
-
-        core_out = attn_out + gated
+        # Paper Eq. 28: o = y ⊗ M(x̃) (element-wise multiply).
+        # mem_out is per-position after slicing off the persistent prefix,
+        # with shape matching y_t naturally.
+        core_out = y_t * mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
@@ -503,13 +518,17 @@ class TitansMAG(nn.Module):
 
 
 class MALBlock(nn.Module):
-    """Memory as Layer Block (Titans Eq. 29-31).
+    """Memory as Layer Block (Titans Eq. 29-31 — parallel sum).
 
-    Architecture:
-    1. mem_out = M([persistent || norm1(h)]) — memory first
-    2. h_mid = h + mem_out — internal residual
-    3. attn_out = SW-Attn(norm2(h_mid), prefix=persistent) — attention second
-    4. core_out = mem_out + attn_out
+    Architecture per paper:
+      x̃ = norm1(h)                                  (Eq. 29)
+      y  = SW-Attn(x̃, prefix=persistent)            (Eq. 30)
+      z  = M([persistent || x̃])                    (Eq. 31)
+      core_out = y + z
+
+    Attention and memory are computed in parallel on the SAME normalized
+    input; there is no internal residual from mem_out into the attention
+    input (which would double-count the memory contribution).
     """
 
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
@@ -526,10 +545,11 @@ class MALBlock(nn.Module):
         self.attention = SlidingWindowAttention(config)
         self.ffn = FeedForward(config)
 
-        # norm1=memory, norm2=attention, norm3=FFN
+        # Paper Eq. 29: x̃ = norm1(h) — shared by memory AND attention.
+        # norm2 is the FFN input norm.  (Former norm2/norm3 split is gone
+        # because attention no longer sees a memory-enriched residual.)
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
-        self.norm3 = RMSNorm(config.dim)
 
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
         self._last_falloff_centers: torch.Tensor | None = None
@@ -566,8 +586,21 @@ class MALBlock(nn.Module):
 
         persistent = self.persistent(batch_size)
 
-        # Eq. 29-30: Memory layer first
+        # Eq. 29: x̃ = norm1(h) — shared by both branches.
         normed = self.norm1(h)
+
+        # Eq. 30: y = SW-Attn(x̃, prefix=persistent).  Attention sees the
+        # raw normed input — NOT h + mem_out — so memory doesn't leak into
+        # the attention pathway twice.
+        adaptive_mask = None
+        if hasattr(self, "window_predictor"):
+            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
+
+        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
+        if self.dropout is not None:
+            attn_out = self.dropout(attn_out)
+
+        # Eq. 31: z = M([persistent || x̃])
         if persistent is not None:
             mem_input = torch.cat([persistent, normed], dim=1)
         else:
@@ -582,24 +615,13 @@ class MALBlock(nn.Module):
         if self.dropout is not None:
             mem_out = self.dropout(mem_out)
 
-        # Internal residual: attention sees h + mem contribution
-        h_mid = h + mem_out
-
-        # Eq. 31: Attention on memory-enriched representation
-        normed_mid = self.norm2(h_mid)
-        adaptive_mask = None
-        if hasattr(self, "window_predictor"):
-            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed_mid)
-
-        attn_out = self.attention(normed_mid, prefix=persistent, adaptive_mask=adaptive_mask)
-        if self.dropout is not None:
-            attn_out = self.dropout(attn_out)
-
-        core_out = mem_out + attn_out
+        # Paper Eq. 31 closure: o = y + z (parallel sum).
+        core_out = attn_out + mem_out
         return core_out, new_state, gate_snapshot
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
-        normed = self.norm3(h)
+        # FFN uses norm2 now (norm3 was removed with the parallel-sum rewrite).
+        normed = self.norm2(h)
         ffn_out = self.ffn(normed)
         if self.dropout is not None:
             ffn_out = self.dropout(ffn_out)

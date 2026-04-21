@@ -234,7 +234,10 @@ class NeuralLongTermMemory(nn.Module):
         else:
             error = raw_error
 
-        scale = 2.0 / float(error.numel())
+        # Per paper §3.1: loss averages over sequence length S only.
+        # error.shape = (B, S, D_out); we want 2/S.
+        seq_len = error.shape[1]
+        scale = 2.0 / float(seq_len)
         batch_seq = error.shape[0] * error.shape[1]
         error_flat = error.reshape(batch_seq, -1)
         keys_flat = keys.reshape(batch_seq, -1)
@@ -277,7 +280,10 @@ class NeuralLongTermMemory(nn.Module):
         else:
             error = raw_error
 
-        scale = 2.0 / float(error.numel())
+        # Per paper §3.1: outer scale is 2/S, not 2/(B*S*D_out).
+        # This multiplier is absorbed by learnable theta = sigmoid(.)*memory_lr;
+        # no behavioral regression expected, just paper-correct calibration.
+        scale = 2.0 / float(seq_len)
         delta_bp = scale * error
 
         grad_clip = self.config.memory_grad_clip
@@ -353,7 +359,18 @@ class NeuralLongTermMemory(nn.Module):
         lr_scale: float | torch.Tensor = 1.0,
         memory_gate: torch.Tensor | None = None,
         return_keys: bool = False,
+        retrieve_after_update: bool = True,
     ) -> tuple:
+        """Forward with optional retrieval source.
+
+        Args:
+            retrieve_after_update: When True (default), retrieve with the
+                POST-update effective weights (paper-consistent for
+                MAG/MAL/LMM where ``x̃`` is the same input fed to memory and
+                consumed by the gate). When False (paper Eq. 24 for MAC),
+                retrieve with the INCOMING state — the returned ``output`` is
+                computed from ``state`` before the update.
+        """
         batch_size = x.shape[0]
 
         if state is None:
@@ -373,11 +390,13 @@ class NeuralLongTermMemory(nn.Module):
 
         k, v, q = self._apply_conv(k, v, q)
 
+        # Per paper Eq. 11-13: only Q and K pass through SiLU + L2-norm.
+        # V is kept as the raw linear projection so the MLP target is
+        # not forced onto the unit sphere (which would impose an error floor).
         k = F.silu(k)
-        v = F.silu(v)
         q = F.silu(q)
 
-        # L2-normalize in float32
+        # L2-normalize Q and K in float32 (V is left untouched)
         q_f32 = q.float()
         k_f32 = k.float()
         q = (q_f32 / torch.sqrt(
@@ -387,19 +406,21 @@ class NeuralLongTermMemory(nn.Module):
             torch.sum(k_f32 * k_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
         )).to(k.dtype)
 
-        # Data-dependent gates
+        # Data-dependent gates — chunk-mean over sequence axis is retained
+        # (Titans Revisited endorses chunk-level gates), but the per-sample
+        # dimension is preserved: resulting shape is (B, 1, 1) so each sample
+        # in the batch gets its own gate.  Broadcast works against (B, S, D).
         x_mean = torch.mean(x, dim=1, keepdim=True)
         alpha = torch.sigmoid(self.gate_decay_proj(x_mean))
         theta = torch.sigmoid(self.gate_lr_proj(x_mean)) * self.config.memory_lr
         eta = torch.sigmoid(self.gate_momentum_proj(x_mean)) * self.config.memory_momentum
-        alpha = torch.mean(alpha)
-        theta = torch.mean(theta)
-        eta = torch.mean(eta)
 
         delta_val: torch.Tensor | None = None
         if self.memory_objective == "huber":
-            delta_val = torch.sigmoid(self.gate_delta_proj(x_mean))
-            delta_val = torch.mean(delta_val) * self.config.memory_error_clip
+            # Per-sample delta: shape (B, 1, 1), no batch-mean.
+            delta_val = (
+                torch.sigmoid(self.gate_delta_proj(x_mean)) * self.config.memory_error_clip
+            )
 
         gate_snapshot = None
         if self.config.auto_checkpoint:
@@ -434,17 +455,110 @@ class NeuralLongTermMemory(nn.Module):
                 k, v, state, alpha, theta, eta, delta=delta_val
             )
         else:
-            grads = self._compute_gradients(k, v, state.weights, delta=delta_val)
-            new_momentum = [eta * m - theta * g for m, g in zip(state.momentum, grads)]
-            new_weights = [
-                (1 - alpha) * w + s for w, s in zip(state.weights, new_momentum)
-            ]
+            # Shared deep-memory weights require batch-scalar gate values for
+            # the weight update.  Per-sample gates preserve their shape during
+            # the loss/gradient computation (they enter via error scaling); for
+            # the update itself we mean-reduce over the batch so the shared
+            # weight tensor remains 2D.
+            alpha_scalar = alpha.mean()
+            theta_scalar = theta.mean()
+            eta_scalar = eta.mean()
+
+            K = int(self.config.num_memory_inner_steps)
+            if K == 1:
+                # Legacy single-step path (exact backward-compat for K=1).
+                grads = self._compute_gradients(
+                    k, v, state.weights, delta=delta_val
+                )
+                new_momentum = [
+                    eta_scalar * m - theta_scalar * g
+                    for m, g in zip(state.momentum, grads)
+                ]
+                new_weights = [
+                    (1 - alpha_scalar) * w + s
+                    for w, s in zip(state.weights, new_momentum)
+                ]
+            else:
+                # K-step inner loop approximating per-token online updates
+                # (paper §3.2).  Split the chunk into K roughly-equal
+                # sub-chunks and run one analytical gradient + momentum
+                # update per sub-chunk.  The first K-1 steps run under
+                # no_grad (analytical grads; no retained autograd graph).
+                # The final step is re-done WITH autograd so the outer-loop
+                # gate projections (alpha, theta, eta) receive gradient
+                # from the LM loss via the retained effective-weights path.
+                seq_len = k.shape[1]
+                bounds = [
+                    int(round(seq_len * i / K)) for i in range(K + 1)
+                ]
+                # Rewind the first K-1 updates under no_grad with detached
+                # gates so no autograd graph is retained across steps.
+                prev_w = [w for w in state.weights]
+                prev_m = [m for m in state.momentum]
+                alpha_d = alpha_scalar.detach()
+                theta_d = theta_scalar.detach()
+                eta_d = eta_scalar.detach()
+                with torch.no_grad():
+                    for i in range(K - 1):
+                        lo_i, hi_i = bounds[i], bounds[i + 1]
+                        if hi_i <= lo_i:
+                            continue
+                        k_sub = k[:, lo_i:hi_i, :]
+                        v_sub = v[:, lo_i:hi_i, :]
+                        grads = self._compute_gradients(
+                            k_sub, v_sub, prev_w, delta=delta_val,
+                        )
+                        prev_m = [
+                            eta_d * m - theta_d * g
+                            for m, g in zip(prev_m, grads)
+                        ]
+                        prev_w = [
+                            (1 - alpha_d) * w + s
+                            for w, s in zip(prev_w, prev_m)
+                        ]
+                # Final step WITH autograd on the gates.  prev_w / prev_m
+                # carry no graph (detached), but alpha_scalar, theta_scalar,
+                # eta_scalar do — so gate projections receive gradient from
+                # the returned new_weights / new_momentum.
+                lo, hi = bounds[K - 1], bounds[K]
+                if hi > lo:
+                    k_final = k[:, lo:hi, :]
+                    v_final = v[:, lo:hi, :]
+                    grads = self._compute_gradients(
+                        k_final, v_final, prev_w, delta=delta_val,
+                    )
+                    new_momentum = [
+                        eta_scalar * m - theta_scalar * g
+                        for m, g in zip(prev_m, grads)
+                    ]
+                    new_weights = [
+                        (1 - alpha_scalar) * w + s
+                        for w, s in zip(prev_w, new_momentum)
+                    ]
+                else:
+                    # Degenerate final sub-chunk: still route through gates
+                    # so their autograd graph is attached to new_state.
+                    new_momentum = [eta_scalar * m for m in prev_m]
+                    new_weights = [
+                        (1 - alpha_scalar) * w + s
+                        for w, s in zip(prev_w, new_momentum)
+                    ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
-        # Retrieve from the UPDATED state (Titans Eq. 3-4: o_t = f(W_t, q_t)).
-        # This puts alpha, theta, eta in the output's computation graph so gate
-        # projections receive gradients from the LM loss.
-        effective = self._get_effective_weights(new_state.weights, detach_base=False)
+        if retrieve_after_update:
+            # Paper Eq. 3-4 for MAG/MAL/LMM: retrieve from the updated state.
+            # Places alpha/theta/eta in the output's graph so gate projections
+            # receive gradient from the LM loss.
+            effective = self._get_effective_weights(
+                new_state.weights, detach_base=False
+            )
+        else:
+            # Paper Eq. 24 for MAC: retrieve from the INCOMING state
+            # (M_{t-1}). Gate projections still receive gradient via the
+            # returned new_state through the caller's retain-state flow.
+            effective = self._get_effective_weights(
+                state.weights, detach_base=False
+            )
         retrieved = self.memory.forward_with_weights(q, effective)
 
         output = self.proj_out(retrieved)
@@ -494,6 +608,15 @@ class NeuralLongTermMemory(nn.Module):
         W_0 = state.weights[0]
         S_prev = state.momentum[0]
 
+        # Shared (non-per-sample) weights: reduce per-sample gates to batch
+        # scalars so new W / S remain (hidden_dim, dim).  The gate gradient
+        # signal still flows per-sample through errors_scaled below — gates
+        # only collapse at the final weight-aggregation boundary.  .mean() on
+        # a singleton (B=1) is a no-op mathematically but rank-reduces to 0-D.
+        alpha = alpha.mean()
+        eta = eta.mean()
+        theta = theta.mean()
+
         err_clip = self.config.memory_error_clip
         grad_clip = self.config.memory_grad_clip
         decay = 1.0 - alpha
@@ -510,7 +633,8 @@ class NeuralLongTermMemory(nn.Module):
                 abs_errors = torch.abs(errors)
                 errors = torch.where(abs_errors <= hub_delta, errors, hub_delta * torch.sign(errors))
 
-        scale = 2.0 / float(B * S * D)
+        # Per paper §3.1: outer scale is 2/S (absorbed into learnable theta).
+        scale = 2.0 / float(S)
         errors_scaled = errors * scale
 
         positions = torch.arange(S, dtype=torch.float32, device=keys.device)
