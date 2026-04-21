@@ -698,3 +698,16 @@ def test_build_signal_frame_tnt_parity_and_batching(monkeypatch) -> None:
         assert frame.local_signal_norms[i] == pytest.approx(
             compute_weight_norms(local_state), rel=1e-6
         )
+
+
+def test_memory_checkpointer_docstring_lists_three_states() -> None:
+    """The module docstring must not reference the removed TRIGGERED state."""
+    import pathlib
+    src = pathlib.Path("src/titans/memory_checkpointer.py").read_text()
+    # Isolate the module docstring (first triple-quoted block).
+    head = src.split('"""', 2)[1]
+    assert "TRIGGERED" not in head, (
+        "Plan 1 Task 12 removed CheckpointerState.TRIGGERED but the "
+        "module docstring still references it. The current enum has "
+        "three states: MONITORING, CAPTURING_AFTER, COOLDOWN."
+    )
