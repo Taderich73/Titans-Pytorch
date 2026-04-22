@@ -1,4 +1,4 @@
-# Titans for PyTorch
+# OpenTitans
 
 ![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
