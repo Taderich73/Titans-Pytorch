@@ -225,14 +225,14 @@ def main():
     script = script_path.read_text()
 
     # Inject the titans package SHA pin into the uv script header. The default
-    # dependency line is unpinned ("titans @ git+...Titans-Pytorch.git"), which
+    # dependency line is unpinned ("titans @ git+...OpenTitans.git"), which
     # causes uv to cache the resolved environment by a hash that does not
     # change when origin/main moves — meaning successive runs may silently
     # reuse a stale install. Substituting in a SHA forces uv to recognize a
     # new dependency hash and reinstall on the first run that uses it.
-    sha_pattern = r'"titans @ git\+https://github\.com/Taderich73/Titans-Pytorch\.git(?:@[^"]+)?"'
+    sha_pattern = r'"titans @ git\+https://github\.com/Taderich73/OpenTitans\.git(?:@[^"]+)?"'
     sha_replacement = (
-        f'"titans @ git+https://github.com/Taderich73/Titans-Pytorch.git@{args.titans_sha}"'
+        f'"titans @ git+https://github.com/Taderich73/OpenTitans.git@{args.titans_sha}"'
     )
     new_script, sub_count = re.subn(sha_pattern, sha_replacement, script)
     if sub_count == 0:
@@ -438,7 +438,7 @@ def main():
     saw_per_block = False
     for i, line in enumerate(script.splitlines(), 1):
         stripped = line.strip()
-        if "titans @ git" in stripped and "Titans-Pytorch.git" in stripped:
+        if "titans @ git" in stripped and "OpenTitans.git" in stripped:
             print(f"  [dep]       line {i:4d}: {stripped}")
             saw_dep = True
         elif stripped.startswith("PROFILE_MEMORY_PER_BLOCK ="):

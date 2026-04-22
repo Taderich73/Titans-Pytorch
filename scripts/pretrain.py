@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "titans @ git+https://github.com/Taderich73/Titans-Pytorch.git",
+#     "titans @ git+https://github.com/Taderich73/OpenTitans.git",
 #     "torch>=2.2.0,<2.8.0",
 #     "accelerate>=0.27.0",
 #     "transformers>=4.36.0",
