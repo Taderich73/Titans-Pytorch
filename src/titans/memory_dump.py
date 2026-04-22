@@ -63,6 +63,9 @@ _SCHEMA_VERSION_KEY: str = "titans_schema_version"
 # registered — unversioned files take a separate legacy codepath. When
 # schema 2 lands, register ``(1, 2)`` here AND add a row to
 # ``MIGRATIONS.md``.
+#
+# The walker lives in :mod:`titans._schema_migrations` and is shared
+# with :mod:`titans.checkpoint` so the two dispatchers stay symmetric.
 _MIGRATIONS: dict[tuple[int, int], Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]] = {}
 
 
@@ -73,29 +76,20 @@ def _migrate_arrays_to_current(
 ) -> dict[str, np.ndarray]:
     """Apply registered migrations to bring ``arrays`` up to ``current_version``.
 
-    Walks ``_MIGRATIONS`` one step at a time starting from
-    ``from_version``. Raises :class:`RuntimeError` if the chain cannot be
-    completed (i.e. a gap exists) so callers get a clear failure instead
-    of silently loading a partially-migrated payload.
+    Thin wrapper around :func:`titans._schema_migrations.walk_migrations`
+    that pins the registry to ``_MIGRATIONS`` and tags the error messages
+    with ``kind="memory_dump"``. Kept as a named entry point so existing
+    tests and external callers that import the symbol keep working.
     """
-    v = from_version
-    out = arrays
-    while v < current_version:
-        # Prefer a direct jump if registered; otherwise step by one.
-        step = None
-        for target in range(current_version, v, -1):
-            if (v, target) in _MIGRATIONS:
-                step = target
-                break
-        if step is None:
-            raise RuntimeError(
-                f"checkpoint schema {from_version} is older than code "
-                f"schema {current_version}; no migration available "
-                f"(stuck at {v}). See MIGRATIONS.md."
-            )
-        out = _MIGRATIONS[(v, step)](out)
-        v = step
-    return out
+    from titans._schema_migrations import walk_migrations
+
+    return walk_migrations(
+        arrays,
+        from_version=from_version,
+        to_version=current_version,
+        migrations=_MIGRATIONS,
+        kind="memory_dump",
+    )
 
 
 def _save_memory_state(arrays: dict, prefix: str, state: MemoryState) -> None:

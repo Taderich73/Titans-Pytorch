@@ -24,7 +24,7 @@ import logging
 import os
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -33,6 +33,46 @@ logger = logging.getLogger(__name__)
 # Top-level metadata key carrying the schema version. Kept in sync with
 # the constant in ``titans/__init__.py`` — see MIGRATIONS.md.
 _SCHEMA_VERSION_KEY: str = "titans_schema_version"
+
+
+# ---------------------------------------------------------------------------
+# Migration protocol (Task P5) — whole-checkpoint payloads
+# ---------------------------------------------------------------------------
+# ``_CHECKPOINT_MIGRATIONS`` maps ``(from_version, to_version)`` -> a
+# function that takes the loaded payload dict (tensors plus metadata
+# keyed by top-level names like ``"model"``, ``"titans_schema_version"``)
+# and returns a new dict in the ``to_version`` layout. The walker lives
+# in :mod:`titans._schema_migrations` and is shared with
+# :mod:`titans.memory_dump` so the two dispatchers stay symmetric.
+#
+# For the first versioned release (schema 1) the registry is empty. When
+# a whole-checkpoint breaking change lands, register ``(from, to)`` here
+# AND add a row to ``MIGRATIONS.md``. Unversioned files take a separate
+# legacy codepath (see ``_check_schema_version``).
+_CHECKPOINT_MIGRATIONS: dict[tuple[int, int], Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+
+def _migrate_payload_to_current(
+    payload: dict[str, Any],
+    from_version: int,
+    current_version: int,
+) -> dict[str, Any]:
+    """Apply registered migrations to bring ``payload`` up to ``current_version``.
+
+    Thin wrapper around :func:`titans._schema_migrations.walk_migrations`
+    that pins the registry to ``_CHECKPOINT_MIGRATIONS`` and tags the
+    error messages with ``kind="checkpoint"``. Kept as a named entry
+    point for symmetry with ``memory_dump._migrate_arrays_to_current``.
+    """
+    from titans._schema_migrations import walk_migrations
+
+    return walk_migrations(
+        payload,
+        from_version=from_version,
+        to_version=current_version,
+        migrations=_CHECKPOINT_MIGRATIONS,
+        kind="checkpoint",
+    )
 
 
 def _inject_schema_version(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -245,9 +285,11 @@ def _check_schema_version(payload: dict[str, Any], source: Path) -> None:
       (pre-0.7 layout).
     * Equal to current -> silent.
     * Newer -> :class:`RuntimeError` (tell the user to upgrade titans).
-    * Older -> :class:`RuntimeError` for checkpoint-file dispatch
-      (migration is state-structure-specific; see
-      :mod:`titans.memory_dump` for the analogous path for .npz).
+    * Older -> route through :func:`_migrate_payload_to_current` which
+      applies any registered migrations from
+      :data:`_CHECKPOINT_MIGRATIONS`. For v1 the registry is empty so
+      this raises :class:`RuntimeError` with "no migration available" —
+      but the infrastructure now mirrors ``memory_dump._MIGRATIONS``.
     """
     from titans import TITANS_SCHEMA_VERSION
 
@@ -272,14 +314,15 @@ def _check_schema_version(payload: dict[str, Any], source: Path) -> None:
             f"{TITANS_SCHEMA_VERSION}; upgrade titans. See "
             "MIGRATIONS.md for the per-version change log."
         )
-    # Older than current: no migration registry for whole-checkpoint
-    # payloads in v1. When the first breaking checkpoint-layout change
-    # lands, add a migration dispatch here analogous to
-    # ``titans.memory_dump._MIGRATIONS``.
-    raise RuntimeError(
-        f"checkpoint schema {file_version} is older than code schema "
-        f"{TITANS_SCHEMA_VERSION}; no migration available. See "
-        "MIGRATIONS.md."
+    # Older than current: walker raises when no migration is registered.
+    # In v1 there are no migrations, so this unconditionally errors out
+    # with a clear "no migration available" message. When a future
+    # breaking change lands, register the step in ``_CHECKPOINT_MIGRATIONS``
+    # and the same path will apply it instead of raising.
+    _migrate_payload_to_current(
+        payload,
+        from_version=file_version,
+        current_version=TITANS_SCHEMA_VERSION,
     )
 
 

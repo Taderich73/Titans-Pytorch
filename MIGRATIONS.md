@@ -30,9 +30,32 @@ same four-way dispatch on the schema version carried by the file:
 | `> current`      | `RuntimeError` "upgrade titans".                           |
 | `< current`      | Run the registered migration chain; if none available, raise `RuntimeError` "no migration available". |
 
-The code-side migration registry for memory dumps lives at
-`titans.memory_dump._MIGRATIONS`. An analogous dispatch for
-full-checkpoint payloads lives in `titans.checkpoint._check_schema_version`.
+## Migration registries
+
+There are two per-family migration registries, both keyed on
+`(from_version, to_version) -> Callable`:
+
+| Family                         | Registry                                    | Payload shape            |
+|--------------------------------|---------------------------------------------|--------------------------|
+| `.npz` memory dumps            | `titans.memory_dump._MIGRATIONS`            | `dict[str, np.ndarray]`  |
+| `.pt` / `.safetensors` payloads| `titans.checkpoint._CHECKPOINT_MIGRATIONS`  | `dict[str, Any]`         |
+
+Both dispatchers run through the same walker,
+`titans._schema_migrations.walk_migrations`, so the two paths stay
+symmetric. A third registry for HF `config.json` will follow the same
+pattern when schema v2 needs it (v1 has no migrations on any of the
+three paths).
+
+### Foot-gun: longest-jump migrations
+
+The walker greedily picks the longest registered jump from the current
+version when multiple targets are available (e.g. if both `(1, 2)` and
+`(1, 5)` are registered, it takes `(1, 5)`). This is a convenience for
+skipping intermediate no-op steps, but it is only safe when the direct
+migration is **semantically equivalent** to the composed chain
+`(1, 2) ∘ (2, 3) ∘ (3, 4) ∘ (4, 5)`. Register a longest-jump migration
+only after you have verified that equivalence — otherwise the walker
+will silently skip intermediate fixes.
 
 ## Rules for bumping the schema
 
@@ -48,10 +71,11 @@ When you make a breaking change to any persisted layout:
      `titans.memory_dump._MIGRATIONS`. The function takes a
      `dict[str, np.ndarray]` mapping npz entry names to arrays and
      returns the same structure in the new layout.
-   - Full checkpoints: extend the dispatch in
-     `titans.checkpoint._check_schema_version` with an analogous
-     registry if the change involves top-level key renames or
-     tensor-shape migrations.
+   - Full checkpoints: add a
+     `(from_version, to_version) -> fn` entry to
+     `titans.checkpoint._CHECKPOINT_MIGRATIONS`. The function takes the
+     loaded payload (tensors + metadata keyed by top-level names) and
+     returns the same structure in the new layout.
 4. If no backward migration is feasible, document why under the change
    log row. The load path will then refuse old files with a clear
    `RuntimeError` rather than producing silently-wrong outputs.

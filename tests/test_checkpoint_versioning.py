@@ -336,6 +336,46 @@ class TestMigrationDispatch:
         assert called == ["step"]
         assert "migrated" in out
 
+    def test_walk_migrations_symmetry(self) -> None:
+        """The memory_dump and checkpoint dispatchers share a single
+        walker (``titans._schema_migrations.walk_migrations``) so that
+        the two code paths stay symmetric. Breaking this symmetry is
+        precisely the P5 foot-gun the shared helper is meant to prevent.
+        """
+        import titans.checkpoint as ck
+        import titans.memory_dump as md
+        from titans._schema_migrations import walk_migrations
+
+        # Both modules must expose a wrapper that delegates to the same
+        # shared walker. Verifying by calling each with an empty registry
+        # and asserting they raise the shared diagnostic is the most
+        # robust check (doesn't depend on wrapper internals).
+        with pytest.raises(RuntimeError, match="memory_dump schema"):
+            md._migrate_arrays_to_current({}, from_version=0, current_version=1)
+        with pytest.raises(RuntimeError, match="checkpoint schema"):
+            ck._migrate_payload_to_current({}, from_version=0, current_version=1)
+
+        # And the helper itself is importable and callable. Belt-and-
+        # braces: if a future refactor drops the wrapper in one module,
+        # this direct call still exercises the contract.
+        with pytest.raises(RuntimeError, match="no migration available"):
+            walk_migrations(
+                {},
+                from_version=0,
+                to_version=1,
+                migrations={},
+                kind="memory_dump",
+            )
+
+    def test_checkpoint_migration_registry_is_dict(self) -> None:
+        """The whole-checkpoint migration registry mirrors _MIGRATIONS."""
+        from titans.checkpoint import _CHECKPOINT_MIGRATIONS
+
+        assert isinstance(_CHECKPOINT_MIGRATIONS, dict)
+        for key in _CHECKPOINT_MIGRATIONS:
+            assert isinstance(key, tuple) and len(key) == 2
+            assert all(isinstance(v, int) for v in key)
+
 
 # ---------------------------------------------------------------------------
 # HF config
@@ -346,28 +386,106 @@ class TestHfConfigVersion:
     """The HF config surfaces ``titans_schema_version`` as a top-level attr."""
 
     def test_default_matches_current(self) -> None:
-        """Default-constructed config picks up the current schema version."""
+        """Default-constructed config picks up the current schema version
+        (and warns, because a fresh instance is exactly the "unversioned
+        legacy" case — explicit pass required to silence)."""
         from titans.hf.configuration import TitansMACConfig
 
-        cfg = TitansMACConfig()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            cfg = TitansMACConfig()
         assert cfg.titans_schema_version == TITANS_SCHEMA_VERSION
 
     def test_from_titans_config_carries_version(self) -> None:
-        """Config built from a TitansConfig still stamps the schema version."""
+        """Config built from a TitansConfig stamps the current schema
+        version explicitly (fresh in-memory construction, so no
+        unversioned warning)."""
         from titans.config import TitansConfig
         from titans.hf.configuration import TitansMACConfig
 
         tc = TitansConfig(dim=64, num_heads=4, num_layers=2, vocab_size=128)
-        hf = TitansMACConfig.from_titans_config(tc)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            hf = TitansMACConfig.from_titans_config(tc)
+        unversioned = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "titans_schema_version" in str(w.message)
+        ]
+        assert not unversioned, (
+            f"from_titans_config should stamp the version; got "
+            f"{[str(w.message) for w in unversioned]}"
+        )
         assert hf.titans_schema_version == TITANS_SCHEMA_VERSION
 
-    def test_json_roundtrip_preserves_version(self, tmp_path: Path) -> None:
-        """save_pretrained / from_pretrained round-trips the version field."""
+    def test_hf_config_unversioned_warns(self) -> None:
+        """Instantiating without ``titans_schema_version`` warns about
+        the unversioned legacy layout and falls back to the current
+        version (best-effort)."""
         from titans.hf.configuration import TitansMACConfig
 
-        cfg = TitansMACConfig(dim=64, num_heads=4, num_layers=2, vocab_size=128)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = TitansMACConfig(dim=64)
+
+        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert deps, "Expected DeprecationWarning for unversioned HF config"
+        assert any("unversioned" in str(w.message).lower() for w in deps), (
+            f"Warning must mention 'unversioned'; got "
+            f"{[str(w.message) for w in deps]}"
+        )
+        # Best-effort fall-through still populates the attribute.
+        assert cfg.titans_schema_version == TITANS_SCHEMA_VERSION
+
+    def test_hf_config_newer_raises(self) -> None:
+        """A schema version newer than the code must refuse with an
+        'upgrade titans' message."""
+        from titans.hf.configuration import TitansMACConfig
+
+        with pytest.raises(RuntimeError, match="upgrade"):
+            TitansMACConfig(
+                dim=64,
+                titans_schema_version=TITANS_SCHEMA_VERSION + 5,
+            )
+
+    def test_hf_config_older_raises_without_migration(self) -> None:
+        """An older version with no migration registered refuses with
+        a 'no migration' message. (v1 has no migrations.)"""
+        from titans.hf.configuration import TitansMACConfig
+
+        with pytest.raises(RuntimeError, match="no migration"):
+            TitansMACConfig(dim=64, titans_schema_version=0)
+
+    def test_json_roundtrip_preserves_version(self, tmp_path: Path) -> None:
+        """save_pretrained / from_pretrained round-trips the version
+        field with no unversioned-config warning on the equal-version
+        happy path."""
+        from titans.hf.configuration import TitansMACConfig
+
+        cfg = TitansMACConfig(
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=128,
+            titans_schema_version=TITANS_SCHEMA_VERSION,
+        )
         cfg.save_pretrained(str(tmp_path))
-        reloaded = TitansMACConfig.from_pretrained(str(tmp_path))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            reloaded = TitansMACConfig.from_pretrained(str(tmp_path))
+
+        unversioned_deps = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "titans_schema_version" in str(w.message)
+        ]
+        assert not unversioned_deps, (
+            f"Equal-version round-trip must not emit the unversioned "
+            f"warning; got {[str(w.message) for w in unversioned_deps]}"
+        )
         assert reloaded.titans_schema_version == TITANS_SCHEMA_VERSION
 
 
