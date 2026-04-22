@@ -205,5 +205,5 @@ def test_deliberate_graph_break_is_caught() -> None:
     # Any Dynamo-origin failure is acceptable. Matching on the base Exception
     # keeps the test robust across PyTorch minor versions, which churn on the
     # exact exception class names for graph-break errors.
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 — intentional: PyTorch exception types churn
         compiled(input_ids)

@@ -177,7 +177,7 @@ def _import_sft_module():
     scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
-    import sft  # noqa: WPS433
+    import sft
 
     return sft
 

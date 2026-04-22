@@ -1400,7 +1400,8 @@ def train(config: RLVRConfig) -> None:
                 seed=config.seed,
             )
 
-        collate_fn = lambda b: rlvr_collate_fn(b, pad_token_id=pad_token_id)
+        def collate_fn(b):
+            return rlvr_collate_fn(b, pad_token_id=pad_token_id)
     else:
         # Live mode: generate rollouts on the fly
         if config.dataset is not None and HAS_DATASETS and tokenizer is not None:

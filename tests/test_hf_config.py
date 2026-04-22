@@ -199,9 +199,11 @@ def test_safe_register_propagates_unrelated_valueerror():
     def raise_other(*args, **kwargs):
         raise ValueError("Some unrelated validation failure")
 
-    with patch("transformers.AutoConfig.register", side_effect=raise_other):
-        with pytest.raises(ValueError, match="unrelated"):
-            _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
+    with (
+        patch("transformers.AutoConfig.register", side_effect=raise_other),
+        pytest.raises(ValueError, match="unrelated"),
+    ):
+        _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
 
 
 class TestNewFieldsRoundTrip:

@@ -351,7 +351,6 @@ class HierarchicalMemory(nn.Module):
         memory_gate: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, TNTMemoryState, None]:
         batch_size = x.shape[0]
-        seq_len = x.shape[1]
 
         if state is None:
             state = self.init_state(batch_size)

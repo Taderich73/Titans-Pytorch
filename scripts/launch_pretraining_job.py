@@ -545,8 +545,10 @@ def main():
     print(f"  Timeout: {timeout}")
 
     # Write modified script to a temp file — run_uv_job expects a file path,
-    # not inline content (it tries to stat the string as a path)
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+    # not inline content (it tries to stat the string as a path). The file is
+    # explicitly closed below and unlinked after the job is submitted, so a
+    # ``with`` block would cross the submission call site.
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)  # noqa: SIM115
     tmp.write(script)
     tmp.close()
 

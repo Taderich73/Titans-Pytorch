@@ -519,7 +519,7 @@ class StatisticalNoveltyDetector:
             reset_flags: One boolean per layer.  ``True`` means reset that
                 layer's windows.
         """
-        for name, layer_windows in self._windows.items():
+        for layer_windows in self._windows.values():
             for layer_idx, should_reset in enumerate(reset_flags):
                 if should_reset and layer_idx < len(layer_windows):
                     layer_windows[layer_idx].reset()

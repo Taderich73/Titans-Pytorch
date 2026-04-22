@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Tests for memory state persistence in SFT training checkpoints."""
 
+import contextlib
+
 import torch
 
 from titans.checkpoint import save_checkpoint
@@ -138,10 +140,9 @@ class TestSFTMemoryPersistence:
             mem_path = resume_path.parent / "memory_final.npz"
 
         memory_states = None
-        try:
+        # Graceful fallback — if load fails, memory_states stays None.
+        with contextlib.suppress(Exception):
             memory_states = load_memory_states(mem_path, device=torch.device("cpu"))
-        except Exception:
-            pass  # Graceful fallback — memory_states stays None
 
         assert memory_states is None
 

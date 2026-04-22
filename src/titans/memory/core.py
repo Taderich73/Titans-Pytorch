@@ -476,8 +476,8 @@ class NeuralLongTermMemory(nn.Module):
                 bounds = [int(round(seq_len * i / K)) for i in range(K + 1)]
                 # Rewind the first K-1 updates under no_grad with detached
                 # gates so no autograd graph is retained across steps.
-                prev_w = [w for w in state.weights]
-                prev_m = [m for m in state.momentum]
+                prev_w = list(state.weights)
+                prev_m = list(state.momentum)
                 alpha_d = alpha_scalar.detach()
                 theta_d = theta_scalar.detach()
                 eta_d = eta_scalar.detach()

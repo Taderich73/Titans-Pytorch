@@ -99,7 +99,9 @@ class _SignalLogWriter:
         self._file_index += 1
         filename = f"signals_{self._file_index:06d}.jsonl.gz"
         path = self._log_dir / filename
-        self._fh = gzip.open(str(path), "wt", encoding="utf-8")
+        # Long-lived rotation handle — closed in _open_new_file / close(),
+        # not via a context manager.
+        self._fh = gzip.open(str(path), "wt", encoding="utf-8")  # noqa: SIM115
         self._frame_count = 0
 
     def write(self, frame: SignalFrame) -> None:
@@ -341,7 +343,7 @@ class MemoryCheckpointer:
         self,
         entry: CheckpointEntry,
         decision: TriggerDecision,
-        chunk_index: int,
+        chunk_index: int,  # noqa: ARG002 — kept for call-site clarity; may be recorded later
     ) -> None:
         """React to a novelty detection trigger.
 

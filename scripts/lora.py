@@ -605,7 +605,7 @@ def build_eval_dataset(
 
 
 def evaluate(
-    model: nn.Module,
+    model: torch.nn.Module,
     dataloader: DataLoader,
     accelerator: Accelerator,
     vocab_size: int,
