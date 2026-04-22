@@ -30,6 +30,10 @@ Interop with the surrounding ML stack.
 
 - [HuggingFace Integration](huggingface_integration.md) — `TitansMACConfig`, `TitansMACForCausalLM`, `TitansTrainer`, `TitansChunkMixin`, checkpoint conversion.
 
+## API Reference
+
+- [Public API (stable surface for 0.7.x)](api.md) — curated top-level exports, deprecated shims, and the stability policy.
+
 ---
 
 [Back to project README](../README.md)
