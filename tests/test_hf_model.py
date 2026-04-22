@@ -85,16 +85,20 @@ class TestWeightTying:
 
     def test_weights_tied(self, small_hf_config):
         model = TitansMACForCausalLM(small_hf_config)
-        assert model.get_input_embeddings().weight.data_ptr() == \
-               model.get_output_embeddings().weight.data_ptr()
+        assert (
+            model.get_input_embeddings().weight.data_ptr()
+            == model.get_output_embeddings().weight.data_ptr()
+        )
 
     def test_weights_tied_after_load(self, small_hf_config):
         model = TitansMACForCausalLM(small_hf_config)
         with tempfile.TemporaryDirectory() as tmpdir:
             model.save_pretrained(tmpdir)
             loaded = TitansMACForCausalLM.from_pretrained(tmpdir)
-        assert loaded.get_input_embeddings().weight.data_ptr() == \
-               loaded.get_output_embeddings().weight.data_ptr()
+        assert (
+            loaded.get_input_embeddings().weight.data_ptr()
+            == loaded.get_output_embeddings().weight.data_ptr()
+        )
 
 
 class TestSaveLoad:
@@ -161,7 +165,9 @@ class TestGenerate:
             out = model(input_ids)
             states = out.past_key_values
             generated = model.generate(
-                input_ids, max_new_tokens=5, memory_states=states,
+                input_ids,
+                max_new_tokens=5,
+                memory_states=states,
             )
         assert generated.shape == (1, 13)
 
@@ -171,10 +177,12 @@ class TestAutoRegistration:
 
     def test_auto_config_registered(self):
         from transformers import AutoConfig
+
         config = AutoConfig.for_model("titans-mac")
         assert isinstance(config, TitansMACConfig)
 
     def test_auto_model_registered(self, small_hf_config):
         from transformers import AutoModelForCausalLM
+
         model = AutoModelForCausalLM.from_config(small_hf_config)
         assert isinstance(model, TitansMACForCausalLM)

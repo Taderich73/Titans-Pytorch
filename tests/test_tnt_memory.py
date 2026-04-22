@@ -49,8 +49,10 @@ class TestTNTMemoryState:
             momentum=[torch.zeros(64, 64, device=device)],
         )
         state = TNTMemoryState(
-            global_state=gstate, local_states=[],
-            qk_projections=[], local_step_counters=[],
+            global_state=gstate,
+            local_states=[],
+            qk_projections=[],
+            local_step_counters=[],
         )
         detached = state.detach()
         assert not detached.global_state.weights[0].requires_grad
@@ -60,11 +62,19 @@ class TestHierarchicalMemory:
     @pytest.fixture
     def tnt_config(self):
         return TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=1, num_persistent_tokens=4,
-            use_tnt=True, global_chunk_size=64,
-            local_chunk_sizes=[8, 16], local_shard_length=64,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            global_chunk_size=64,
+            local_chunk_sizes=[8, 16],
+            local_shard_length=64,
             use_qk_projection=True,
         )
 
@@ -88,7 +98,8 @@ class TestHierarchicalMemory:
         state = mem.init_state(2)
         _, new_state, _ = mem(x, state=state)
         assert not torch.allclose(
-            state.global_state.weights[0], new_state.global_state.weights[0],
+            state.global_state.weights[0],
+            new_state.global_state.weights[0],
         )
 
     def test_retrieve_shape(self, tnt_config, device):
@@ -117,7 +128,9 @@ class TestLocalMemoryReset:
         state = local.init_state(batch_size=1)
         with patch.object(local, "init_state", wraps=local.init_state) as spy:
             new_state, new_counter = local.maybe_reset(
-                state, step_counter=16, batch_size=4,
+                state,
+                step_counter=16,
+                batch_size=4,
             )
         spy.assert_called_once_with(batch_size=4)
         assert new_counter == 0
@@ -138,8 +151,11 @@ class TestLocalMemoryReset:
         reset the local step counter when crossing a shard boundary with
         batch_size > 1."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_memory_layers=2,
-            local_chunk_sizes=[8], local_shard_length=8,
+            dim=64,
+            num_heads=4,
+            num_memory_layers=2,
+            local_chunk_sizes=[8],
+            local_shard_length=8,
         )
         hm = HierarchicalMemory(config).to(device)
 
@@ -171,8 +187,11 @@ def test_qk_carry_reset_uses_new_zeros() -> None:
     matrix shape during the reset path.
     """
     config = TitansConfig(
-        dim=32, num_heads=4, num_memory_layers=2,
-        local_chunk_sizes=[4], local_shard_length=8,
+        dim=32,
+        num_heads=4,
+        num_memory_layers=2,
+        local_chunk_sizes=[4],
+        local_shard_length=8,
         use_qk_projection=True,
     )
     hm = HierarchicalMemory(config)

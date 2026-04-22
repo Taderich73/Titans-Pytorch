@@ -83,7 +83,9 @@ class GateSnapshot:
             alpha=[t.to(device) for t in self.alpha],
             theta=[t.to(device) for t in self.theta],
             eta=[t.to(device) for t in self.eta],
-            delta=[t.to(device) for t in self.delta] if self.delta is not None else None,
+            delta=[t.to(device) for t in self.delta]
+            if self.delta is not None
+            else None,
             input_activation_norm=self.input_activation_norm,
             chunk_index=self.chunk_index,
         )

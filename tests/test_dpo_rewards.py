@@ -1,6 +1,7 @@
 """Regression test: dpo.py logs `chosen_reward` and `rejected_reward` as the
 positive/negative split of their difference, which is wrong. Those should be
 the actual per-sample beta * log(pi / pi_ref) terms."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -26,9 +27,7 @@ def test_dpo_loss_returns_split_rewards():
     ref_rejected = torch.tensor([0.15, 0.15])
     beta = 0.5
 
-    result = dpo_loss(
-        pol_chosen, pol_rejected, ref_chosen, ref_rejected, beta=beta
-    )
+    result = dpo_loss(pol_chosen, pol_rejected, ref_chosen, ref_rejected, beta=beta)
     # New contract: return (loss, chosen_rewards, rejected_rewards).
     assert len(result) == 3, (
         f"dpo_loss must return (loss, chosen_rewards, rejected_rewards); "

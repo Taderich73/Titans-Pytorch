@@ -57,9 +57,9 @@ class TestProportionalRoPE:
 
     def test_passthrough_unchanged(self, device):
         """Dimensions beyond rotate_dim are not modified."""
-        rope = RotaryPositionEmbedding(
-            dim=16, max_seq_len=64, rope_proportion=0.5
-        ).to(device)
+        rope = RotaryPositionEmbedding(dim=16, max_seq_len=64, rope_proportion=0.5).to(
+            device
+        )
         q = torch.randn(2, 4, 8, 16, device=device)
         k = torch.randn(2, 4, 8, 16, device=device)
         q_rot, k_rot = rope(q, k)
@@ -69,9 +69,9 @@ class TestProportionalRoPE:
 
     def test_rotated_dims_changed(self, device):
         """Dimensions within rotate_dim are modified."""
-        rope = RotaryPositionEmbedding(
-            dim=16, max_seq_len=64, rope_proportion=0.5
-        ).to(device)
+        rope = RotaryPositionEmbedding(dim=16, max_seq_len=64, rope_proportion=0.5).to(
+            device
+        )
         q = torch.randn(2, 4, 8, 16, device=device)
         k = torch.randn(2, 4, 8, 16, device=device)
         q_rot, k_rot = rope(q, k)
@@ -88,9 +88,7 @@ class TestProportionalRoPE:
         ).to(device)
         q_full, k_full = rope_full(q.clone(), k.clone())
 
-        rope_std = RotaryPositionEmbedding(
-            dim=16, max_seq_len=64
-        ).to(device)
+        rope_std = RotaryPositionEmbedding(dim=16, max_seq_len=64).to(device)
         q_std, k_std = rope_std(q.clone(), k.clone())
 
         torch.testing.assert_close(q_full, q_std)
@@ -98,9 +96,9 @@ class TestProportionalRoPE:
 
     def test_zero_proportion_is_identity(self, device):
         """rope_proportion=0.0 returns input unchanged."""
-        rope = RotaryPositionEmbedding(
-            dim=16, max_seq_len=64, rope_proportion=0.0
-        ).to(device)
+        rope = RotaryPositionEmbedding(dim=16, max_seq_len=64, rope_proportion=0.0).to(
+            device
+        )
         q = torch.randn(2, 4, 8, 16, device=device)
         k = torch.randn(2, 4, 8, 16, device=device)
         q_rot, k_rot = rope(q, k)
@@ -208,9 +206,7 @@ def test_adaptive_mask_zero_is_exactly_zero_attention():
     from titans.attention import SlidingWindowAttention
     from titans.config import TitansConfig
 
-    cfg = TitansConfig(
-        dim=16, num_heads=2, num_layers=1, vocab_size=64, window_size=8
-    )
+    cfg = TitansConfig(dim=16, num_heads=2, num_layers=1, vocab_size=64, window_size=8)
     attn = SlidingWindowAttention(cfg)
     torch.manual_seed(0)
     x = torch.randn(1, 4, 16)

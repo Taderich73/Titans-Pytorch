@@ -50,7 +50,9 @@ class TestBlockAttnRes:
         from titans.attn_res import BlockAttnRes
 
         ar = BlockAttnRes(dim=64).to(device)
-        blocks = [torch.randn(2, 8, 64, device=device, requires_grad=True) for _ in range(3)]
+        blocks = [
+            torch.randn(2, 8, 64, device=device, requires_grad=True) for _ in range(3)
+        ]
         h, _ = ar(blocks, partial_block=None)
         h.sum().backward()
         for b in blocks:

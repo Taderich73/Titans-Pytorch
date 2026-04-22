@@ -54,7 +54,9 @@ def tiny_checkpoint(tmp_path: Path) -> Path:
     return tmp_path / "tiny_ckpt.pt"
 
 
-def _run(args: list[str], script: Path = CONVERT_SCRIPT) -> subprocess.CompletedProcess[str]:
+def _run(
+    args: list[str], script: Path = CONVERT_SCRIPT
+) -> subprocess.CompletedProcess[str]:
     """Invoke a script via subprocess from the repo root."""
     return subprocess.run(
         [sys.executable, str(script), *args],
@@ -74,7 +76,9 @@ class TestConvertTargets:
 
     def test_to_safetensors(self, tiny_checkpoint: Path, tmp_path: Path) -> None:
         out_stem = tmp_path / "converted"
-        r = _run([str(tiny_checkpoint), "--to", "safetensors", "--output", str(out_stem)])
+        r = _run(
+            [str(tiny_checkpoint), "--to", "safetensors", "--output", str(out_stem)]
+        )
         assert r.returncode == 0, (
             f"convert --to safetensors failed: stdout={r.stdout!r} stderr={r.stderr!r}"
         )
@@ -123,8 +127,10 @@ class TestConvertTargets:
         r = _run(
             [
                 str(tiny_checkpoint),
-                "--to", "hf",
-                "--output-dir", str(out_dir),
+                "--to",
+                "hf",
+                "--output-dir",
+                str(out_dir),
             ]
         )
         assert r.returncode == 0, (
@@ -174,8 +180,10 @@ class TestDeprecationShims:
         out_dir = tmp_path / "hf_via_shim"
         r = _run(
             [
-                "--checkpoint", str(tiny_checkpoint),
-                "--output-dir", str(out_dir),
+                "--checkpoint",
+                str(tiny_checkpoint),
+                "--output-dir",
+                str(out_dir),
             ],
             script=CONVERT_TO_HF_SHIM,
         )

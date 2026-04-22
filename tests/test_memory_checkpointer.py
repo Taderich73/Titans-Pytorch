@@ -16,7 +16,10 @@ from titans.checkpointing.types import (
     MemoryCheckpointConfig,
     MemoryState,
 )
-from titans.checkpointing.memory_checkpointer import CheckpointerState, MemoryCheckpointer
+from titans.checkpointing.memory_checkpointer import (
+    CheckpointerState,
+    MemoryCheckpointer,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +186,10 @@ class TestTransitionCapture:
         # Inject a massive spike (weight jumps from 1.0 to 100.0)
         cp.on_chunk_commit(_make_state(100.0), gates, chunk_index=6)
         # Should have triggered; state is either CAPTURING_AFTER or COOLDOWN
-        assert cp.state in (CheckpointerState.CAPTURING_AFTER, CheckpointerState.COOLDOWN)
+        assert cp.state in (
+            CheckpointerState.CAPTURING_AFTER,
+            CheckpointerState.COOLDOWN,
+        )
 
     def test_flush_writes_ring_buffer_final(self, tmp_path: Path) -> None:
         """flush() should write ring_buffer_final.npz."""
@@ -208,8 +214,13 @@ class TestTransitionCapture:
         session_path = Path(cfg.checkpoint_dir) / "session.json"
         assert session_path.exists()
         data = json.loads(session_path.read_text())
-        for key in ("session_start", "session_end", "total_chunks_processed",
-                    "transitions_recorded", "config"):
+        for key in (
+            "session_start",
+            "session_end",
+            "total_chunks_processed",
+            "transitions_recorded",
+            "config",
+        ):
             assert key in data, f"Missing key: {key}"
 
     def test_transition_writes_disk_files(self, tmp_path: Path) -> None:
@@ -461,9 +472,8 @@ def test_checkpointer_state_enum_has_no_triggered():
     """TRIGGERED was set then immediately overwritten in the same method, so
     it was never observable externally. Remove it from the enum."""
     from titans.checkpointing.memory_checkpointer import CheckpointerState
+
     names = {s.name for s in CheckpointerState}
-    assert "TRIGGERED" not in names, (
-        "Dead CheckpointerState.TRIGGERED still present"
-    )
+    assert "TRIGGERED" not in names, "Dead CheckpointerState.TRIGGERED still present"
     # Expected surviving states:
     assert {"MONITORING", "CAPTURING_AFTER", "COOLDOWN"} <= names

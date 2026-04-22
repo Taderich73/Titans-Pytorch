@@ -179,9 +179,7 @@ class TestSFTMemoryGating:
             and any(s is not None for s in memory_states)
         )
         if should_save:
-            save_memory_states(
-                memory_states, checkpoint_dir / "memory_step_100.npz"
-            )
+            save_memory_states(memory_states, checkpoint_dir / "memory_step_100.npz")
 
         assert not (checkpoint_dir / "memory_step_100.npz").exists()
 
@@ -203,9 +201,7 @@ class TestSFTMemoryGating:
             and any(s is not None for s in memory_states)
         )
         if should_save:
-            save_memory_states(
-                memory_states, checkpoint_dir / "memory_step_100.npz"
-            )
+            save_memory_states(memory_states, checkpoint_dir / "memory_step_100.npz")
 
         assert (checkpoint_dir / "memory_step_100.npz").exists()
 

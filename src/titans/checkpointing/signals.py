@@ -236,9 +236,7 @@ def build_signal_frame(
     wd_t = _stack_norms_gpu(
         [w_new - w_old for w_old, w_new in zip(old_weights, new_weights)]
     )
-    ms_t = _stack_norms_gpu(
-        [m_new - m_old for m_old, m_new in zip(old_mom, new_mom)]
-    )
+    ms_t = _stack_norms_gpu([m_new - m_old for m_old, m_new in zip(old_mom, new_mom)])
     w_t = _stack_norms_gpu(new_weights)
     m_t = _stack_norms_gpu(new_mom)
 

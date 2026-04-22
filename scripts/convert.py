@@ -47,7 +47,9 @@ from titans.config import TitansConfig
 from titans.hf.configuration import TitansMACConfig
 from titans.hf.modeling import TitansMACForCausalLM
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -247,9 +249,11 @@ def convert_to_hf(
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
         if add_chat_template:
-            tokenizer.add_special_tokens({
-                "additional_special_tokens": ["<|im_start|>", "<|im_end|>"],
-            })
+            tokenizer.add_special_tokens(
+                {
+                    "additional_special_tokens": ["<|im_start|>", "<|im_end|>"],
+                }
+            )
             tokenizer.chat_template = CHATML_TEMPLATE
 
         tokenizer.save_pretrained(str(output_path))
@@ -389,8 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--upload-model-code",
         action="store_true",
         help=(
-            "Upload Python source files for trust_remote_code. "
-            "Only used with --to hf."
+            "Upload Python source files for trust_remote_code. Only used with --to hf."
         ),
     )
     return parser

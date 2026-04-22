@@ -233,7 +233,10 @@ class MemoryCheckpointer:
         frame: SignalFrame | None = None
         if self._prev_states is not None and gate is not None:
             frame = self._build_frame(
-                self._prev_states[0], current, gate, chunk_index,
+                self._prev_states[0],
+                current,
+                gate,
+                chunk_index,
                 prediction_error_norms=(
                     prediction_errors[0] if prediction_errors else None
                 ),
@@ -266,7 +269,7 @@ class MemoryCheckpointer:
             self._signal_window.append(frame)
             # Keep sliding window bounded to ring_size
             if len(self._signal_window) > self._config.ring_size * 2:
-                self._signal_window = self._signal_window[-self._config.ring_size * 2:]
+                self._signal_window = self._signal_window[-self._config.ring_size * 2 :]
 
         # State machine dispatch
         if self.state == CheckpointerState.MONITORING:
@@ -473,8 +476,12 @@ class MemoryCheckpointer:
                 fh.write(json.dumps(frame.to_dict()) + "\n")
 
         # Build and save metadata.json
-        before_chunk = record.before.metadata.get("chunk_index", 0) if record.before else 0
-        during_chunk = record.during.metadata.get("chunk_index", 0) if record.during else 0
+        before_chunk = (
+            record.before.metadata.get("chunk_index", 0) if record.before else 0
+        )
+        during_chunk = (
+            record.during.metadata.get("chunk_index", 0) if record.during else 0
+        )
         after_range: list[int] = []
         if record.after:
             first_after = record.after[0].metadata.get("chunk_index", 0)

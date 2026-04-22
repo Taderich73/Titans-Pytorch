@@ -42,8 +42,12 @@ class TestMemoryCrossAttention:
 
     def test_vector_gate(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            use_mca=True, mca_insertion_layers=[0],
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            use_mca=True,
+            mca_insertion_layers=[0],
             mca_gate_type="vector",
         )
         from titans.mca import MemoryCrossAttention
@@ -94,6 +98,7 @@ class TestMCAForwardValidation:
         class _Stub:
             def mca(self, h, W):
                 return h
+
         block = _Stub()
 
         h = torch.randn(2, 8, 32, device=device)

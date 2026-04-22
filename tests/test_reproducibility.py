@@ -49,9 +49,9 @@ def _tiny_config() -> TitansConfig:
     )
 
 
-def _build_model_and_loss(seed: int, *, deterministic: bool) -> tuple[
-    TitansMAC, torch.Tensor, list[torch.Tensor]
-]:
+def _build_model_and_loss(
+    seed: int, *, deterministic: bool
+) -> tuple[TitansMAC, torch.Tensor, list[torch.Tensor]]:
     """Seed, build a tiny model, run one forward, return (model, loss, params).
 
     Uses a fixed CPU-only ``torch.Generator`` for the input ids so that
@@ -71,9 +71,7 @@ def _build_model_and_loss(seed: int, *, deterministic: bool) -> tuple[
 
     with torch.no_grad():
         logits, _states, _gates = model(input_ids)
-    loss = F.cross_entropy(
-        logits.reshape(-1, logits.size(-1)), labels.reshape(-1)
-    )
+    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
     params = [p.detach().clone() for p in model.parameters()]
     return model, loss, params
 

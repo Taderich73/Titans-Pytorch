@@ -33,10 +33,14 @@ class GlobalMemory(nn.Module):
         self.memory = NeuralLongTermMemory(config)
 
     def forward(
-        self, x: torch.Tensor, state: MemoryState | None = None,
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None = None,
         lr_scale: float | torch.Tensor = 1.0,
     ) -> tuple[torch.Tensor, MemoryState]:
-        output, new_state, _gate_snapshot = self.memory(x, state=state, lr_scale=lr_scale)
+        output, new_state, _gate_snapshot = self.memory(
+            x, state=state, lr_scale=lr_scale
+        )
         return output, new_state
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
@@ -49,7 +53,9 @@ class GlobalMemory(nn.Module):
 class LocalMemory(nn.Module):
     """Local memory module for TNT with periodic state reset (Eq. 6)."""
 
-    def __init__(self, config: TitansConfig, chunk_size: int, shard_length: int) -> None:
+    def __init__(
+        self, config: TitansConfig, chunk_size: int, shard_length: int
+    ) -> None:
         super().__init__()
         self.config = config
         self.chunk_size = chunk_size
@@ -58,10 +64,12 @@ class LocalMemory(nn.Module):
         self.memory = NeuralLongTermMemory(config)
 
         # Learnable initial state W_init
-        self._w_init = nn.ParameterList([
-            nn.Parameter(torch.randn_like(layer.weight) * config.init_std)
-            for layer in self.memory.memory.layers
-        ])
+        self._w_init = nn.ParameterList(
+            [
+                nn.Parameter(torch.randn_like(layer.weight) * config.init_std)
+                for layer in self.memory.memory.layers
+            ]
+        )
 
         if config.use_qk_projection:
             self.qk_proj = QKProjection(config.dim)
@@ -91,7 +99,10 @@ class LocalMemory(nn.Module):
         return MemoryState(weights=weights, momentum=momentum)
 
     def maybe_reset(
-        self, state: MemoryState, step_counter: int, batch_size: int,
+        self,
+        state: MemoryState,
+        step_counter: int,
+        batch_size: int,
     ) -> tuple[MemoryState, int]:
         """Reset local memory state at shard boundaries.
 
@@ -114,7 +125,9 @@ class LocalMemory(nn.Module):
 
     @staticmethod
     def _reset_segments(
-        start_counter: int, seq_len: int, shard_length: int,
+        start_counter: int,
+        seq_len: int,
+        shard_length: int,
     ) -> list[tuple[int, int, bool]]:
         """Enumerate ``(local_begin, local_end, reset_at_begin)`` segments.
 
@@ -181,8 +194,11 @@ class LocalMemory(nn.Module):
             state = self.init_state(x.shape[0])
         if return_keys and return_q:
             output, new_state, _gate, k, q = self.memory(
-                x, state=state, lr_scale=lr_scale,
-                return_keys=True, return_q=True,
+                x,
+                state=state,
+                lr_scale=lr_scale,
+                return_keys=True,
+                return_q=True,
             )
             return output, new_state, k, q
         if return_keys:
@@ -247,26 +263,31 @@ class LocalMemory(nn.Module):
             sub_x = x[:, begin:end, :]
             if return_keys and return_q:
                 out, cur_state, k, q = self(
-                    sub_x, state=cur_state, lr_scale=lr_scale,
-                    return_keys=True, return_q=True,
+                    sub_x,
+                    state=cur_state,
+                    lr_scale=lr_scale,
+                    return_keys=True,
+                    return_q=True,
                 )
                 k_parts.append(k)
                 q_parts.append(q)
             elif return_keys:
                 out, cur_state, k = self(
-                    sub_x, state=cur_state, lr_scale=lr_scale,
+                    sub_x,
+                    state=cur_state,
+                    lr_scale=lr_scale,
                     return_keys=True,
                 )
                 k_parts.append(k)
             else:
                 out, cur_state = self(
-                    sub_x, state=cur_state, lr_scale=lr_scale,
+                    sub_x,
+                    state=cur_state,
+                    lr_scale=lr_scale,
                 )
             out_parts.append(out)
 
-        output = (
-            out_parts[0] if len(out_parts) == 1 else torch.cat(out_parts, dim=1)
-        )
+        output = out_parts[0] if len(out_parts) == 1 else torch.cat(out_parts, dim=1)
         end_counter = (start_counter + seq_len) % self.shard_length
 
         if return_keys and return_q:
@@ -293,10 +314,14 @@ class HierarchicalMemory(nn.Module):
         self.config = config
 
         self.global_memory = GlobalMemory(config)
-        self.local_memories = nn.ModuleList([
-            LocalMemory(config, chunk_size=cs, shard_length=config.local_shard_length)
-            for cs in config.active_local_chunk_sizes
-        ])
+        self.local_memories = nn.ModuleList(
+            [
+                LocalMemory(
+                    config, chunk_size=cs, shard_length=config.local_shard_length
+                )
+                for cs in config.active_local_chunk_sizes
+            ]
+        )
 
         self.proj_out = nn.Linear(config.dim, config.dim, bias=False)
         nn.init.normal_(self.proj_out.weight, std=config.init_std)
@@ -305,8 +330,9 @@ class HierarchicalMemory(nn.Module):
         global_state = self.global_memory.init_state(batch_size)
         local_states = [lm.init_state(batch_size) for lm in self.local_memories]
         qk_projections = [
-            torch.zeros(self.config.dim, self.config.dim,
-                        device=next(self.parameters()).device)
+            torch.zeros(
+                self.config.dim, self.config.dim, device=next(self.parameters()).device
+            )
             for _ in self.local_memories
         ]
         local_step_counters = [0] * len(self.local_memories)
@@ -319,7 +345,9 @@ class HierarchicalMemory(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, state: TNTMemoryState | None = None,
+        self,
+        x: torch.Tensor,
+        state: TNTMemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, TNTMemoryState, None]:
         batch_size = x.shape[0]
@@ -361,8 +389,7 @@ class HierarchicalMemory(nn.Module):
             # in a single call, matching pre-fix behaviour for the
             # common case where at most one boundary falls at the start).
             will_reset_at_start = (
-                start_counter > 0
-                and start_counter % local_mem.shard_length == 0
+                start_counter > 0 and start_counter % local_mem.shard_length == 0
             )
             if will_reset_at_start:
                 # Preserve both device *and* dtype from the existing carry
@@ -387,21 +414,27 @@ class HierarchicalMemory(nn.Module):
                     normed_keys,
                     normed_q,
                 ) = local_mem.forward_with_resets(
-                    x, state=state.local_states[i],
+                    x,
+                    state=state.local_states[i],
                     start_counter=start_counter,
                     lr_scale=local_lr_scale,
-                    return_keys=True, return_q=True,
+                    return_keys=True,
+                    return_q=True,
                 )
                 projected_q, new_carry = local_mem.qk_proj(
-                    normed_q, normed_keys, qk_carry,
+                    normed_q,
+                    normed_keys,
+                    qk_carry,
                 )
                 # Retrieve with projected queries using the UPDATED memory
                 # weights (matches paper Eq. 15: M_t^(i) · q_t applied to W^(i)_t).
                 effective = local_mem.memory._get_effective_weights(
-                    new_local_state.weights, detach_base=False,
+                    new_local_state.weights,
+                    detach_base=False,
                 )
                 retrieved = local_mem.memory.memory.forward_with_weights(
-                    projected_q, effective,
+                    projected_q,
+                    effective,
                 )
                 local_out = local_mem.memory.proj_out(retrieved)
                 new_qk_projections.append(new_carry)
@@ -413,7 +446,8 @@ class HierarchicalMemory(nn.Module):
                     end_counter,
                     normed_keys,
                 ) = local_mem.forward_with_resets(
-                    x, state=state.local_states[i],
+                    x,
+                    state=state.local_states[i],
                     start_counter=start_counter,
                     lr_scale=local_lr_scale,
                     return_keys=True,
@@ -421,12 +455,11 @@ class HierarchicalMemory(nn.Module):
                 new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
                 new_qk_projections.append(new_carry)
             else:
-                local_out, new_local_state, end_counter = (
-                    local_mem.forward_with_resets(
-                        x, state=state.local_states[i],
-                        start_counter=start_counter,
-                        lr_scale=local_lr_scale,
-                    )
+                local_out, new_local_state, end_counter = local_mem.forward_with_resets(
+                    x,
+                    state=state.local_states[i],
+                    start_counter=start_counter,
+                    lr_scale=local_lr_scale,
                 )
                 new_qk_projections.append(qk_carry)
 

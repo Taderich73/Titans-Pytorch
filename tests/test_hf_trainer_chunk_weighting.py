@@ -76,9 +76,7 @@ def test_mixin_matches_sft_chunked_loss_reset_true() -> None:
     labels = torch.randint(0, 32, (batch_size, seq_len))
 
     trainer = _MinimalChunkTrainer()
-    loss_mixin = trainer.compute_loss(
-        model, {"input_ids": input_ids, "labels": labels}
-    )
+    loss_mixin = trainer.compute_loss(model, {"input_ids": input_ids, "labels": labels})
 
     assert torch.isfinite(loss_mixin), "Mixin loss must be finite."
     # reset_memory_per_batch=True -> states cleared after compute_loss.
@@ -99,6 +97,7 @@ def test_mixin_matches_sft_chunked_loss_reset_true() -> None:
             states = [s.detach() for s in states]
 
     torch.testing.assert_close(loss_mixin, total, rtol=1e-4, atol=1e-4)
+
 
 def test_mixin_ragged_last_chunk_matches_single_shot() -> None:
     """Ragged-last-chunk regression: token-weighted aggregation must give the
@@ -121,9 +120,7 @@ def test_mixin_ragged_last_chunk_matches_single_shot() -> None:
     labels = torch.randint(0, 32, (batch_size, seq_len))
 
     trainer = _MinimalChunkTrainer()
-    loss_mixin = trainer.compute_loss(
-        model, {"input_ids": input_ids, "labels": labels}
-    )
+    loss_mixin = trainer.compute_loss(model, {"input_ids": input_ids, "labels": labels})
 
     # Reference: chunk, forward with memory carry, token-weighted mean.
     id_chunks = input_ids.split(chunk_size, dim=1)

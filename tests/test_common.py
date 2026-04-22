@@ -89,9 +89,7 @@ def test_maybe_compile_attn_res_no_longer_auto_disables(caplog) -> None:
     """
     model = torch.nn.Linear(4, 4)
     with caplog.at_level(logging.WARNING, logger="titans.scripts._common"):
-        out = maybe_compile(
-            model, enabled=True, device_type="cpu", use_attn_res=True
-        )
+        out = maybe_compile(model, enabled=True, device_type="cpu", use_attn_res=True)
     assert out is model  # CPU path is a no-op
     assert not any("attn_res" in r.message.lower() for r in caplog.records)
 
@@ -305,8 +303,12 @@ class TestCreateModel:
     @pytest.mark.parametrize("variant", ["mac", "mag", "mal", "lmm"])
     def test_every_variant_instantiates(self, variant: str) -> None:
         cfg = TitansConfig(
-            dim=32, num_heads=2, num_layers=2, vocab_size=128,
-            chunk_size=8, window_size=8,
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            vocab_size=128,
+            chunk_size=8,
+            window_size=8,
         )
         model = create_model(variant, cfg)
         # One forward pass must not explode.
@@ -435,6 +437,7 @@ class TestBaseArgparseParser:
 
     def test_returns_argparse_parser(self) -> None:
         import argparse
+
         p = base_argparse_parser(description="x")
         assert isinstance(p, argparse.ArgumentParser)
 
@@ -524,6 +527,7 @@ class TestInitAcceleratorAndLogging:
     def test_without_accelerate_graceful(self, monkeypatch) -> None:
         """Callers that run without accelerate still get a usable object."""
         from titans.scripts import _common
+
         monkeypatch.setattr(_common, "_HAS_ACCELERATE", False, raising=False)
         bundle = _common.init_accelerator_and_logging(_CfgForAcc())
         # Stub accelerator should still expose is_main_process + device attrs.

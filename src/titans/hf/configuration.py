@@ -168,7 +168,9 @@ class TitansMACConfig(PretrainedConfig):
         self.rope_proportion = rope_proportion
         self.use_tnt = use_tnt
         self.global_chunk_size = global_chunk_size
-        self.local_chunk_sizes = local_chunk_sizes if local_chunk_sizes is not None else [8, 16]
+        self.local_chunk_sizes = (
+            local_chunk_sizes if local_chunk_sizes is not None else [8, 16]
+        )
         self.local_shard_length = local_shard_length
         self.use_qk_projection = use_qk_projection
         self.tnt_qk_projection = tnt_qk_projection
@@ -216,9 +218,7 @@ class TitansMACConfig(PretrainedConfig):
         # Serialize MemoryCheckpointConfig as a dict on the HF side so it
         # survives JSON round-trips (config.json); rehydrate in
         # to_titans_config().
-        if checkpoint_config is not None and not isinstance(
-            checkpoint_config, dict
-        ):
+        if checkpoint_config is not None and not isinstance(checkpoint_config, dict):
             self.checkpoint_config = (
                 checkpoint_config.to_dict()
                 if hasattr(checkpoint_config, "to_dict")

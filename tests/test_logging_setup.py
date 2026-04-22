@@ -36,9 +36,7 @@ def _isolate_logging_state():
     # its first-call install path.
     logmod._CONFIGURED = False
     logmod._CONSOLE = None
-    root.handlers = [
-        h for h in saved_handlers if not isinstance(h, RichHandler)
-    ]
+    root.handlers = [h for h in saved_handlers if not isinstance(h, RichHandler)]
 
     try:
         yield
@@ -59,9 +57,7 @@ def test_setup_logging_is_idempotent() -> None:
     r1 = setup_logging(logging.INFO)
     count_after_first = len(r1.handlers)
     r2 = setup_logging(logging.DEBUG)
-    assert len(r2.handlers) == count_after_first, (
-        "setup_logging should be idempotent"
-    )
+    assert len(r2.handlers) == count_after_first, "setup_logging should be idempotent"
     assert r1.level == logging.DEBUG  # level was updated on second call
 
 

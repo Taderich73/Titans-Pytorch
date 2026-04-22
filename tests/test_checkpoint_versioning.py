@@ -122,8 +122,7 @@ class TestMemoryDumpVersioning:
         deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deps, "Expected a DeprecationWarning for the unversioned load"
         assert any("unversioned" in str(w.message).lower() for w in deps), (
-            f"Warning must mention 'unversioned'; got "
-            f"{[str(w.message) for w in deps]}"
+            f"Warning must mention 'unversioned'; got {[str(w.message) for w in deps]}"
         )
 
         assert len(loaded) == 1
@@ -135,9 +134,7 @@ class TestMemoryDumpVersioning:
     def test_newer_than_code_refuses(self, tmp_path: Path) -> None:
         """A file stamped with a version newer than the code must refuse."""
         arrays: dict[str, np.ndarray] = {
-            _SCHEMA_VERSION_KEY: np.array(
-                [TITANS_SCHEMA_VERSION + 1], dtype=np.int64
-            ),
+            _SCHEMA_VERSION_KEY: np.array([TITANS_SCHEMA_VERSION + 1], dtype=np.int64),
             "num_layers": np.array([1]),
             "layer_0_type": np.array([0]),
             "layer_0_num_memory_layers": np.array([1]),
@@ -168,9 +165,7 @@ class TestMemoryDumpVersioning:
 
         # Register (0 -> CURRENT) only, so the dispatch jumps straight there.
         fake_registry = {(0, TITANS_SCHEMA_VERSION): _fake_v0_to_current}
-        monkeypatch.setattr(
-            "titans.memory_dump._MIGRATIONS", fake_registry
-        )
+        monkeypatch.setattr("titans.memory_dump._MIGRATIONS", fake_registry)
 
         arrays: dict[str, np.ndarray] = {
             _SCHEMA_VERSION_KEY: np.array([0], dtype=np.int64),
@@ -227,9 +222,7 @@ class TestCheckpointVersioning:
         )
         assert loaded["titans_schema_version"] == TITANS_SCHEMA_VERSION
 
-    def test_save_stamps_version_in_safetensors_sidecar(
-        self, tmp_path: Path
-    ) -> None:
+    def test_save_stamps_version_in_safetensors_sidecar(self, tmp_path: Path) -> None:
         """Every ``.safetensors`` write gets a sidecar carrying the version."""
         stem = tmp_path / "ck"
         save_checkpoint({"w": torch.ones(2, 2)}, stem, format="safetensors")
@@ -266,9 +259,7 @@ class TestCheckpointVersioning:
             loaded = load_checkpoint(pt_path, weights_only=False)
 
         deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        assert deps and any(
-            "unversioned" in str(w.message).lower() for w in deps
-        )
+        assert deps and any("unversioned" in str(w.message).lower() for w in deps)
         assert torch.equal(loaded["model"]["w"], torch.ones(2, 2))
 
     def test_newer_version_pt_refuses(self, tmp_path: Path) -> None:
@@ -285,9 +276,7 @@ class TestCheckpointVersioning:
         with pytest.raises(RuntimeError, match="upgrade titans"):
             load_checkpoint(pt_path, weights_only=False)
 
-    def test_older_version_pt_refuses_without_migration(
-        self, tmp_path: Path
-    ) -> None:
+    def test_older_version_pt_refuses_without_migration(self, tmp_path: Path) -> None:
         """An older-than-current .pt with no migration registered refuses."""
         stem = tmp_path / "ancient"
         pt_path = stem.with_suffix(".pt")
@@ -317,9 +306,7 @@ class TestMigrationDispatch:
         with pytest.raises(RuntimeError, match="no migration available"):
             _migrate_arrays_to_current({}, from_version=0, current_version=1)
 
-    def test_single_step_migration(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_single_step_migration(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A registered (from, to) entry is applied."""
         called: list[str] = []
 
@@ -432,8 +419,7 @@ class TestHfConfigVersion:
         deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deps, "Expected DeprecationWarning for unversioned HF config"
         assert any("unversioned" in str(w.message).lower() for w in deps), (
-            f"Warning must mention 'unversioned'; got "
-            f"{[str(w.message) for w in deps]}"
+            f"Warning must mention 'unversioned'; got {[str(w.message) for w in deps]}"
         )
         # Best-effort fall-through still populates the attribute.
         assert cfg.titans_schema_version == TITANS_SCHEMA_VERSION
@@ -497,9 +483,7 @@ class TestHfConfigVersion:
 class TestConvertCheckpointVersion:
     """scripts/convert_checkpoint.py emits the version in the output."""
 
-    def test_convert_pt_to_safetensors_emits_version(
-        self, tmp_path: Path
-    ) -> None:
+    def test_convert_pt_to_safetensors_emits_version(self, tmp_path: Path) -> None:
         """Convert a tiny pt -> safetensors and verify the sidecar version."""
         # 1. Write a tiny source .pt via the public API so the input
         #    already carries the current schema version.

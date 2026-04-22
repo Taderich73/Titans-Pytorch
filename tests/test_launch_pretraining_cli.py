@@ -1,6 +1,7 @@
 """Regression: --help text mentioned a stale commit SHA (e309d70) that no
 longer matched the default. Derive the help text from the default
 at runtime."""
+
 from __future__ import annotations
 
 import re
@@ -10,7 +11,9 @@ from pathlib import Path
 
 
 def test_launch_pretraining_help_sha_matches_default() -> None:
-    script = Path(__file__).resolve().parents[1] / "scripts" / "launch_pretraining_job.py"
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "launch_pretraining_job.py"
+    )
     result = subprocess.run(
         [sys.executable, str(script), "--help"],
         check=True,

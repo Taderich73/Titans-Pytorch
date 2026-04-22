@@ -42,9 +42,7 @@ class MemoryCrossAttention(nn.Module):
 
         self.norm = RMSNorm(dim)
 
-    def forward(
-        self, x: torch.Tensor, memory_weights: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, memory_weights: torch.Tensor) -> torch.Tensor:
         """Cross-attend from x to memory weight rows.
 
         Args:
@@ -71,9 +69,7 @@ class MemoryCrossAttention(nn.Module):
         V = V.expand(B, -1, -1, -1)
 
         # Scaled dot-product attention (no causal mask — all rows visible)
-        attn_out = F.scaled_dot_product_attention(
-            Q, K, V, scale=self.head_dim**-0.5
-        )
+        attn_out = F.scaled_dot_product_attention(Q, K, V, scale=self.head_dim**-0.5)
 
         # Reshape and project
         attn_out = attn_out.permute(0, 2, 1, 3).reshape(B, T, dim)

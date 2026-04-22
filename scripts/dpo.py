@@ -281,9 +281,7 @@ def compute_log_probs(
         logits = logits.float()  # fp32 for numerical stability
         log_probs = F.log_softmax(logits, dim=-1)
         lbl_clamped = lbl_c.clamp(min=0, max=vocab_size - 1)
-        token_lp = log_probs.gather(
-            dim=-1, index=lbl_clamped.unsqueeze(-1)
-        ).squeeze(-1)
+        token_lp = log_probs.gather(dim=-1, index=lbl_clamped.unsqueeze(-1)).squeeze(-1)
         msk_f = msk_c.float()
         sum_logps = sum_logps + (token_lp * msk_f).sum(dim=-1)
         lengths = lengths + msk_f.sum(dim=-1)
@@ -353,9 +351,9 @@ class DPOConfig:
     use_conv: bool = False
 
     # --- DPO-specific ---
-    loss_type: str = "dpo"          # "dpo" or "simpo"
-    beta: float = 0.1               # KL penalty (DPO) or reward scale (SimPO)
-    gamma: float = 0.5              # Target reward margin (SimPO only)
+    loss_type: str = "dpo"  # "dpo" or "simpo"
+    beta: float = 0.1  # KL penalty (DPO) or reward scale (SimPO)
+    gamma: float = 0.5  # Target reward margin (SimPO only)
 
     # --- LoRA ---
     use_lora: bool = False
@@ -504,9 +502,7 @@ class DPOStreamingDataset(IterableDataset):
                 continue
 
             yield {
-                "chosen_input_ids": torch.tensor(
-                    chosen["input_ids"], dtype=torch.long
-                ),
+                "chosen_input_ids": torch.tensor(chosen["input_ids"], dtype=torch.long),
                 "chosen_labels": torch.tensor(chosen["labels"], dtype=torch.long),
                 "chosen_loss_mask": torch.tensor(
                     chosen["loss_mask"], dtype=torch.float
@@ -514,9 +510,7 @@ class DPOStreamingDataset(IterableDataset):
                 "rejected_input_ids": torch.tensor(
                     rejected["input_ids"], dtype=torch.long
                 ),
-                "rejected_labels": torch.tensor(
-                    rejected["labels"], dtype=torch.long
-                ),
+                "rejected_labels": torch.tensor(rejected["labels"], dtype=torch.long),
                 "rejected_loss_mask": torch.tensor(
                     rejected["loss_mask"], dtype=torch.float
                 ),
@@ -556,14 +550,10 @@ class SyntheticDPODataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
-            "chosen_input_ids": torch.from_numpy(
-                self.chosen_input_ids[idx]
-            ).long(),
+            "chosen_input_ids": torch.from_numpy(self.chosen_input_ids[idx]).long(),
             "chosen_labels": torch.from_numpy(self.chosen_labels[idx]).long(),
             "chosen_loss_mask": torch.from_numpy(self.loss_mask[idx]),
-            "rejected_input_ids": torch.from_numpy(
-                self.rejected_input_ids[idx]
-            ).long(),
+            "rejected_input_ids": torch.from_numpy(self.rejected_input_ids[idx]).long(),
             "rejected_labels": torch.from_numpy(self.rejected_labels[idx]).long(),
             "rejected_loss_mask": torch.from_numpy(self.loss_mask[idx]),
         }
@@ -597,28 +587,26 @@ def dpo_collate_fn(
         r_pad = rejected_max - r_len
 
         chosen_ids.append(
-            torch.cat([item["chosen_input_ids"],
-                       torch.zeros(c_pad, dtype=torch.long)])
+            torch.cat([item["chosen_input_ids"], torch.zeros(c_pad, dtype=torch.long)])
         )
         chosen_lbls.append(
-            torch.cat([item["chosen_labels"],
-                       torch.zeros(c_pad, dtype=torch.long)])
+            torch.cat([item["chosen_labels"], torch.zeros(c_pad, dtype=torch.long)])
         )
         chosen_masks.append(
-            torch.cat([item["chosen_loss_mask"],
-                       torch.zeros(c_pad, dtype=torch.float)])
+            torch.cat([item["chosen_loss_mask"], torch.zeros(c_pad, dtype=torch.float)])
         )
         rejected_ids.append(
-            torch.cat([item["rejected_input_ids"],
-                       torch.zeros(r_pad, dtype=torch.long)])
+            torch.cat(
+                [item["rejected_input_ids"], torch.zeros(r_pad, dtype=torch.long)]
+            )
         )
         rejected_lbls.append(
-            torch.cat([item["rejected_labels"],
-                       torch.zeros(r_pad, dtype=torch.long)])
+            torch.cat([item["rejected_labels"], torch.zeros(r_pad, dtype=torch.long)])
         )
         rejected_masks.append(
-            torch.cat([item["rejected_loss_mask"],
-                       torch.zeros(r_pad, dtype=torch.float)])
+            torch.cat(
+                [item["rejected_loss_mask"], torch.zeros(r_pad, dtype=torch.float)]
+            )
         )
 
     return {
@@ -919,8 +907,7 @@ def train(config: DPOConfig) -> None:
         start_epoch = checkpoint.get("epoch", 0)
         if accelerator.is_main_process:
             logger.info(
-                f"Resumed from {resume_path} at step {global_step}, "
-                f"epoch {start_epoch}"
+                f"Resumed from {resume_path} at step {global_step}, epoch {start_epoch}"
             )
 
     # ------------------------------------------------------------------
@@ -1016,9 +1003,7 @@ def train(config: DPOConfig) -> None:
                     if use_lora:
                         # LoRA-as-reference: disable LoRA, run base model only
                         with torch.no_grad():
-                            set_lora_enabled(
-                                accelerator.unwrap_model(model), False
-                            )
+                            set_lora_enabled(accelerator.unwrap_model(model), False)
                             ref_chosen_logps, _, _ = compute_log_probs(
                                 model,
                                 chosen_input_ids,
@@ -1068,9 +1053,7 @@ def train(config: DPOConfig) -> None:
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(
-                        model.parameters(), config.grad_clip
-                    )
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
                     num_optimizer_steps += 1
                     global_step += 1
 
@@ -1144,8 +1127,7 @@ def train(config: DPOConfig) -> None:
 
                     if use_lora:
                         adapter_path = (
-                            checkpoint_dir
-                            / f"adapters_step_{global_step}.safetensors"
+                            checkpoint_dir / f"adapters_step_{global_step}.safetensors"
                         )
                         meta = {
                             "lora_rank": config.lora_rank,

@@ -111,8 +111,12 @@ class TestTriggerDecision:
         """Confidence field accepts 0.0 and 1.0 boundary values."""
         from titans.checkpointing.novelty_detector import TriggerDecision
 
-        lo = TriggerDecision(triggered=False, reason="", confidence=0.0, signal_source="")
-        hi = TriggerDecision(triggered=True, reason="", confidence=1.0, signal_source="prediction_error")
+        lo = TriggerDecision(
+            triggered=False, reason="", confidence=0.0, signal_source=""
+        )
+        hi = TriggerDecision(
+            triggered=True, reason="", confidence=1.0, signal_source="prediction_error"
+        )
         assert lo.confidence == pytest.approx(0.0)
         assert hi.confidence == pytest.approx(1.0)
 
@@ -167,7 +171,9 @@ class TestStatisticalNoveltyDetector:
         for i in range(9):
             frame = _make_frame(chunk_index=i, error_norms=[1.0])
             result = det.observe(frame)
-            assert result.triggered is False, f"Should not trigger during warmup (frame {i})"
+            assert result.triggered is False, (
+                f"Should not trigger during warmup (frame {i})"
+            )
 
     def test_no_trigger_on_stable_signal(self) -> None:
         """No trigger when all values are constant (~1.0) — no z-score anomaly."""
@@ -232,17 +238,21 @@ class TestStatisticalNoveltyDetector:
         )
         # 20 frames of stable weight_delta, zero error
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
-                error_norms=[0.0],
-                weight_delta_norms=[1.0],
-            ))
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.0],
+                    weight_delta_norms=[1.0],
+                )
+            )
         # Spike in weight_delta while error stays zero
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[0.0],
-            weight_delta_norms=[10.0],
-        ))
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
+                error_norms=[0.0],
+                weight_delta_norms=[10.0],
+            )
+        )
         assert result.triggered is True
         assert result.signal_source == "weight_delta"
 
@@ -258,18 +268,22 @@ class TestStatisticalNoveltyDetector:
             window_size=50, sigma_threshold=2.0, min_observations=10
         )
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.0],
+                    weight_delta_norms=[0.0],
+                    momentum_shift_norms=[1.0],
+                )
+            )
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
                 error_norms=[0.0],
                 weight_delta_norms=[0.0],
-                momentum_shift_norms=[1.0],
-            ))
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[0.0],
-            weight_delta_norms=[0.0],
-            momentum_shift_norms=[10.0],
-        ))
+                momentum_shift_norms=[10.0],
+            )
+        )
         assert result.triggered is True
         assert result.signal_source == "momentum_shift"
 
@@ -286,17 +300,23 @@ class TestStatisticalNoveltyDetector:
         )
         # Stable error norms, but spike in weight_delta
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
-                error_norms=[1.0],
-                weight_delta_norms=[1.0],
-            ))
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[1.0],
+                    weight_delta_norms=[1.0],
+                )
+            )
         # error stays stable; weight_delta spikes — should NOT trigger because error is primary
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[1.0],         # identical to all prior frames — no anomaly
-            weight_delta_norms=[10.0], # large spike in fallback signal — must be ignored
-        ))
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
+                error_norms=[1.0],  # identical to all prior frames — no anomaly
+                weight_delta_norms=[
+                    10.0
+                ],  # large spike in fallback signal — must be ignored
+            )
+        )
         assert result.triggered is False
 
     # ------------------------------------------------------------------
@@ -535,9 +555,7 @@ class TestStatisticalNoveltyDetector:
         # Layer 1: large cliff drop (5.0 -> 0.01, huge negative RoC z).
         # Drop magnitude in z-units dwarfs the spike magnitude, so the
         # winning trigger reason must mention "drop".
-        result = det.observe(
-            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
-        )
+        result = det.observe(_make_frame(chunk_index=30, error_norms=[1.6, 0.01]))
 
         assert result.triggered is True
         assert result.signal_source == "prediction_error"
@@ -579,9 +597,7 @@ class TestStatisticalNoveltyDetector:
         # baseline 3.0 -> negative signed z, which _z_score_spike filters out
         # (it only returns positive z above +sigma). So the winning signal is
         # the drop, and the reason must mention "drop".
-        result = det.observe(
-            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
-        )
+        result = det.observe(_make_frame(chunk_index=30, error_norms=[1.6, 0.01]))
 
         assert result.triggered is True
         assert result.signal_source == "prediction_error"
@@ -800,16 +816,12 @@ def test_layer_windows_welford_matches_deque_reference() -> None:
     ref_mean = sum(ref_values) / len(ref_values)
     ref_var = sum((x - ref_mean) ** 2 for x in ref_values) / len(ref_values)
     assert math.isclose(lw.value_stats.mean, ref_mean, rel_tol=1e-10)
-    assert math.isclose(
-        lw.value_stats.population_variance, ref_var, rel_tol=1e-10
-    )
+    assert math.isclose(lw.value_stats.population_variance, ref_var, rel_tol=1e-10)
 
     roc_values = list(lw.roc_values)
     if roc_values:
         ref_roc_mean = sum(roc_values) / len(roc_values)
-        ref_roc_var = sum(
-            (x - ref_roc_mean) ** 2 for x in roc_values
-        ) / len(roc_values)
+        ref_roc_var = sum((x - ref_roc_mean) ** 2 for x in roc_values) / len(roc_values)
         assert math.isclose(lw.roc_stats.mean, ref_roc_mean, rel_tol=1e-10)
         assert math.isclose(
             lw.roc_stats.population_variance, ref_roc_var, rel_tol=1e-10
@@ -926,13 +938,9 @@ class TestAggregatedRingBuffer:
             det.observe(_make_frame(chunk_index=i, error_norms=[1.0, 1.0, 1.0]))
         # Small wiggles
         for i in range(5):
-            det.observe(
-                _make_frame(chunk_index=10 + i, error_norms=[1.02, 0.99, 1.01])
-            )
+            det.observe(_make_frame(chunk_index=10 + i, error_norms=[1.02, 0.99, 1.01]))
         # Big spike across layers
-        d = det.observe(
-            _make_frame(chunk_index=16, error_norms=[10.0, 10.0, 10.0])
-        )
+        d = det.observe(_make_frame(chunk_index=16, error_norms=[10.0, 10.0, 10.0]))
         assert d.triggered
 
     def test_aggregated_reset_clears_stream(self) -> None:

@@ -362,9 +362,7 @@ def evaluate(
             msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
             batch_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
-            batch_tokens_num = torch.tensor(
-                0.0, device=batch["input_ids"].device
-            )
+            batch_tokens_num = torch.tensor(0.0, device=batch["input_ids"].device)
 
             chunk_iter = chunked_forward(
                 model,
@@ -381,16 +379,12 @@ def evaluate(
                 labels_flat = lbl_c.reshape(-1)
                 mask_flat = msk_c.reshape(-1).float()
 
-                per_token = F.cross_entropy(
-                    logits_flat, labels_flat, reduction="none"
-                )
+                per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
                 batch_loss_num = batch_loss_num + (per_token * mask_flat).sum()
                 batch_tokens_num = batch_tokens_num + mask_flat.sum()
 
             # Gather across processes
-            batch_loss = (
-                accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
-            )
+            batch_loss = accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
             batch_tokens = (
                 accelerator.gather(batch_tokens_num.unsqueeze(0)).sum().item()
             )
@@ -580,7 +574,9 @@ def train(config: SFTConfig) -> None:
     if config.max_steps > 0:
         total_steps = config.max_steps
     elif not is_streaming:
-        total_steps = (len(train_dataloader) // config.gradient_accumulation_steps) * config.epochs
+        total_steps = (
+            len(train_dataloader) // config.gradient_accumulation_steps
+        ) * config.epochs
     else:
         # Streaming dataset — set a large number; training stops at max_steps or
         # when the dataset is exhausted.
@@ -595,7 +591,9 @@ def train(config: SFTConfig) -> None:
         progress = float(current_step - warmup_steps) / float(
             max(1, total_steps - warmup_steps)
         )
-        return max(0.0, 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item()))
+        return max(
+            0.0, 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+        )
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -604,7 +602,9 @@ def train(config: SFTConfig) -> None:
     # ------------------------------------------------------------------
     if eval_dataloader is not None:
         model, optimizer, train_dataloader, eval_dataloader, scheduler = (
-            accelerator.prepare(model, optimizer, train_dataloader, eval_dataloader, scheduler)
+            accelerator.prepare(
+                model, optimizer, train_dataloader, eval_dataloader, scheduler
+            )
         )
     else:
         model, optimizer, train_dataloader, scheduler = accelerator.prepare(
@@ -769,8 +769,7 @@ def train(config: SFTConfig) -> None:
             # Detach memory states to prevent BPTT across batch boundaries
             if memory_states is not None:
                 memory_states = [
-                    s.detach() if s is not None else None
-                    for s in memory_states
+                    s.detach() if s is not None else None for s in memory_states
                 ]
 
             loss_val = loss.item()
@@ -915,7 +914,10 @@ def parse_args() -> SFTConfig:
     # SFT-only data flags
     data = parser.add_argument_group("SFT data")
     data.add_argument(
-        "--dataset", type=str, default=None, help="HuggingFace dataset repo id",
+        "--dataset",
+        type=str,
+        default=None,
+        help="HuggingFace dataset repo id",
     )
     data.add_argument("--dataset-subset", type=str, default=None)
     data.add_argument("--eval-dataset", type=str, default=None)

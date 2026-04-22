@@ -66,7 +66,9 @@ _SCHEMA_VERSION_KEY: str = "titans_schema_version"
 #
 # The walker lives in :mod:`titans._schema_migrations` and is shared
 # with :mod:`titans.checkpoint` so the two dispatchers stay symmetric.
-_MIGRATIONS: dict[tuple[int, int], Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]] = {}
+_MIGRATIONS: dict[
+    tuple[int, int], Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]
+] = {}
 
 
 def _migrate_arrays_to_current(
@@ -117,13 +119,13 @@ def _load_memory_state(
     momentum: list[torch.Tensor] = []
     for j in range(num_memory_layers):
         weights.append(torch.from_numpy(data[f"{prefix}_weight_{j}"].copy()).to(device))
-        momentum.append(torch.from_numpy(data[f"{prefix}_momentum_{j}"].copy()).to(device))
+        momentum.append(
+            torch.from_numpy(data[f"{prefix}_momentum_{j}"].copy()).to(device)
+        )
     return MemoryState(weights=weights, momentum=momentum)
 
 
-def save_memory_states(
-    states: list[MemoryState | TNTMemoryState], path: Path
-) -> None:
+def save_memory_states(states: list[MemoryState | TNTMemoryState], path: Path) -> None:
     """Serialize memory states to a single .npz file.
 
     Handles both :class:`MemoryState` and :class:`TNTMemoryState`
@@ -221,7 +223,8 @@ def load_memory_states(
             # _migrate_arrays_to_current raises a clear RuntimeError when
             # no migration path is registered.
             data = _migrate_arrays_to_current(
-                data, from_version=file_version,
+                data,
+                from_version=file_version,
                 current_version=TITANS_SCHEMA_VERSION,
             )
     else:
@@ -343,6 +346,8 @@ def _warn_on_degenerate_states(
             "long-horizon training. Loading this state into inference may "
             "produce degenerate output — consider running without "
             "--memory-state to use the model's learned init weights instead.",
-            source, len(bad), preview, more,
+            source,
+            len(bad),
+            preview,
+            more,
         )
-

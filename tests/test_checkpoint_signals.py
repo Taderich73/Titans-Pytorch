@@ -25,8 +25,12 @@ def _make_memory_state(
 ) -> MemoryState:
     """Create a MemoryState with deterministic or random tensors."""
     if fill_value is not None:
-        weights = [torch.full((dim, dim), fill_value, device=device) for _ in range(n_layers)]
-        momentum = [torch.full((dim, dim), fill_value, device=device) for _ in range(n_layers)]
+        weights = [
+            torch.full((dim, dim), fill_value, device=device) for _ in range(n_layers)
+        ]
+        momentum = [
+            torch.full((dim, dim), fill_value, device=device) for _ in range(n_layers)
+        ]
     else:
         torch.manual_seed(42)
         weights = [torch.randn(dim, dim, device=device) for _ in range(n_layers)]
@@ -44,7 +48,8 @@ def _make_tnt_state(
     """Create a TNTMemoryState with deterministic or random tensors."""
     global_state = _make_memory_state(n_layers, dim, device, fill_value=fill_value)
     local_states = [
-        _make_memory_state(n_layers, dim, device, fill_value=fill_value) for _ in range(n_local)
+        _make_memory_state(n_layers, dim, device, fill_value=fill_value)
+        for _ in range(n_local)
     ]
     return TNTMemoryState(
         global_state=global_state,
@@ -279,7 +284,10 @@ class TestComputeNorms:
 
     def test_multi_layer_norms_length(self, device: torch.device) -> None:
         """Returns one norm per layer."""
-        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import (
+            compute_weight_norms,
+            compute_momentum_norms,
+        )
 
         n_layers = 4
         state = _make_memory_state(n_layers, 8, device)
@@ -315,7 +323,10 @@ class TestComputeNorms:
 
     def test_norms_are_non_negative(self, device: torch.device) -> None:
         """Frobenius norms are always non-negative."""
-        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import (
+            compute_weight_norms,
+            compute_momentum_norms,
+        )
 
         state = _make_memory_state(3, 8, device)
         for norm in compute_weight_norms(state) + compute_momentum_norms(state):
@@ -323,7 +334,10 @@ class TestComputeNorms:
 
     def test_return_type_is_list_of_float(self, device: torch.device) -> None:
         """Return values are lists of Python floats."""
-        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import (
+            compute_weight_norms,
+            compute_momentum_norms,
+        )
 
         state = _make_memory_state(2, 4, device)
         assert all(isinstance(v, float) for v in compute_weight_norms(state))
@@ -391,7 +405,9 @@ class TestBuildSignalFrame:
         assert len(frame.gate_theta_means) == n_layers
         assert len(frame.gate_eta_means) == n_layers
 
-    def test_weight_delta_nonzero_when_states_differ(self, device: torch.device) -> None:
+    def test_weight_delta_nonzero_when_states_differ(
+        self, device: torch.device
+    ) -> None:
         """weight_delta_norms > 0 when old and new states differ."""
         from titans.checkpointing.signals import build_signal_frame
 
@@ -402,7 +418,9 @@ class TestBuildSignalFrame:
         frame = build_signal_frame(old_state, new_state, gates, chunk_index=0)
         assert frame.weight_delta_norms[0] > 0.0
 
-    def test_prediction_error_norms_default_to_zeros(self, device: torch.device) -> None:
+    def test_prediction_error_norms_default_to_zeros(
+        self, device: torch.device
+    ) -> None:
         """prediction_error_norms defaults to a list of zeros."""
         from titans.checkpointing.signals import build_signal_frame
 
@@ -422,7 +440,9 @@ class TestBuildSignalFrame:
 
         assert frame.gradient_norms == [0.0, 0.0]
 
-    def test_optional_prediction_error_norms_accepted(self, device: torch.device) -> None:
+    def test_optional_prediction_error_norms_accepted(
+        self, device: torch.device
+    ) -> None:
         """Passing prediction_error_norms stores them in the frame."""
         from titans.checkpointing.signals import build_signal_frame
 
@@ -452,7 +472,9 @@ class TestBuildSignalFrame:
 
         state = _make_memory_state(1, 4, device)
         gates = _make_gate_snapshot(1, device)
-        frame = build_signal_frame(state, state, gates, chunk_index=0, batch_variance=0.042)
+        frame = build_signal_frame(
+            state, state, gates, chunk_index=0, batch_variance=0.042
+        )
 
         assert frame.batch_variance == pytest.approx(0.042)
 
@@ -474,7 +496,9 @@ class TestBuildSignalFrame:
         gates = _make_gate_snapshot(2, device)
         frame = build_signal_frame(state, state, gates, chunk_index=0)
 
-        for val in frame.gate_alpha_means + frame.gate_theta_means + frame.gate_eta_means:
+        for val in (
+            frame.gate_alpha_means + frame.gate_theta_means + frame.gate_eta_means
+        ):
             assert isinstance(val, float)
 
     def test_tnt_state_populates_tnt_fields(self, device: torch.device) -> None:
@@ -639,7 +663,9 @@ def test_build_signal_frame_numeric_parity_after_batching() -> None:
     )
     frame = build_signal_frame(old, new, gates, chunk_index=0)
 
-    assert frame.weight_delta_norms == pytest.approx(compute_weight_delta(old, new), rel=1e-6)
+    assert frame.weight_delta_norms == pytest.approx(
+        compute_weight_delta(old, new), rel=1e-6
+    )
     assert frame.momentum_shift_norms == pytest.approx(
         compute_momentum_shift(old, new), rel=1e-6
     )
@@ -703,6 +729,7 @@ def test_build_signal_frame_tnt_parity_and_batching(monkeypatch) -> None:
 def test_memory_checkpointer_docstring_lists_three_states() -> None:
     """The module docstring must not reference the removed TRIGGERED state."""
     import pathlib
+
     src = pathlib.Path("src/titans/memory_checkpointer.py").read_text()
     # Isolate the module docstring (first triple-quoted block).
     head = src.split('"""', 2)[1]

@@ -49,7 +49,9 @@ _SCHEMA_VERSION_KEY: str = "titans_schema_version"
 # a whole-checkpoint breaking change lands, register ``(from, to)`` here
 # AND add a row to ``MIGRATIONS.md``. Unversioned files take a separate
 # legacy codepath (see ``_check_schema_version``).
-_CHECKPOINT_MIGRATIONS: dict[tuple[int, int], Callable[[dict[str, Any]], dict[str, Any]]] = {}
+_CHECKPOINT_MIGRATIONS: dict[
+    tuple[int, int], Callable[[dict[str, Any]], dict[str, Any]]
+] = {}
 
 
 def _migrate_payload_to_current(
@@ -94,6 +96,7 @@ def _inject_schema_version(metadata: dict[str, Any] | None) -> dict[str, Any]:
     merged.setdefault(_SCHEMA_VERSION_KEY, TITANS_SCHEMA_VERSION)
     return merged
 
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -122,7 +125,9 @@ def _save_pt(
     try:
         torch.save(payload, tmp_path)
         os.replace(tmp_path, pt_path)
-    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+    except (
+        BaseException
+    ):  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
         # Clean up partial tmp file so subsequent runs don't stumble on it.
         try:
             if tmp_path.exists():
@@ -198,7 +203,9 @@ def _save_safetensors(
     try:
         save_file(prepared, sf_tmp)
         os.replace(sf_tmp, sf_path)
-    except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+    except (
+        BaseException
+    ):  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
         # Clean up partial tmp file so subsequent runs don't stumble on it.
         try:
             if sf_tmp.exists():
@@ -218,7 +225,9 @@ def _save_safetensors(
         try:
             torch.save(metadata_with_version, sidecar_tmp)
             os.replace(sidecar_tmp, sidecar)
-        except BaseException:  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
+        except (
+            BaseException
+        ):  # includes KeyboardInterrupt/SystemExit — we want cleanup on any exit
             # Clean up partial tmp file so subsequent runs don't stumble on it.
             try:
                 if sidecar_tmp.exists():
@@ -273,8 +282,7 @@ def save_checkpoint(
         return _save_safetensors(state_dict, path, metadata)
     else:
         raise ValueError(
-            f"Unsupported checkpoint format {format!r}. "
-            "Must be 'pt' or 'safetensors'."
+            f"Unsupported checkpoint format {format!r}. Must be 'pt' or 'safetensors'."
         )
 
 
@@ -374,8 +382,7 @@ def load_checkpoint(
             _check_schema_version(result, pt_path)
             return result
         raise FileNotFoundError(
-            f"No checkpoint found at {path} "
-            f"(tried {sf_path} and {pt_path})"
+            f"No checkpoint found at {path} (tried {sf_path} and {pt_path})"
         )
 
 

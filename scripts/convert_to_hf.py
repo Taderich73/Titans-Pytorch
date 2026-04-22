@@ -91,10 +91,14 @@ def main(argv: list[str] | None = None) -> int:
 
     new_argv: list[str] = [
         legacy.checkpoint,
-        "--to", "hf",
-        "--output-dir", legacy.output_dir,
-        "--model-type", legacy.model_type,
-        "--torch-dtype", legacy.torch_dtype,
+        "--to",
+        "hf",
+        "--output-dir",
+        legacy.output_dir,
+        "--model-type",
+        legacy.model_type,
+        "--torch-dtype",
+        legacy.torch_dtype,
     ]
     if legacy.tokenizer is not None:
         new_argv.extend(["--tokenizer", legacy.tokenizer])

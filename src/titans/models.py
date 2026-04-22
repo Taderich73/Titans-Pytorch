@@ -185,8 +185,7 @@ def process_chunk(
     completed_blocks: list[torch.Tensor] = [chunk]  # b_0 = embedding
     partial_block: torch.Tensor | None = None
     warmup = (
-        config.attnres_warmup_steps > 0
-        and _step_count < config.attnres_warmup_steps
+        config.attnres_warmup_steps > 0 and _step_count < config.attnres_warmup_steps
     )
 
     # Track whether each block's state has been produced yet (core_forward
@@ -295,6 +294,7 @@ class BaseTitansBlock(nn.Module):
         x = x + ffn_out
         return x, new_state
 
+
 class _SlidingWindowBlock(BaseTitansBlock):
     """Shared base for MAG/MAL: sliding-window attention + adaptive window.
 
@@ -311,9 +311,7 @@ class _SlidingWindowBlock(BaseTitansBlock):
 
             self.window_predictor = AdaptiveWindowPredictor(config)
 
-    def _predict_adaptive_mask(
-        self, normed: torch.Tensor
-    ) -> torch.Tensor | None:
+    def _predict_adaptive_mask(self, normed: torch.Tensor) -> torch.Tensor | None:
         if hasattr(self, "window_predictor"):
             mask, self._last_falloff_centers = self.window_predictor(normed)
             return mask
@@ -326,7 +324,9 @@ class _SlidingWindowBlock(BaseTitansBlock):
     ) -> torch.Tensor:
         """Run SW-Attn with the adaptive window mask and optional dropout."""
         adaptive_mask = self._predict_adaptive_mask(normed)
-        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
+        attn_out = self.attention(
+            normed, prefix=persistent, adaptive_mask=adaptive_mask
+        )
         if self.dropout is not None:
             attn_out = self.dropout(attn_out)
         return attn_out

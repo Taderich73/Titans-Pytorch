@@ -52,7 +52,9 @@ class TriggerDecision:
 
 
 # Convenient default for a non-trigger result.
-_NO_TRIGGER = TriggerDecision(triggered=False, reason="", confidence=0.0, signal_source="")
+_NO_TRIGGER = TriggerDecision(
+    triggered=False, reason="", confidence=0.0, signal_source=""
+)
 
 _AVAILABILITY_EPS: float = 1e-8
 
@@ -541,7 +543,9 @@ class StatisticalNoveltyDetector:
                 ]
                 self._raw_history[name] = deque(maxlen=self.window_size)
 
-    def _evaluate_signal(self, signal_name: str, values: list[float]) -> TriggerDecision:
+    def _evaluate_signal(
+        self, signal_name: str, values: list[float]
+    ) -> TriggerDecision:
         """Run spike + drop detection on a chosen signal.
 
         When ``per_layer=True`` evaluates each layer independently; a single

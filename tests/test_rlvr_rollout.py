@@ -42,9 +42,7 @@ def _tiny_mac(chunk_size: int = 8) -> TitansMAC:
     return TitansMAC(cfg)
 
 
-def _full_prefix_forward(
-    model: TitansMAC, tokens: torch.Tensor
-) -> torch.Tensor:
+def _full_prefix_forward(model: TitansMAC, tokens: torch.Tensor) -> torch.Tensor:
     """Re-chunk ``tokens`` and forward through the model from scratch.
 
     Models enforce single-chunk forward at the nn.Module level; this helper
@@ -119,7 +117,10 @@ def _naive_rollout(
         pad_len = max_len - s.shape[-1]
         if pad_len > 0:
             pad = torch.full(
-                (batch_size, pad_len), pad_token_id, dtype=torch.long, device=device,
+                (batch_size, pad_len),
+                pad_token_id,
+                dtype=torch.long,
+                device=device,
             )
             s = torch.cat([s, pad], dim=-1)
         padded.append(s)
@@ -143,14 +144,16 @@ def test_rollout_samples_matches_naive_short_chunk_aligned() -> None:
 
     torch.manual_seed(42)
     seqs_naive, logps_naive = _naive_rollout(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=max_new_tokens,
         num_samples=num_samples,
         temperature=1.0,
     )
     torch.manual_seed(42)
     seqs_fast, logps_fast = rollout_samples(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=max_new_tokens,
         num_samples=num_samples,
         temperature=1.0,
@@ -172,14 +175,16 @@ def test_rollout_samples_matches_naive_partial_tail() -> None:
 
     torch.manual_seed(7)
     seqs_naive, logps_naive = _naive_rollout(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=max_new_tokens,
         num_samples=num_samples,
         temperature=1.0,
     )
     torch.manual_seed(7)
     seqs_fast, logps_fast = rollout_samples(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=max_new_tokens,
         num_samples=num_samples,
         temperature=1.0,
@@ -198,14 +203,16 @@ def test_generate_rollouts_delegates_to_helper() -> None:
 
     torch.manual_seed(3)
     a_seqs, a_logps = generate_rollouts(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=4,
         num_samples=2,
         temperature=1.0,
     )
     torch.manual_seed(3)
     b_seqs, b_logps = rollout_samples(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=4,
         num_samples=2,
         temperature=1.0,
@@ -228,7 +235,8 @@ def test_rollout_samples_eos_stops_generation() -> None:
     eos = 0
     torch.manual_seed(1)
     seqs, logps = rollout_samples(
-        model, prompt,
+        model,
+        prompt,
         max_new_tokens=8,
         num_samples=2,
         temperature=1.0,

@@ -144,9 +144,7 @@ def _reset_dynamo() -> None:
     _MATRIX,
     ids=lambda v: v if isinstance(v, str) else "+".join(sorted(v)) or "baseline",
 )
-def test_variant_compiles_fullgraph(
-    variant: str, overrides: dict[str, bool]
-) -> None:
+def test_variant_compiles_fullgraph(variant: str, overrides: dict[str, bool]) -> None:
     """Each sampled (variant, feature) combo must lower without graph breaks.
 
     ``torch.compile(fullgraph=True)`` raises ``torch._dynamo.exc.Unsupported``

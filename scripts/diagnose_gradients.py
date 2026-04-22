@@ -33,6 +33,7 @@ from titans.memory import MemoryState
 # Parameter classification
 # ---------------------------------------------------------------------------
 
+
 def classify_param(name: str) -> str:
     """Classify a named parameter into a diagnostic group.
 
@@ -98,6 +99,7 @@ def classify_param(name: str) -> str:
 # Diagnostics collection
 # ---------------------------------------------------------------------------
 
+
 def _collect_memory_gate_values(model: torch.nn.Module) -> dict[str, list[float]]:
     """Extract gate parameter values (alpha/theta/eta) from memory modules.
 
@@ -120,7 +122,9 @@ def _collect_memory_gate_values(model: torch.nn.Module) -> dict[str, list[float]
             gate_values["alpha/decay"].append(float(param.data.mean().item()))
         elif any(key in leaf for key in ("theta", "lr", "gate_theta", "gate_lr")):
             gate_values["theta/lr"].append(float(param.data.mean().item()))
-        elif any(key in leaf for key in ("eta", "momentum", "gate_eta", "gate_momentum")):
+        elif any(
+            key in leaf for key in ("eta", "momentum", "gate_eta", "gate_momentum")
+        ):
             gate_values["eta/momentum"].append(float(param.data.mean().item()))
 
     return dict(gate_values)
@@ -191,7 +195,9 @@ def diagnose(
         "lmm": TitansLMM,
     }
     if model_type not in model_cls_map:
-        raise ValueError(f"Unknown model_type: {model_type!r}. Choose from {list(model_cls_map)}")
+        raise ValueError(
+            f"Unknown model_type: {model_type!r}. Choose from {list(model_cls_map)}"
+        )
 
     model_cls = model_cls_map[model_type]
     model = model_cls(config)
@@ -211,8 +217,12 @@ def diagnose(
     final_states: list[MemoryState] | None = None
 
     for step in range(num_steps):
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
-        labels = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+        input_ids = torch.randint(
+            0, config.vocab_size, (batch_size, seq_len), device=device
+        )
+        labels = torch.randint(
+            0, config.vocab_size, (batch_size, seq_len), device=device
+        )
 
         model.zero_grad()
         logits, states, _ = model(input_ids)
@@ -237,21 +247,21 @@ def diagnose(
             total_nan += nan_count
 
             group = classify_param(name)
-            group_grad_sq[group] += float((grad_f32 ** 2).sum().item())
+            group_grad_sq[group] += float((grad_f32**2).sum().item())
             group_param_count[group] += param.grad.numel()
 
-        group_grad_norms = {
-            g: float(sq ** 0.5) for g, sq in group_grad_sq.items()
-        }
+        group_grad_norms = {g: float(sq**0.5) for g, sq in group_grad_sq.items()}
 
-        step_records.append({
-            "step": step,
-            "loss": float(loss.item()),
-            "grad_norms_by_group": group_grad_norms,
-            "total_grad_norm": float(sum(group_grad_sq.values()) ** 0.5),
-            "nan_grads": total_nan,
-            "param_counts": dict(group_param_count),
-        })
+        step_records.append(
+            {
+                "step": step,
+                "loss": float(loss.item()),
+                "grad_norms_by_group": group_grad_norms,
+                "total_grad_norm": float(sum(group_grad_sq.values()) ** 0.5),
+                "nan_grads": total_nan,
+                "param_counts": dict(group_param_count),
+            }
+        )
 
         # Keep final states for memory inspection
         if states is not None:
@@ -264,7 +274,11 @@ def diagnose(
             continue
         group = classify_param(name)
         if group not in changes_by_group:
-            changes_by_group[group] = {"max_change": 0.0, "total_params": 0, "changed_params": 0}
+            changes_by_group[group] = {
+                "max_change": 0.0,
+                "total_params": 0,
+                "changed_params": 0,
+            }
 
         delta = (param.data.float() - initial_params[name].float()).abs()
         max_change = float(delta.max().item())
@@ -306,6 +320,7 @@ def diagnose(
 # ---------------------------------------------------------------------------
 # Table formatting
 # ---------------------------------------------------------------------------
+
 
 def format_table(diagnostics: dict) -> str:
     """Render diagnostics as a formatted plaintext table.
@@ -373,8 +388,7 @@ def format_table(diagnostics: dict) -> str:
             total = info["total_params"]
             status = "UPDATED" if max_c > 0 else "FROZEN"
             lines.append(
-                f"{group:30s}  {max_c:>12.6e}  "
-                f"{changed:>10,}/{total:>10,}  {status}"
+                f"{group:30s}  {max_c:>12.6e}  {changed:>10,}/{total:>10,}  {status}"
             )
         lines.append("")
 
@@ -397,7 +411,9 @@ def format_table(diagnostics: dict) -> str:
         for gate_name, values in sorted(gates.items()):
             mean_val = sum(values) / len(values) if values else float("nan")
             per_block = "  ".join(f"{v:.4f}" for v in values)
-            lines.append(f"  {gate_name:20s}: mean={mean_val:.4f}  per-block=[{per_block}]")
+            lines.append(
+                f"  {gate_name:20s}: mean={mean_val:.4f}  per-block=[{per_block}]"
+            )
         lines.append("")
 
     lines.append("=" * 75)
@@ -407,6 +423,7 @@ def format_table(diagnostics: dict) -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -424,17 +441,27 @@ def main() -> None:
 
     # Architecture dimensions
     parser.add_argument("--dim", type=int, default=64, help="Model dimension.")
-    parser.add_argument("--num-layers", type=int, default=2, help="Number of transformer blocks.")
-    parser.add_argument("--num-heads", type=int, default=4, help="Number of attention heads.")
+    parser.add_argument(
+        "--num-layers", type=int, default=2, help="Number of transformer blocks."
+    )
+    parser.add_argument(
+        "--num-heads", type=int, default=4, help="Number of attention heads."
+    )
     parser.add_argument("--vocab-size", type=int, default=1024, help="Vocabulary size.")
     parser.add_argument(
         "--num-memory-layers", type=int, default=2, help="Layers inside NeuralLTM MLP."
     )
 
     # Architecture flags
-    parser.add_argument("--use-tnt", action="store_true", help="Enable TNT hierarchical memory.")
-    parser.add_argument("--use-attn-res", action="store_true", help="Enable AttnRes gating.")
-    parser.add_argument("--use-mca", action="store_true", help="Enable Memory Cross-Attention.")
+    parser.add_argument(
+        "--use-tnt", action="store_true", help="Enable TNT hierarchical memory."
+    )
+    parser.add_argument(
+        "--use-attn-res", action="store_true", help="Enable AttnRes gating."
+    )
+    parser.add_argument(
+        "--use-mca", action="store_true", help="Enable Memory Cross-Attention."
+    )
     parser.add_argument(
         "--memory-objective",
         choices=["l2", "huber"],
@@ -442,12 +469,16 @@ def main() -> None:
         help="Memory loss objective.",
     )
     parser.add_argument(
-        "--rope-proportion", type=float, default=1.0,
+        "--rope-proportion",
+        type=float,
+        default=1.0,
         help="Fraction of head_dim pairs to apply RoPE to (0.0-1.0, default 1.0)",
     )
 
     # Diagnostic parameters
-    parser.add_argument("--num-steps", type=int, default=5, help="Number of synthetic steps.")
+    parser.add_argument(
+        "--num-steps", type=int, default=5, help="Number of synthetic steps."
+    )
     parser.add_argument("--seq-len", type=int, default=128, help="Sequence length.")
     parser.add_argument("--batch-size", type=int, default=2, help="Batch size.")
 

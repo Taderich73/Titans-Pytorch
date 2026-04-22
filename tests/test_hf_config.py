@@ -44,7 +44,9 @@ class TestTitansMACConfig:
 
     def test_from_titans_config(self):
         """Creates HF config from native TitansConfig."""
-        titans_config = TitansConfig(dim=128, num_heads=2, num_layers=4, vocab_size=1000)
+        titans_config = TitansConfig(
+            dim=128, num_heads=2, num_layers=4, vocab_size=1000
+        )
         hf_config = TitansMACConfig.from_titans_config(titans_config)
         assert hf_config.dim == 128
         assert hf_config.num_heads == 2
@@ -54,9 +56,16 @@ class TestTitansMACConfig:
     def test_roundtrip_titans_config(self):
         """TitansConfig -> HF -> TitansConfig preserves all fields."""
         original = TitansConfig(
-            dim=512, num_heads=8, num_layers=12, vocab_size=32000,
-            chunk_size=256, use_tnt=True, use_attn_res=True, use_mca=True,
-            memory_objective="huber", adaptive_window=True,
+            dim=512,
+            num_heads=8,
+            num_layers=12,
+            vocab_size=32000,
+            chunk_size=256,
+            use_tnt=True,
+            use_attn_res=True,
+            use_mca=True,
+            memory_objective="huber",
+            adaptive_window=True,
         )
         hf_config = TitansMACConfig.from_titans_config(original)
         restored = hf_config.to_titans_config()
@@ -159,8 +168,10 @@ def test_safe_register_passes_exist_ok_true():
 
     mock_cfg = MagicMock()
     mock_model = MagicMock()
-    with patch("transformers.AutoConfig.register", mock_cfg), \
-         patch("transformers.AutoModelForCausalLM.register", mock_model):
+    with (
+        patch("transformers.AutoConfig.register", mock_cfg),
+        patch("transformers.AutoModelForCausalLM.register", mock_model),
+    ):
         _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
 
     mock_cfg.assert_called_once_with("titans-mac", TitansMACConfig, exist_ok=True)

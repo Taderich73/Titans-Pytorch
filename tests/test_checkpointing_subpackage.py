@@ -41,11 +41,12 @@ def test_importing_titans_does_not_load_checkpointing() -> None:
         "titans.checkpoint_signals",
         "titans.checkpoint_types",
     )
-    offenders = [line for line in trace.splitlines() if any(f in line for f in forbidden)]
+    offenders = [
+        line for line in trace.splitlines() if any(f in line for f in forbidden)
+    ]
     assert not offenders, (
         "import titans must not eagerly load the auto-checkpointing stack, "
-        f"but these lines appeared in the importtime trace:\n"
-        + "\n".join(offenders)
+        f"but these lines appeared in the importtime trace:\n" + "\n".join(offenders)
     )
 
 

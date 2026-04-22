@@ -4,6 +4,7 @@ Training and inference scripts iterate `[s.detach() for s in memory_states]`
 at chunk boundaries; if any layer returns None (configurable), the unguarded
 version crashes with AttributeError.
 """
+
 from __future__ import annotations
 
 import torch
@@ -71,8 +72,7 @@ def test_all_training_scripts_use_guarded_pattern():
     for p in targets:
         txt = p.read_text()
         assert not unguarded_pat.search(txt), (
-            f"{p} contains an unguarded detach comprehension — add "
-            f"'if s is not None'"
+            f"{p} contains an unguarded detach comprehension — add 'if s is not None'"
         )
         # Either the file inlines the guarded pattern, or it delegates to
         # chunked_forward (which owns the canonical guarded form).

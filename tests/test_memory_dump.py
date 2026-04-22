@@ -90,9 +90,7 @@ def test_load_memory_states_preserves_qk_projections_by_default(tmp_path):
     # Explicit reset_for_inference=True still resets (inference callers).
     loaded_reset = load_memory_states(path, reset_for_inference=True)
     assert loaded_reset[0].local_step_counters == [0]
-    assert torch.allclose(
-        loaded_reset[0].qk_projections[0], torch.zeros_like(qk)
-    )
+    assert torch.allclose(loaded_reset[0].qk_projections[0], torch.zeros_like(qk))
 
 
 def test_load_memory_states_ignores_legacy_local_inits_key(tmp_path):

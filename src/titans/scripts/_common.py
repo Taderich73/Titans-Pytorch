@@ -81,9 +81,7 @@ def chunked_forward(
     for chunk_ids in id_chunks:
         logits, states, _ = model(chunk_ids, states=states)
         if detach_between and states is not None:
-            states = [
-                s.detach() if s is not None else None for s in states
-            ]
+            states = [s.detach() if s is not None else None for s in states]
         yield logits, chunk_ids, states
 
 
@@ -246,6 +244,7 @@ def format_chatml(messages: list[dict[str, str]]) -> str:
         parts.append(f"{CHATML_IM_START}{role}\n{content}{CHATML_IM_END}\n")
     return "".join(parts)
 
+
 # ---------------------------------------------------------------------------
 # Loss-mask helpers
 # ---------------------------------------------------------------------------
@@ -346,7 +345,9 @@ def tokenize_chat(
 
     if use_native_template:
         full_ids: list[int] = tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=False,
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
         )
 
         assistant_spans: list[tuple[int, int]] = []
@@ -359,15 +360,20 @@ def tokenize_chat(
                 prefix_turns = messages[:i]
                 if prefix_turns:
                     prefix_ids = tokenizer.apply_chat_template(
-                        prefix_turns, tokenize=True, add_generation_prompt=True,
+                        prefix_turns,
+                        tokenize=True,
+                        add_generation_prompt=True,
                     )
                 else:
                     prefix_ids = tokenizer.encode(
-                        f"{CHATML_IM_START}assistant\n", add_special_tokens=False,
+                        f"{CHATML_IM_START}assistant\n",
+                        add_special_tokens=False,
                     )
                 content_start = len(prefix_ids)
                 through_ids = tokenizer.apply_chat_template(
-                    messages[: i + 1], tokenize=True, add_generation_prompt=False,
+                    messages[: i + 1],
+                    tokenize=True,
+                    add_generation_prompt=False,
                 )
                 content_end = len(through_ids)
                 if content_end < len(full_ids):
@@ -591,8 +597,11 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
 
     arch = parser.add_argument_group("Model architecture")
     arch.add_argument(
-        "--model", type=str, default="mac",
-        choices=["mac", "mag", "mal", "lmm"], help="Titans model variant",
+        "--model",
+        type=str,
+        default="mac",
+        choices=["mac", "mag", "mal", "lmm"],
+        help="Titans model variant",
     )
     arch.add_argument("--dim", type=int, default=512)
     arch.add_argument("--num-heads", type=int, default=8)
@@ -604,7 +613,10 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     arch.add_argument("--num-persistent-tokens", type=int, default=16)
     arch.add_argument("--num-memory-layers", type=int, default=2)
     arch.add_argument(
-        "--memory-objective", type=str, default="l2", choices=["l2", "huber"],
+        "--memory-objective",
+        type=str,
+        default="l2",
+        choices=["l2", "huber"],
     )
     arch.add_argument("--huber-delta-init", type=float, default=0.0)
     arch.add_argument("--dropout", type=float, default=0.0)
@@ -614,13 +626,20 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     tnt.add_argument("--use-tnt", action="store_true")
     tnt.add_argument("--global-chunk-size", type=int, default=2048)
     tnt.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16], metavar="N",
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
+        metavar="N",
     )
     tnt.add_argument("--local-shard-length", type=int, default=2048)
     tnt.add_argument("--use-qk-projection", action="store_true", default=True)
     tnt.add_argument("--tnt-stage", type=int, default=1)
     tnt.add_argument(
-        "--finetune-local-chunk-sizes", type=int, nargs="+", default=None,
+        "--finetune-local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=None,
         metavar="N",
     )
 
@@ -629,11 +648,14 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     attn.add_argument("--num-attnres-blocks", type=int, default=8)
     attn.add_argument("--attnres-warmup-steps", type=int, default=0)
     attn.add_argument(
-        "--attnres-modulate-global-memory", action="store_true", default=True,
+        "--attnres-modulate-global-memory",
+        action="store_true",
+        default=True,
     )
     attn.add_argument(
         "--no-attnres-modulate-global-memory",
-        dest="attnres_modulate_global_memory", action="store_false",
+        dest="attnres_modulate_global_memory",
+        action="store_false",
     )
     attn.add_argument("--attnres-modulate-local-memory", action="store_true")
 
@@ -647,7 +669,11 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     mca = parser.add_argument_group("Multi-context attention (MCA)")
     mca.add_argument("--use-mca", action="store_true")
     mca.add_argument(
-        "--mca-insertion-layers", type=int, nargs="+", default=None, metavar="N",
+        "--mca-insertion-layers",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="N",
     )
     mca.add_argument("--mca-num-heads", type=int, default=8)
     mca.add_argument("--mca-gate-type", type=str, default="scalar")
@@ -663,20 +689,26 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     train_g.add_argument("--grad-clip", type=float, default=1.0)
     train_g.add_argument("--warmup-ratio", type=float, default=0.03)
     train_g.add_argument(
-        "--mixed-precision", type=str, default="no",
+        "--mixed-precision",
+        type=str,
+        default="no",
         choices=["no", "fp16", "bf16"],
     )
     train_g.add_argument("--num-workers", type=int, default=0)
     train_g.add_argument("--pin-memory", action="store_true", default=False)
     train_g.add_argument(
-        "--persistent-workers", action="store_true", default=False,
+        "--persistent-workers",
+        action="store_true",
+        default=False,
     )
 
     ckpt = parser.add_argument_group("Checkpointing")
     ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/run")
     ckpt.add_argument("--save-every", type=int, default=1000)
     ckpt.add_argument(
-        "--save-format", type=str, default="pt",
+        "--save-format",
+        type=str,
+        default="pt",
         choices=["pt", "safetensors"],
     )
     ckpt.add_argument("--resume", type=str, default=None, metavar="PATH")
@@ -774,6 +806,7 @@ def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
         )
         is_main = accelerator.is_main_process
     else:
+
         class _Stub:
             is_main_process = True
             device = "cpu"
@@ -830,7 +863,8 @@ class CheckpointSetup:
 
 
 def setup_checkpoint_dir(
-    output_dir: str, resume_path: str | None = None,
+    output_dir: str,
+    resume_path: str | None = None,
 ) -> CheckpointSetup:
     """Create the output directory (if missing) and resolve a resume path.
 

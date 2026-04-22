@@ -102,7 +102,9 @@ class MemoryMLP(nn.Module):
         for layer in self.layers:
             nn.init.normal_(layer.weight, std=std)
 
-    def forward_with_weights(self, x: torch.Tensor, weights: list[torch.Tensor]) -> torch.Tensor:
+    def forward_with_weights(
+        self, x: torch.Tensor, weights: list[torch.Tensor]
+    ) -> torch.Tensor:
         h = x
         for i, w in enumerate(weights):
             h = F.linear(h, w)

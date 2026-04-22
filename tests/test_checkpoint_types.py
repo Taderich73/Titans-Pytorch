@@ -15,7 +15,9 @@ from titans.memory import MemoryState, TNTMemoryState
 # ---------------------------------------------------------------------------
 
 
-def _make_tensors(n: int, shape: tuple[int, ...], device: torch.device) -> list[torch.Tensor]:
+def _make_tensors(
+    n: int, shape: tuple[int, ...], device: torch.device
+) -> list[torch.Tensor]:
     return [torch.randn(*shape, device=device) for _ in range(n)]
 
 
@@ -31,7 +33,9 @@ def _make_tnt_memory_state(
 ) -> TNTMemoryState:
     return TNTMemoryState(
         global_state=_make_memory_state(n_layers, dim, device),
-        local_states=[_make_memory_state(n_layers, dim, device) for _ in range(n_local)],
+        local_states=[
+            _make_memory_state(n_layers, dim, device) for _ in range(n_local)
+        ],
         qk_projections=[torch.eye(dim, device=device) for _ in range(n_local)],
         local_step_counters=[0] * n_local,
     )

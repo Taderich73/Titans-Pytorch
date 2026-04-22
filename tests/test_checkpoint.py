@@ -162,9 +162,7 @@ class TestLoadCheckpoint:
         state_dict = {"weight": torch.randn(4, 4)}
         metadata = {"step": 75, "lr": 1e-4}
         stem = tmp_path / "ckpt"
-        save_checkpoint(
-            state_dict, stem, format="safetensors", metadata=metadata
-        )
+        save_checkpoint(state_dict, stem, format="safetensors", metadata=metadata)
 
         result = load_checkpoint(stem.with_suffix(".safetensors"))
 
@@ -221,9 +219,7 @@ class TestLoadCheckpoint:
         result = load_checkpoint(stem)
 
         # Should load safetensors (ones), not pt (zeros)
-        assert torch.equal(
-            result["model"]["weight"], torch.ones(2, 2)
-        )
+        assert torch.equal(result["model"]["weight"], torch.ones(2, 2))
 
     def test_extensionless_falls_back_to_pt(self, tmp_path: Path) -> None:
         """Extensionless path falls back to .pt when no .safetensors exists."""
@@ -261,9 +257,7 @@ class TestRoundTrip:
         metadata = {"step": 999, "config": {"dim": 8}}
         stem = tmp_path / "model"
 
-        written = save_checkpoint(
-            state_dict, stem, format=fmt, metadata=metadata
-        )
+        written = save_checkpoint(state_dict, stem, format=fmt, metadata=metadata)
         result = load_checkpoint(written[0])
 
         assert set(result["model"].keys()) == set(state_dict.keys())
@@ -341,8 +335,7 @@ def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
     # file at the final path is exactly the bug we're fixing. (Pre-fix code
     # wrote straight to pt_path, so it would contain GARBAGE-PARTIAL-BYTES.)
     assert not pt_path.exists(), (
-        f"Final path {pt_path} contains partial file — atomic write "
-        "invariant broken"
+        f"Final path {pt_path} contains partial file — atomic write invariant broken"
     )
     # Post-fix invariant 2: no .pt.tmp file should be left dangling.
     assert not tmp_pt.exists(), (
@@ -375,8 +368,7 @@ def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
 
     # Post-fix invariant 1: the final .safetensors file MUST NOT exist.
     assert not sf_path.exists(), (
-        f"Final path {sf_path} contains partial file — atomic write "
-        "invariant broken"
+        f"Final path {sf_path} contains partial file — atomic write invariant broken"
     )
     # Post-fix invariant 2: no .safetensors.tmp file should be left dangling.
     assert not tmp_sf.exists(), (
@@ -394,19 +386,25 @@ def test_atomic_write_tmp_filenames_are_correct(tmp_path):
     seen_paths: list[str] = []
 
     original_torch_save = torch.save
+
     def spy_torch_save(obj, f, *args, **kwargs):
         seen_paths.append(str(f))
         return original_torch_save(obj, f, *args, **kwargs)
 
     from safetensors import torch as st
+
     original_save_file = st.save_file
+
     def spy_save_file(tensors, filename, *args, **kwargs):
         seen_paths.append(str(filename))
         return original_save_file(tensors, filename, *args, **kwargs)
 
     import unittest.mock as mock
-    with mock.patch.object(torch, "save", spy_torch_save), \
-         mock.patch.object(st, "save_file", spy_save_file):
+
+    with (
+        mock.patch.object(torch, "save", spy_torch_save),
+        mock.patch.object(st, "save_file", spy_save_file),
+    ):
         save_checkpoint({"w": torch.ones(2, 2)}, tmp_path / "ckpt", format="pt")
         save_checkpoint(
             {"w": torch.ones(2, 2)},

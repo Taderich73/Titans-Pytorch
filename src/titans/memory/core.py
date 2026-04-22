@@ -56,19 +56,22 @@ class NeuralLongTermMemory(nn.Module):
         self.use_conv = config.use_conv
         if self.use_conv:
             self.conv_k = nn.Conv1d(
-                config.dim, config.dim,
+                config.dim,
+                config.dim,
                 kernel_size=config.conv_kernel_size,
                 padding=config.conv_kernel_size - 1,
                 groups=config.dim,
             )
             self.conv_v = nn.Conv1d(
-                config.dim, config.dim,
+                config.dim,
+                config.dim,
                 kernel_size=config.conv_kernel_size,
                 padding=config.conv_kernel_size - 1,
                 groups=config.dim,
             )
             self.conv_q = nn.Conv1d(
-                config.dim, config.dim,
+                config.dim,
+                config.dim,
                 kernel_size=config.conv_kernel_size,
                 padding=config.conv_kernel_size - 1,
                 groups=config.dim,
@@ -120,11 +123,17 @@ class NeuralLongTermMemory(nn.Module):
         num_layers = len(weights)
         if num_layers == 1:
             return self._compute_gradients_linear(
-                keys, values, weights[0], delta=delta,
+                keys,
+                values,
+                weights[0],
+                delta=delta,
                 return_pred_error=return_pred_error,
             )
         return self._compute_gradients_deep(
-            keys, values, weights, delta=delta,
+            keys,
+            values,
+            weights,
+            delta=delta,
             return_pred_error=return_pred_error,
         )
 
@@ -143,7 +152,9 @@ class NeuralLongTermMemory(nn.Module):
 
         if self.memory_objective == "huber" and delta is not None:
             abs_error = torch.abs(raw_error)
-            error = torch.where(abs_error <= delta, raw_error, delta * torch.sign(raw_error))
+            error = torch.where(
+                abs_error <= delta, raw_error, delta * torch.sign(raw_error)
+            )
         else:
             error = raw_error
 
@@ -283,7 +294,9 @@ class NeuralLongTermMemory(nn.Module):
         return MemoryState(weights=weights, momentum=momentum)
 
     def _get_effective_weights(
-        self, deltas: list[torch.Tensor], detach_base: bool = False,
+        self,
+        deltas: list[torch.Tensor],
+        detach_base: bool = False,
     ) -> list[torch.Tensor]:
         """Compose effective weights from base + delta.
 
@@ -355,12 +368,14 @@ class NeuralLongTermMemory(nn.Module):
         # L2-normalize Q and K in float32 (V is left untouched)
         q_f32 = q.float()
         k_f32 = k.float()
-        q = (q_f32 / torch.sqrt(
-            torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
-        )).to(q.dtype)
-        k = (k_f32 / torch.sqrt(
-            torch.sum(k_f32 * k_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
-        )).to(k.dtype)
+        q = (
+            q_f32
+            / torch.sqrt(torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + _L2_NORM_EPS)
+        ).to(q.dtype)
+        k = (
+            k_f32
+            / torch.sqrt(torch.sum(k_f32 * k_f32, dim=-1, keepdim=True) + _L2_NORM_EPS)
+        ).to(k.dtype)
 
         # Data-dependent gates — chunk-mean over sequence axis is retained
         # (Titans Revisited endorses chunk-level gates), but the per-sample
@@ -369,26 +384,28 @@ class NeuralLongTermMemory(nn.Module):
         x_mean = torch.mean(x, dim=1, keepdim=True)
         alpha = torch.sigmoid(self.gate_decay_proj(x_mean))
         theta = torch.sigmoid(self.gate_lr_proj(x_mean)) * self.config.memory_lr
-        eta = torch.sigmoid(self.gate_momentum_proj(x_mean)) * self.config.memory_momentum
+        eta = (
+            torch.sigmoid(self.gate_momentum_proj(x_mean)) * self.config.memory_momentum
+        )
 
         delta_val: torch.Tensor | None = None
         if self.memory_objective == "huber":
             # Per-sample delta: shape (B, 1, 1), no batch-mean.
             delta_val = (
-                torch.sigmoid(self.gate_delta_proj(x_mean)) * self.config.memory_error_clip
+                torch.sigmoid(self.gate_delta_proj(x_mean))
+                * self.config.memory_error_clip
             )
 
         gate_snapshot = None
         if self.config.auto_checkpoint:
             from titans.checkpointing import GateSnapshot
+
             gate_snapshot = GateSnapshot(
                 alpha=[alpha.detach()],
                 theta=[theta.detach()],
                 eta=[eta.detach()],
                 delta=(
-                    [delta_val.detach()]
-                    if self.memory_objective == "huber"
-                    else None
+                    [delta_val.detach()] if self.memory_objective == "huber" else None
                 ),
                 input_activation_norm=float(x_mean.detach().float().norm().item()),
                 chunk_index=0,  # Set by caller
@@ -409,7 +426,13 @@ class NeuralLongTermMemory(nn.Module):
                 seq_len = float(x.shape[1])
                 alpha = 1.0 - torch.pow(1.0 - chunk_alpha, 1.0 / seq_len)
             new_state, pred_err = self._parallel_memory_update_linear(
-                k, v, state, alpha, theta, eta, delta=delta_val,
+                k,
+                v,
+                state,
+                alpha,
+                theta,
+                eta,
+                delta=delta_val,
                 return_pred_error=return_signal_frame,
             )
         else:
@@ -426,7 +449,10 @@ class NeuralLongTermMemory(nn.Module):
             if K == 1:
                 # Legacy single-step path (exact backward-compat for K=1).
                 grads, pred_err = self._compute_gradients(
-                    k, v, state.weights, delta=delta_val,
+                    k,
+                    v,
+                    state.weights,
+                    delta=delta_val,
                     return_pred_error=return_signal_frame,
                 )
                 new_momentum = [
@@ -447,9 +473,7 @@ class NeuralLongTermMemory(nn.Module):
                 # gate projections (alpha, theta, eta) receive gradient
                 # from the LM loss via the retained effective-weights path.
                 seq_len = k.shape[1]
-                bounds = [
-                    int(round(seq_len * i / K)) for i in range(K + 1)
-                ]
+                bounds = [int(round(seq_len * i / K)) for i in range(K + 1)]
                 # Rewind the first K-1 updates under no_grad with detached
                 # gates so no autograd graph is retained across steps.
                 prev_w = [w for w in state.weights]
@@ -465,16 +489,15 @@ class NeuralLongTermMemory(nn.Module):
                         k_sub = k[:, lo_i:hi_i, :]
                         v_sub = v[:, lo_i:hi_i, :]
                         grads, _ = self._compute_gradients(
-                            k_sub, v_sub, prev_w, delta=delta_val,
+                            k_sub,
+                            v_sub,
+                            prev_w,
+                            delta=delta_val,
                         )
                         prev_m = [
-                            eta_d * m - theta_d * g
-                            for m, g in zip(prev_m, grads)
+                            eta_d * m - theta_d * g for m, g in zip(prev_m, grads)
                         ]
-                        prev_w = [
-                            (1 - alpha_d) * w + s
-                            for w, s in zip(prev_w, prev_m)
-                        ]
+                        prev_w = [(1 - alpha_d) * w + s for w, s in zip(prev_w, prev_m)]
                 # Final step WITH autograd on the gates.  prev_w / prev_m
                 # carry no graph (detached), but alpha_scalar, theta_scalar,
                 # eta_scalar do — so gate projections receive gradient from
@@ -484,24 +507,24 @@ class NeuralLongTermMemory(nn.Module):
                     k_final = k[:, lo:hi, :]
                     v_final = v[:, lo:hi, :]
                     grads, pred_err = self._compute_gradients(
-                        k_final, v_final, prev_w, delta=delta_val,
+                        k_final,
+                        v_final,
+                        prev_w,
+                        delta=delta_val,
                         return_pred_error=return_signal_frame,
                     )
                     new_momentum = [
-                        eta_scalar * m - theta_scalar * g
-                        for m, g in zip(prev_m, grads)
+                        eta_scalar * m - theta_scalar * g for m, g in zip(prev_m, grads)
                     ]
                     new_weights = [
-                        (1 - alpha_scalar) * w + s
-                        for w, s in zip(prev_w, new_momentum)
+                        (1 - alpha_scalar) * w + s for w, s in zip(prev_w, new_momentum)
                     ]
                 else:
                     # Degenerate final sub-chunk: still route through gates
                     # so their autograd graph is attached to new_state.
                     new_momentum = [eta_scalar * m for m in prev_m]
                     new_weights = [
-                        (1 - alpha_scalar) * w + s
-                        for w, s in zip(prev_w, new_momentum)
+                        (1 - alpha_scalar) * w + s for w, s in zip(prev_w, new_momentum)
                     ]
             new_state = MemoryState(weights=new_weights, momentum=new_momentum)
 
@@ -516,9 +539,7 @@ class NeuralLongTermMemory(nn.Module):
             # Paper Eq. 24 for MAC: retrieve from the INCOMING state
             # (M_{t-1}). Gate projections still receive gradient via the
             # returned new_state through the caller's retain-state flow.
-            effective = self._get_effective_weights(
-                state.weights, detach_base=False
-            )
+            effective = self._get_effective_weights(state.weights, detach_base=False)
         retrieved = self.memory.forward_with_weights(q, effective)
 
         output = self.proj_out(retrieved)
@@ -611,7 +632,9 @@ class NeuralLongTermMemory(nn.Module):
             hub_delta = delta
             if hub_delta is not None:
                 abs_errors = torch.abs(errors)
-                errors = torch.where(abs_errors <= hub_delta, errors, hub_delta * torch.sign(errors))
+                errors = torch.where(
+                    abs_errors <= hub_delta, errors, hub_delta * torch.sign(errors)
+                )
 
         # Per paper §3.1: outer scale is 2/S (absorbed into learnable theta).
         scale = 2.0 / float(S)
@@ -625,7 +648,8 @@ class NeuralLongTermMemory(nn.Module):
         safe_diff = torch.where(
             is_degenerate,
             torch.tensor(1.0, device=keys.device),
-            torch.maximum(abs_diff, torch.tensor(_L2_NORM_EPS, device=keys.device)) * torch.sign(diff),
+            torch.maximum(abs_diff, torch.tensor(_L2_NORM_EPS, device=keys.device))
+            * torch.sign(diff),
         )
 
         # New momentum
@@ -664,7 +688,9 @@ class NeuralLongTermMemory(nn.Module):
 
         new_weights = decay_S * W_0 + c_S0 * S_prev - theta * grad_combined
 
-        return MemoryState(weights=[new_weights], momentum=[new_momentum]), pred_err_norm
+        return MemoryState(
+            weights=[new_weights], momentum=[new_momentum]
+        ), pred_err_norm
 
     def retrieve(self, queries: torch.Tensor, state: MemoryState) -> torch.Tensor:
         q = self.proj_q(queries)
@@ -675,9 +701,10 @@ class NeuralLongTermMemory(nn.Module):
 
         q = F.silu(q)
         q_f32 = q.float()
-        q = (q_f32 / torch.sqrt(
-            torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + _L2_NORM_EPS
-        )).to(q.dtype)
+        q = (
+            q_f32
+            / torch.sqrt(torch.sum(q_f32 * q_f32, dim=-1, keepdim=True) + _L2_NORM_EPS)
+        ).to(q.dtype)
 
         effective = self._get_effective_weights(state.weights, detach_base=False)
         retrieved = self.memory.forward_with_weights(q, effective)
