@@ -21,6 +21,21 @@ to semantic versioning.
   tables (#P2)
 - `py.typed` PEP 561 marker so downstream consumers pick up type hints (#P12)
 - `CHANGELOG.md` (this file) (#P10)
+- `titans.utils.seed_everything(seed, deterministic=False)` and a shared
+  `--deterministic` CLI flag across training scripts; replaces the
+  per-script `torch.manual_seed(...)` calls. `docs/reproducibility.md`
+  documents what is bit-identical at what level. (#P8)
+- `titans.checkpointing` subpackage (auto-checkpointing / novelty detection
+  / signals) with zero-cost lazy loading when `auto_checkpoint=False`. Old
+  top-level modules (`titans.novelty_detector`, `titans.memory_checkpointer`,
+  `titans.checkpoint_signals`, `titans.checkpoint_types`) remain as thin
+  deprecation shims; removed in 0.8. (#P9)
+- `titans.memory` is now a subpackage (`core.py`, `gates.py`, `state.py`,
+  plus `__init__.py` re-exports). Public API unchanged. (#P14)
+- `src/titans/_logging.py` — internal `setup_logging` + `metrics_table`
+  helpers using `rich.logging.RichHandler`. Training scripts now emit
+  structured, level-aware, colored output gated to the main process.
+  Shared `--log-level` flag added. (#P15)
 
 ### Changed
 - `Development Status :: 3 - Alpha` → `Development Status :: 4 - Beta` (#P10)
@@ -49,6 +64,12 @@ to semantic versioning.
 - README quickstart snippet that would have raised on first run (chunk-size
   mismatch, 3-tuple unpack) (#P2)
 - Coverage workflow source discovery for the `src/` layout (#P1)
+
+### Deferred
+
+- **P7 — End-to-end benchmark run.** Requires 24h of A100-class GPU time
+  plus a public WandB run and write-up. Tracked for a follow-up cycle; not
+  in this branch. See `todos/improvement-plan.md` §P7.
 
 ## [0.7.0] - 2026-04-21
 
