@@ -1,8 +1,7 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""
-Neural Long-term Memory Module for Titans (PyTorch Implementation).
+"""Neural Long-term Memory Module for Titans (PyTorch Implementation).
 
 Paper alignment: Titans (Behrouz et al., 2024) + Titans Revisited (2025)
     — Faithful for core update equations; chunk-level gates are a deliberate
@@ -28,134 +27,14 @@ Novel extensions (not in any reference paper):
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from titans.config import TitansConfig
 
-_L2_NORM_EPS: float = 1e-8
-_DEGENERATE_THRESHOLD: float = 1e-6
-
-
-def get_activation(name: str) -> Callable[[torch.Tensor], torch.Tensor]:
-    activations: dict[str, Callable] = {
-        "silu": F.silu,
-        "gelu": F.gelu,
-        "relu": F.relu,
-    }
-    if name not in activations:
-        raise ValueError(f"Unknown activation: {name}")
-    return activations[name]
-
-
-@dataclass
-class MemoryState:
-    """State of the neural long-term memory."""
-
-    weights: list[torch.Tensor]
-    momentum: list[torch.Tensor]
-
-    def detach(self) -> MemoryState:
-        return MemoryState(
-            weights=[w.detach() for w in self.weights],
-            momentum=[m.detach() for m in self.momentum],
-        )
-
-    def clone(self) -> MemoryState:
-        return MemoryState(
-            weights=[w.detach().clone() for w in self.weights],
-            momentum=[m.detach().clone() for m in self.momentum],
-        )
-
-
-@dataclass
-class TNTMemoryState:
-    """State for TNT hierarchical memory system.
-
-    Attributes:
-        global_state: MemoryState for the global memory (V)
-        local_states: List of MemoryState, one per local memory (W^(i))
-        qk_projections: Accumulated Q-K projection matrices (M_t^(i))
-        local_step_counters: Position within shard for each local memory
-    """
-
-    global_state: MemoryState
-    local_states: list[MemoryState]
-    qk_projections: list[torch.Tensor]
-    local_step_counters: list[int]
-
-    def detach(self) -> TNTMemoryState:
-        return TNTMemoryState(
-            global_state=self.global_state.detach(),
-            local_states=[s.detach() for s in self.local_states],
-            qk_projections=[qk.detach() for qk in self.qk_projections],
-            local_step_counters=list(self.local_step_counters),
-        )
-
-    def clone(self) -> TNTMemoryState:
-        return TNTMemoryState(
-            global_state=self.global_state.clone(),
-            local_states=[s.clone() for s in self.local_states],
-            qk_projections=[qk.detach().clone() for qk in self.qk_projections],
-            local_step_counters=list(self.local_step_counters),
-        )
-
-
-class MemoryMLP(nn.Module):
-    """MLP that stores information in its weights."""
-
-    def __init__(self, config: TitansConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.num_layers = config.num_memory_layers
-        self.dim = config.dim
-        self.hidden_dim = config.memory_hidden_dim
-        self.activation = get_activation(config.activation)
-
-        layers: list[nn.Linear] = []
-        if self.num_layers == 1:
-            layers.append(nn.Linear(self.dim, self.dim, bias=False))
-        else:
-            layers.append(nn.Linear(self.dim, self.hidden_dim, bias=False))
-            for _ in range(self.num_layers - 2):
-                layers.append(nn.Linear(self.hidden_dim, self.hidden_dim, bias=False))
-            layers.append(nn.Linear(self.hidden_dim, self.dim, bias=False))
-
-        self.layers = nn.ModuleList(layers)
-        self._init_weights(config.init_std)
-
-        self._layer_shapes = [tuple(layer.weight.shape) for layer in self.layers]
-        self._ref_dtype = self.layers[0].weight.dtype
-
-    def _init_weights(self, std: float) -> None:
-        for layer in self.layers:
-            nn.init.normal_(layer.weight, std=std)
-
-    def forward_with_weights(self, x: torch.Tensor, weights: list[torch.Tensor]) -> torch.Tensor:
-        h = x
-        for i, w in enumerate(weights):
-            h = F.linear(h, w)
-            if i < len(weights) - 1:
-                h = self.activation(h)
-        return h
-
-    def get_weights(self) -> list[torch.Tensor]:
-        return [layer.weight.data.clone() for layer in self.layers]
-
-    def zero_weights_like(self, device: torch.device) -> list[torch.Tensor]:
-        """Return zero-initialized tensors matching each layer's weight shape."""
-        return [
-            torch.zeros(shape, dtype=self._ref_dtype, device=device)
-            for shape in self._layer_shapes
-        ]
-
-    def get_base_weights(self) -> list[torch.Tensor]:
-        """Return live weight parameter references (with autograd graph)."""
-        return [layer.weight for layer in self.layers]
+from .gates import _DEGENERATE_THRESHOLD, _L2_NORM_EPS, MemoryMLP
+from .state import MemoryState
 
 
 class NeuralLongTermMemory(nn.Module):
