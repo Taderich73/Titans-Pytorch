@@ -54,17 +54,19 @@ config = TitansConfig(
 )
 model = TitansMAC(config)
 
-input_ids = torch.randint(0, config.vocab_size, (2, 1024))
-logits, states = model(input_ids)
+# seq_len must be <= chunk_size; split longer inputs and call per chunk.
+input_ids = torch.randint(0, config.vocab_size, (2, 512))
+logits, states, _ = model(input_ids)  # third return is gate snapshots
 
 # Memory threads across calls — keep `states` to continue the same session
 input_ids_next = torch.randint(0, config.vocab_size, (2, 512))
-logits_next, states = model(input_ids_next, states=states)
+logits_next, states, _ = model(input_ids_next, states=states)
 ```
 
 Other block variants (`TitansMAG`, `TitansMAL`, `TitansLMM`) share the same
-constructor and forward signature. For chat/inference-time memory dumps,
-HuggingFace interop, and training scripts, see the documentation links below.
+constructor and forward signature. HuggingFace integration currently supports
+MAC only. For chat/inference-time memory dumps, HuggingFace interop, and
+training scripts, see the documentation links below.
 
 ## Feature Matrix
 
@@ -82,7 +84,7 @@ All flags are independent and compose with any block type (unless noted).
 | Memory state persistence | `save_memory_states` / `load_memory_states` | Stable | [memory_persistence.md](docs/memory_persistence.md) |
 | Memory auto-checkpointing | `auto_checkpoint=True` | Experimental | [memory_auto_checkpointing.md](docs/memory_auto_checkpointing.md) |
 | HuggingFace integration | `from titans.hf import ...` | Stable (MAC only) | [huggingface_integration.md](docs/huggingface_integration.md) |
-| LoRA / SFT / DPO / RLVR scripts | `scripts/{lora,sft,dpo,rlvr}.py` | Stable | [configuration_guide.md](docs/configuration_guide.md) |
+| LoRA / SFT / DPO / RLVR scripts | `scripts/{lora,sft,dpo,rlvr}.py` | Stable | [Training and Inference Scripts](#training-and-inference-scripts) |
 
 ## Documentation
 
