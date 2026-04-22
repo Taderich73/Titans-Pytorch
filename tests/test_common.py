@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import sys
 
 import pytest
 import torch
 
+from tests._subprocess_helpers import subprocess_python
 from titans import TitansConfig
 from titans.scripts import (
     CHATML_IM_END,
@@ -622,7 +622,7 @@ class TestDPOMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/dpo.py", "--help"],
+            [*subprocess_python(), "scripts/dpo.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -642,7 +642,7 @@ class TestRLVRMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/rlvr.py", "--help"],
+            [*subprocess_python(), "scripts/rlvr.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -663,7 +663,7 @@ class TestPretrainMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/pretrain.py", "--help"],
+            [*subprocess_python(), "scripts/pretrain.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -692,7 +692,7 @@ class TestInferenceMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/inference.py", "--help"],
+            [*subprocess_python(), "scripts/inference.py", "--help"],
             capture_output=True,
             timeout=30,
         )

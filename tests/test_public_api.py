@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib
 import pathlib
 import subprocess
-import sys
 import textwrap
 import tomllib
 import warnings
@@ -20,6 +19,7 @@ from typing import Any
 import pytest
 
 import titans
+from tests._subprocess_helpers import subprocess_python
 from titans import _DEPRECATED_EXPORTS
 
 # The exact stable surface for the 0.7.x line. Changing this set is a
@@ -221,7 +221,7 @@ class TestDeprecationShims:
             """
         )
         result = subprocess.run(
-            [sys.executable, "-c", code],
+            [*subprocess_python(), "-c", code],
             capture_output=True,
             text=True,
         )
@@ -254,7 +254,7 @@ class TestDeprecationShims:
                 """
             )
             result = subprocess.run(
-                [sys.executable, "-c", code],
+                [*subprocess_python(), "-c", code],
                 capture_output=True,
                 text=True,
             )

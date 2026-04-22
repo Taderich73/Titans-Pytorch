@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from tests._subprocess_helpers import subprocess_python
 from titans.checkpoint import save_checkpoint
 from titans.config import TitansConfig
 from titans.models import TitansMAC
@@ -58,7 +58,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     """Invoke a script via subprocess from the repo root."""
     return subprocess.run(
-        [sys.executable, str(script), *args],
+        [*subprocess_python(), str(script), *args],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,

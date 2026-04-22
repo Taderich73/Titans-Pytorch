@@ -25,7 +25,6 @@ Scenarios covered:
 from __future__ import annotations
 
 import subprocess
-import sys
 import warnings
 from pathlib import Path
 
@@ -33,6 +32,7 @@ import numpy as np
 import pytest
 import torch
 
+from tests._subprocess_helpers import subprocess_python
 from titans import TITANS_SCHEMA_VERSION
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory import MemoryState
@@ -495,7 +495,7 @@ class TestConvertCheckpointVersion:
         out_stem = tmp_path / "dst"
         result = subprocess.run(
             [
-                sys.executable,
+                *subprocess_python(),
                 str(script),
                 str(src_stem.with_suffix(".pt")),
                 "--output",

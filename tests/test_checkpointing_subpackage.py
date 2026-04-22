@@ -16,8 +16,9 @@ Three guarantees:
 from __future__ import annotations
 
 import subprocess
-import sys
 import warnings
+
+from tests._subprocess_helpers import subprocess_python
 
 
 def test_importing_titans_does_not_load_checkpointing() -> None:
@@ -27,9 +28,15 @@ def test_importing_titans_does_not_load_checkpointing() -> None:
     Run in a fresh subprocess so a warm module cache from another test
     cannot mask a regression. The importtime trace on stderr contains
     one line per imported module.
+
+    Note: ``sys.executable`` is not always a Python with ``titans``
+    importable — under ``uv run pytest`` on some macOS setups it resolves
+    to the framework Python, not the ``.venv`` interpreter. We probe
+    viable candidates via :func:`subprocess_python` and skip cleanly if
+    none work.
     """
     proc = subprocess.run(
-        [sys.executable, "-X", "importtime", "-c", "import titans"],
+        [*subprocess_python(), "-X", "importtime", "-c", "import titans"],
         capture_output=True,
         check=True,
     )
@@ -96,7 +103,7 @@ def test_deprecated_old_module_path_warns() -> None:
             "        f'expected re-export from titans.checkpointing, got '"
             "        f'{obj.__module__}')\n"
         )
-        subprocess.run([sys.executable, "-c", snippet], check=True)
+        subprocess.run([*subprocess_python(), "-c", snippet], check=True)
 
 
 def test_top_level_getattr_resolves_via_new_path() -> None:
@@ -118,7 +125,7 @@ def test_top_level_getattr_resolves_via_new_path() -> None:
         "        + repr([str(x.message) for x in dep])\n"
         "    assert 'titans.checkpointing' in str(dep[0].message)\n"
     )
-    subprocess.run([sys.executable, "-c", snippet], check=True)
+    subprocess.run([*subprocess_python(), "-c", snippet], check=True)
 
 
 def test_warnings_import_used() -> None:
