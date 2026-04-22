@@ -49,36 +49,22 @@ from tqdm import tqdm
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
-# scripts/ is imported both as a namespace package ("scripts._common") and as
-# a flat directory (when tests add scripts/ onto sys.path and import "lora").
-try:
-    from scripts._common import (  # type: ignore[import-not-found]
-        base_argparse_parser,
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        init_accelerator_and_logging,
-        loss_mask_to_zero_one,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-    )
-    from scripts._common import tokenize_chat as _tokenize_chat_canonical
-except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import (  # type: ignore[no-redef]
-        base_argparse_parser,
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        init_accelerator_and_logging,
-        loss_mask_to_zero_one,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-    )
-    from _common import tokenize_chat as _tokenize_chat_canonical  # type: ignore[no-redef]
+# Shared script-level helpers ship with the ``titans`` wheel so remote
+# single-file runners (e.g. HuggingFace Jobs) can reach them via the
+# installed package instead of needing repo-root ``scripts/`` on disk.
+from titans.scripts import (
+    base_argparse_parser,
+    build_titans_config,
+    chunked_forward,
+    create_model,
+    init_accelerator_and_logging,
+    loss_mask_to_zero_one,
+    make_dataloader,
+    make_optimizer,
+    maybe_compile,
+    setup_checkpoint_dir,
+)
+from titans.scripts import tokenize_chat as _tokenize_chat_canonical
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -234,8 +220,8 @@ class LoRATrainingConfig:
 def build_model(config: LoRATrainingConfig) -> torch.nn.Module:
     """Build a Titans model from a LoRATrainingConfig.
 
-    Thin wrapper over :func:`scripts._common.build_titans_config` and
-    :func:`scripts._common.create_model`. Preserved for backward-compat
+    Thin wrapper over :func:`titans.scripts.build_titans_config` and
+    :func:`titans.scripts.create_model`. Preserved for backward-compat
     with tests/callers that imported ``lora.build_model`` before the
     _common migration.
 
@@ -254,7 +240,7 @@ def tokenize_chat(
     tokenizer: PreTrainedTokenizerBase,
     max_seq_len: int,
 ) -> dict[str, list[int]]:
-    """Thin wrapper around scripts._common.tokenize_chat.
+    """Thin wrapper around titans.scripts.tokenize_chat.
 
     Differs from the canonical helper by returning
     ``{"input_ids", "labels"}`` in the historical lora format (labels

@@ -2,9 +2,10 @@
 
 Plan 3 moved format_chatml / build_loss_mask / tokenize_chat / create_model
 / build_titans_config / base_argparse_parser / init_accelerator_and_logging
-/ setup_checkpoint_dir into scripts/_common.py. If any training script
-re-defines them at top level, this test fails and the PR should import
-from _common instead.
+/ setup_checkpoint_dir into the shared helper module (now
+``titans.scripts._common`` after the HF-Jobs single-file-shipping migration).
+If any training script re-defines them at top level, this test fails and
+the PR should import from ``titans.scripts`` instead.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ import pathlib
 
 import pytest
 
-SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = _REPO_ROOT / "scripts"
+COMMON_PATH = _REPO_ROOT / "src" / "titans" / "scripts" / "_common.py"
 
 CONSOLIDATED_NAMES = {
     "format_chatml",
@@ -55,13 +58,12 @@ def test_no_duplicate_top_level_definitions(script_name: str) -> None:
     ]
     assert duplicates == [], (
         f"{script_name}: re-defines consolidated helpers at top level: "
-        f"{duplicates}. Import from scripts._common instead."
+        f"{duplicates}. Import from titans.scripts instead."
     )
 
 
 def test_common_module_exports_consolidated_names() -> None:
-    """The consolidated helpers must all be defined in scripts/_common.py."""
-    common_path = SCRIPTS_DIR / "_common.py"
-    defs = set(_top_level_defs(common_path))
+    """Consolidated helpers must all be defined in titans.scripts._common."""
+    defs = set(_top_level_defs(COMMON_PATH))
     missing = CONSOLIDATED_NAMES - defs
-    assert missing == set(), f"scripts/_common.py missing: {sorted(missing)}"
+    assert missing == set(), f"{COMMON_PATH} missing: {sorted(missing)}"

@@ -1,7 +1,7 @@
 # Copyright 2024 Delanoe Pirard / Aedelon
 # Licensed under the Apache License, Version 2.0
 
-"""Tests for the ``scripts._common`` helpers that don't have dedicated files."""
+"""Tests for the ``titans.scripts`` helpers that don't have dedicated files."""
 
 from __future__ import annotations
 
@@ -9,19 +9,11 @@ import logging
 import pathlib
 import sys
 
+import pytest
 import torch
 
-# Allow `from scripts._common import ...` under pytest; the repo root is
-# not on sys.path by default.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-import pytest  # noqa: E402
-
-from titans import TitansConfig  # noqa: E402
-
-from scripts._common import (  # noqa: E402
+from titans import TitansConfig
+from titans.scripts import (
     CHATML_IM_END,
     CHATML_IM_START,
     MODEL_CLASSES,
@@ -36,6 +28,8 @@ from scripts._common import (  # noqa: E402
     maybe_compile,
     tokenize_chat,
 )
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 class TestFormatChatML:
@@ -94,7 +88,7 @@ def test_maybe_compile_attn_res_no_longer_auto_disables(caplog) -> None:
     unchanged on CPU because ``torch.compile`` only activates on CUDA.
     """
     model = torch.nn.Linear(4, 4)
-    with caplog.at_level(logging.WARNING, logger="scripts._common"):
+    with caplog.at_level(logging.WARNING, logger="titans.scripts._common"):
         out = maybe_compile(
             model, enabled=True, device_type="cpu", use_attn_res=True
         )
@@ -506,7 +500,7 @@ class TestBaseArgparseParser:
         assert not hasattr(ns, "datasetonly_alias")
 
 
-from scripts._common import init_accelerator_and_logging  # noqa: E402
+from titans.scripts import init_accelerator_and_logging
 
 
 class _CfgForAcc:
@@ -529,14 +523,14 @@ class TestInitAcceleratorAndLogging:
 
     def test_without_accelerate_graceful(self, monkeypatch) -> None:
         """Callers that run without accelerate still get a usable object."""
-        import scripts._common as common
-        monkeypatch.setattr(common, "_HAS_ACCELERATE", False, raising=False)
-        bundle = common.init_accelerator_and_logging(_CfgForAcc())
+        from titans.scripts import _common
+        monkeypatch.setattr(_common, "_HAS_ACCELERATE", False, raising=False)
+        bundle = _common.init_accelerator_and_logging(_CfgForAcc())
         # Stub accelerator should still expose is_main_process + device attrs.
         assert bundle.is_main_process is True
 
 
-from scripts._common import setup_checkpoint_dir  # noqa: E402
+from titans.scripts import setup_checkpoint_dir
 
 
 class TestSetupCheckpointDir:
@@ -672,7 +666,7 @@ class TestPretrainMigrationSmoke:
         assert r.returncode == 0
 
     def test_pretrain_imports_setup_checkpoint_dir(self) -> None:
-        """pretrain.py must import setup_checkpoint_dir from scripts._common."""
+        """pretrain.py must import setup_checkpoint_dir from titans.scripts."""
         src = (_REPO_ROOT / "scripts" / "pretrain.py").read_text()
         assert "setup_checkpoint_dir," in src or "    setup_checkpoint_dir," in src, (
             "pretrain.py did not import setup_checkpoint_dir; "
@@ -723,9 +717,9 @@ class TestInferenceMigrationSmoke:
 
 class TestCommonModuleDocumentation:
     def test_module_docstring_lists_public_helpers(self) -> None:
-        import scripts._common as common
+        from titans.scripts import _common
 
-        doc = common.__doc__ or ""
+        doc = _common.__doc__ or ""
         for name in (
             "format_chatml",
             "build_loss_mask",
@@ -736,7 +730,7 @@ class TestCommonModuleDocumentation:
             "init_accelerator_and_logging",
             "setup_checkpoint_dir",
         ):
-            assert name in doc, f"{name} missing from scripts/_common docstring"
+            assert name in doc, f"{name} missing from titans.scripts._common docstring"
 
 
 class TestSFTIntegrationFence:

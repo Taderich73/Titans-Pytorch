@@ -47,32 +47,23 @@ from titans import TitansConfig
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
-# scripts/ is imported both as a namespace package and as a flat directory.
-# ``build_titans_config`` is re-exported from the shared helper module so
-# external callers (and the migration smoke tests) can discover the
-# canonical config builder on pretrain.py. pretrain.py itself still
-# constructs its TitansConfig directly because it hard-codes the feature
-# groups rather than flowing them through a duck-typed cfg namespace.
-try:
-    from scripts._common import (  # type: ignore[import-not-found]
-        build_titans_config,  # noqa: F401 — re-exported for API parity
-        create_model,
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-    )
-except ModuleNotFoundError:  # pragma: no cover
-    from _common import (  # type: ignore[no-redef]
-        build_titans_config,  # noqa: F401 — re-exported for API parity
-        create_model,
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-    )
+# Shared script-level helpers ship inside the ``titans`` wheel under the
+# ``titans.scripts`` subpackage so HuggingFace Jobs (which uploads only
+# this file) can reach them via the pinned git dependency above. The
+# local ``scripts/`` directory on disk is irrelevant at runtime on the
+# remote. ``build_titans_config`` is re-exported for API parity with the
+# other training scripts — pretrain.py itself still constructs its
+# ``TitansConfig`` directly because it hard-codes the feature groups
+# rather than flowing them through a duck-typed cfg namespace.
+from titans.scripts import (
+    build_titans_config,  # noqa: F401 — re-exported for API parity
+    create_model,
+    init_accelerator_and_logging,
+    make_dataloader,
+    make_optimizer,
+    maybe_compile,
+    setup_checkpoint_dir,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -872,10 +863,7 @@ def _parse_args() -> None:
     Unknown args are ignored (nothing here drives runtime behaviour;
     edit the module-level constants above to change a run).
     """
-    try:
-        from scripts._common import base_argparse_parser  # type: ignore[import-not-found]
-    except ModuleNotFoundError:  # pragma: no cover
-        from _common import base_argparse_parser  # type: ignore[no-redef]
+    from titans.scripts import base_argparse_parser
 
     parser = base_argparse_parser(
         description=(

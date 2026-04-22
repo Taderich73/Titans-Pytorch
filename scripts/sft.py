@@ -52,39 +52,23 @@ from tqdm import tqdm
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
-# scripts/ is imported both as a namespace package ("scripts._common") and as
-# a flat directory (when tests add scripts/ onto sys.path and import "sft").
-# Try the package-style import first; fall back to sibling-module import.
-try:
-    from scripts._common import (  # type: ignore[import-not-found]
-        base_argparse_parser,
-        build_loss_mask,  # noqa: F401 — re-exported for API parity
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        format_chatml,  # noqa: F401 — re-exported for API parity
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-        tokenize_chat,
-    )
-except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import (  # type: ignore[no-redef]
-        base_argparse_parser,
-        build_loss_mask,  # noqa: F401 — re-exported for API parity
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        format_chatml,  # noqa: F401 — re-exported for API parity
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-        tokenize_chat,
-    )
+# Shared script-level helpers ship with the ``titans`` wheel so remote
+# single-file runners (e.g. HuggingFace Jobs) can reach them via the
+# installed package instead of needing repo-root ``scripts/`` on disk.
+from titans.scripts import (
+    base_argparse_parser,
+    build_loss_mask,  # noqa: F401 — re-exported for API parity
+    build_titans_config,
+    chunked_forward,
+    create_model,
+    format_chatml,  # noqa: F401 — re-exported for API parity
+    init_accelerator_and_logging,
+    make_dataloader,
+    make_optimizer,
+    maybe_compile,
+    setup_checkpoint_dir,
+    tokenize_chat,
+)
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards

@@ -35,9 +35,10 @@ def test_all_training_scripts_use_guarded_pattern():
     state must use the guarded detach form and must NOT contain the
     unguarded form for `memory_states` or `states` iterators.
 
-    Callers that delegate per-chunk detach to ``scripts/_common.chunked_forward``
-    satisfy the guard requirement transitively — ``_common.py`` owns the
-    canonical guarded comprehension for them.
+    Callers that delegate per-chunk detach to
+    ``titans.scripts._common.chunked_forward`` satisfy the guard requirement
+    transitively — ``_common.py`` owns the canonical guarded comprehension
+    for them.
     """
     import re
     from pathlib import Path
@@ -50,7 +51,7 @@ def test_all_training_scripts_use_guarded_pattern():
         root / "src" / "titans" / "hf" / "modeling.py",
         root / "src" / "titans" / "hf" / "trainer.py",
     ]
-    common_path = root / "scripts" / "_common.py"
+    common_path = root / "src" / "titans" / "scripts" / "_common.py"
     # Match unguarded comprehensions that iterate over memory_states or states.
     # Narrow to those iterator names to avoid false positives from unrelated
     # detach comprehensions (e.g., dataclass .detach() methods in memory.py).

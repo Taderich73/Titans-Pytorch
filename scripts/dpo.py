@@ -69,34 +69,21 @@ from titans.lora import (
     wrap_lora_layers,
 )
 
-# scripts/ is imported both as a namespace package ("scripts._common") and as
-# a flat directory (when tests add scripts/ onto sys.path and import "dpo").
-try:
-    from scripts._common import (  # type: ignore[import-not-found]
-        base_argparse_parser,
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-        tokenize_chat,
-    )
-except ModuleNotFoundError:  # pragma: no cover - exercised in test-only sys.path layouts
-    from _common import (  # type: ignore[no-redef]
-        base_argparse_parser,
-        build_titans_config,
-        chunked_forward,
-        create_model,
-        init_accelerator_and_logging,
-        make_dataloader,
-        make_optimizer,
-        maybe_compile,
-        setup_checkpoint_dir,
-        tokenize_chat,
-    )
+# Shared script-level helpers ship with the ``titans`` wheel so remote
+# single-file runners (e.g. HuggingFace Jobs) can reach them via the
+# installed package instead of needing repo-root ``scripts/`` on disk.
+from titans.scripts import (
+    base_argparse_parser,
+    build_titans_config,
+    chunked_forward,
+    create_model,
+    init_accelerator_and_logging,
+    make_dataloader,
+    make_optimizer,
+    maybe_compile,
+    setup_checkpoint_dir,
+    tokenize_chat,
+)
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -132,7 +119,7 @@ logger = logging.getLogger(__name__)
 
 # ChatML constants (IM_START, IM_END), format_chatml, build_loss_mask,
 # tokenize_chat, MODEL_CLASSES, create_model, and build_titans_config are
-# imported from scripts/_common above.
+# imported from titans.scripts above.
 
 
 def tokenize_plain(
@@ -649,7 +636,7 @@ def dpo_collate_fn(
 # ---------------------------------------------------------------------------
 
 
-# create_model and build_titans_config are imported from scripts/_common.
+# create_model and build_titans_config are imported from titans.scripts.
 
 
 # ---------------------------------------------------------------------------

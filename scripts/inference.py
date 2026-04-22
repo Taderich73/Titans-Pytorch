@@ -22,18 +22,10 @@ from titans import TitansConfig, TitansMAC
 from titans.checkpoint import load_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 
-# scripts/ is imported both as a namespace package (under pytest) and as a
-# flat directory (when the script is invoked as ``python scripts/inference.py``).
-try:
-    from scripts._common import (  # type: ignore[import-not-found]
-        MODEL_CLASSES,
-        create_model,
-    )
-except ModuleNotFoundError:  # pragma: no cover
-    from _common import (  # type: ignore[no-redef]
-        MODEL_CLASSES,
-        create_model,
-    )
+# Shared script-level helpers ship with the ``titans`` wheel so remote
+# single-file runners (e.g. HuggingFace Jobs) can reach them via the
+# installed package instead of needing repo-root ``scripts/`` on disk.
+from titans.scripts import MODEL_CLASSES, create_model
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

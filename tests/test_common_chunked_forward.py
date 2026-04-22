@@ -1,19 +1,10 @@
-"""Unit tests for scripts/_common.py::chunked_forward."""
+"""Unit tests for ``titans.scripts._common.chunked_forward``."""
 
 from __future__ import annotations
-
-import pathlib
-import sys
 
 import torch
 
 from titans import TitansConfig, TitansMAC
-
-# Allow `from scripts._common import ...` under pytest; the repo root is
-# not on sys.path by default.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _tiny_mac(chunk_size: int = 8) -> TitansMAC:
@@ -33,7 +24,7 @@ def _tiny_mac(chunk_size: int = 8) -> TitansMAC:
 
 def test_chunked_forward_yields_per_chunk() -> None:
     """Generator yields one tuple per chunk with expected shapes."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
@@ -51,7 +42,7 @@ def test_chunked_forward_yields_per_chunk() -> None:
 
 def test_chunked_forward_ragged_last_chunk() -> None:
     """Final chunk is shorter when seq_len is not a multiple of chunk_size."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
@@ -69,7 +60,7 @@ def test_chunked_forward_ragged_last_chunk() -> None:
 
 def test_chunked_forward_detaches_between_chunks() -> None:
     """With detach_between=True the post-chunk state tensors are detached."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
@@ -93,7 +84,7 @@ def test_chunked_forward_detaches_between_chunks() -> None:
 
 def test_chunked_forward_preserves_graph_when_detach_false() -> None:
     """With detach_between=False logits stay connected to autograd."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
@@ -112,7 +103,7 @@ def test_chunked_forward_preserves_graph_when_detach_false() -> None:
 
 def test_chunked_forward_single_chunk_when_seq_eq_chunk() -> None:
     """seq_len == chunk_size yields exactly one chunk."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
@@ -128,7 +119,7 @@ def test_chunked_forward_single_chunk_when_seq_eq_chunk() -> None:
 
 def test_chunked_forward_threads_states_across_chunks() -> None:
     """Threaded chunked forward matches a single full-sequence forward."""
-    from scripts._common import chunked_forward
+    from titans.scripts import chunked_forward
 
     torch.manual_seed(0)
     chunk_size = 8
