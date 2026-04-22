@@ -30,7 +30,9 @@ See :doc:`docs/api.md` for the full public-surface reference.
 
 from __future__ import annotations
 
+import importlib
 import warnings
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
 # --- Stable public API (eager imports) -----------------------------------
@@ -41,7 +43,10 @@ from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans.memory_dump import load_memory_states, save_memory_states
 from titans.models import TitansLMM, TitansMAC, TitansMAG, TitansMAL
 
-__version__ = "0.7.0"
+try:
+    __version__ = _pkg_version("titans")
+except PackageNotFoundError:  # editable-install / uninstalled checkout fallback
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Config
@@ -133,11 +138,14 @@ def __getattr__(name: str) -> Any:
     importing them from their canonical sub-module, while emitting a
     :class:`DeprecationWarning` that points at the new import path.
 
-    The warning fires on every access (the resolved attribute is NOT
-    cached on the module). This is intentional: caching would hide the
-    deprecation from every subsequent importer in the same process and
-    make per-name assertions fragile. The per-access cost is a dict
-    lookup plus an ``importlib`` cache hit — negligible.
+    The resolved attribute is cached on the module after the first
+    warning. This is the idiomatic PEP 562 pattern (numpy/scipy/pandas)
+    and is required so that ``from titans import X`` emits exactly one
+    warning: CPython's ``IMPORT_FROM`` probes ``__getattr__`` twice
+    (once for the attribute, once for a potential submodule), and
+    without caching each probe fires a fresh warning. Tests that need
+    to observe repeat accesses should either ``importlib.reload(titans)``
+    between cases or run each access in a fresh subprocess.
 
     Raises:
         AttributeError: If ``name`` is not a known deprecated export.
@@ -146,15 +154,13 @@ def __getattr__(name: str) -> Any:
     if submodule is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    import importlib
-
     module = importlib.import_module(submodule)
     try:
         value = getattr(module, name)
-    except AttributeError as exc:  # pragma: no cover - defensive
+    except AttributeError as exc:  # pragma: no cover - guards shim drift
         raise AttributeError(
-            f"module {submodule!r} has no attribute {name!r} "
-            f"(stale deprecation shim in titans.__init__)"
+            f"Deprecation shim entry 'titans.{name}' -> '{submodule}.{name}' "
+            "is stale: the submodule no longer exposes that attribute."
         ) from exc
 
     warnings.warn(
@@ -166,6 +172,9 @@ def __getattr__(name: str) -> Any:
         DeprecationWarning,
         stacklevel=2,
     )
+    # Cache on the module so subsequent accesses do not trigger
+    # __getattr__ again (idiomatic PEP 562 pattern used by numpy/scipy).
+    globals()[name] = value
     return value
 
 

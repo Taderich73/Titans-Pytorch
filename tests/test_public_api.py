@@ -9,6 +9,11 @@ import site.
 from __future__ import annotations
 
 import importlib
+import pathlib
+import subprocess
+import sys
+import textwrap
+import tomllib
 import warnings
 from typing import Any
 
@@ -40,11 +45,12 @@ EXPECTED_STABLE_API: frozenset[str] = frozenset(
 def _reload_titans() -> Any:
     """Reload ``titans`` so each deprecated-name assertion starts cold.
 
-    The ``__getattr__`` shim does not cache resolved attributes on the
-    module, but Python's ``warnings`` module de-duplicates identical
-    warning text under the default filter. Reloading guarantees a fresh
-    module state; combined with ``simplefilter("always")`` it ensures
-    each access produces an observable warning.
+    The PEP 562 ``__getattr__`` shim caches resolved deprecated names
+    onto the module after the first access (the idiomatic
+    numpy/scipy/pandas pattern), so a second ``getattr(titans, name)``
+    in the same process does NOT re-warn. Reloading evicts that cache.
+    Combined with ``simplefilter("always")`` it ensures each
+    parametrized case observes exactly one warning on first access.
     """
     return importlib.reload(titans)
 
@@ -52,12 +58,18 @@ def _reload_titans() -> Any:
 class TestStableApi:
     """Freeze the curated surface exposed via ``titans.__all__``."""
 
-    def test_all_size_is_bounded(self) -> None:
-        """Task P3 budget: ``len(titans.__all__) <= 15``."""
-        assert len(titans.__all__) <= 15, (
-            f"titans.__all__ grew to {len(titans.__all__)} names; the "
-            "curated budget is 15. Either drop a name or justify the "
-            "addition in docs/api.md."
+    def test_all_size_is_exactly_twelve(self) -> None:
+        """Task P3 budget: ``len(titans.__all__) == 12`` (doc contract).
+
+        ``docs/api.md`` documents the stable surface as frozen at 12. The
+        explicit ``EXPECTED_STABLE_API`` frozenset already enforces the
+        exact name set; this test pins the cardinality so accidental
+        additions fail loudly in isolation.
+        """
+        assert len(titans.__all__) == 12, (
+            f"titans.__all__ has {len(titans.__all__)} names; the curated "
+            "surface is frozen at 12. Update docs/api.md AND "
+            "EXPECTED_STABLE_API in lockstep if this changes."
         )
 
     def test_all_matches_expected_set(self) -> None:
@@ -95,6 +107,22 @@ class TestStableApi:
         parts = titans.__version__.split(".")
         assert len(parts) >= 2
 
+    def test_version_matches_pyproject(self) -> None:
+        """``titans.__version__`` must agree with ``pyproject.toml``.
+
+        The package reads its version from installed metadata via
+        :func:`importlib.metadata.version`. When the package is installed
+        (editable or otherwise) with metadata available, the two must
+        agree. If the fallback sentinel is active (checkout without any
+        metadata), skip — there is nothing to compare against.
+        """
+        if titans.__version__.startswith("0.0.0+"):
+            pytest.skip("version fallback active (not installed with metadata)")
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        with open(repo_root / "pyproject.toml", "rb") as fh:
+            pyproject = tomllib.load(fh)
+        assert titans.__version__ == pyproject["project"]["version"]
+
 
 class TestDeprecationShims:
     """The legacy 0.6.x top-level names still import but warn."""
@@ -124,7 +152,11 @@ class TestDeprecationShims:
         """Each deprecated access emits exactly one DeprecationWarning.
 
         The warning text must name the new submodule path so users know
-        where to migrate.
+        where to migrate. Note: the shim caches the resolved value on
+        the module after the first access (PEP 562 idiom), so a second
+        ``getattr(titans, name)`` in the *same* process would NOT
+        re-warn. ``_reload_titans()`` resets that cache so each
+        parametrized case starts cold.
         """
         mod = _reload_titans()
         with warnings.catch_warnings(record=True) as caught:
@@ -147,6 +179,87 @@ class TestDeprecationShims:
         assert "0.8" in message, (
             "Deprecation message should state the removal version (0.8)."
         )
+
+    @pytest.mark.parametrize(
+        "name,submodule",
+        # Keep the fast path small — subprocess spawning is not free.
+        # Pick three representatives covering different submodules.
+        [
+            ("LoRALinear", "titans.lora"),
+            ("SegmentedAttention", "titans.attention"),
+            ("PersistentMemory", "titans.persistent"),
+        ],
+    )
+    def test_from_import_syntax_emits_single_warning(
+        self, name: str, submodule: str
+    ) -> None:
+        """``from titans import X`` must emit exactly one DeprecationWarning.
+
+        CPython's ``IMPORT_FROM`` opcode probes ``__getattr__`` twice
+        (once for the attribute, once as a potential submodule lookup).
+        Without attribute caching, that yields two warnings per import;
+        the PEP 562 caching pattern collapses it to one. Each case runs
+        in a fresh subprocess to guarantee a cold module state.
+        """
+        code = textwrap.dedent(
+            f"""
+            import warnings
+            warnings.simplefilter("always")
+            with warnings.catch_warnings(record=True) as w:
+                from titans import {name}  # noqa: F401
+            deps = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deps) == 1, (
+                f"Expected 1 DeprecationWarning, got {{len(deps)}}: "
+                f"{{[str(d.message) for d in deps]}}"
+            )
+            assert "{submodule}" in str(deps[0].message), (
+                f"Expected {submodule!r} in: {{deps[0].message}}"
+            )
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"{name}: stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+
+    @pytest.mark.slow
+    def test_from_import_syntax_emits_single_warning_for_all_names(self) -> None:
+        """Exhaustive variant: verify single-warning behavior for every
+        deprecated name. Runs one subprocess per name (~37 spawns), so
+        this is marked ``slow`` and skipped by default fast-path runs.
+        """
+        failures: list[str] = []
+        for name, submodule in _DEPRECATED_EXPORTS.items():
+            code = textwrap.dedent(
+                f"""
+                import warnings
+                warnings.simplefilter("always")
+                with warnings.catch_warnings(record=True) as w:
+                    from titans import {name}  # noqa: F401
+                deps = [x for x in w if issubclass(x.category, DeprecationWarning)]
+                assert len(deps) == 1, (
+                    f"Expected 1 DeprecationWarning, got {{len(deps)}}: "
+                    f"{{[str(d.message) for d in deps]}}"
+                )
+                assert "{submodule}" in str(deps[0].message), (
+                    f"Expected {submodule!r} in: {{deps[0].message}}"
+                )
+                """
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                failures.append(
+                    f"{name}: stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+        assert not failures, "Failed names:\n" + "\n".join(failures)
 
     @pytest.mark.parametrize(
         "name,submodule",
