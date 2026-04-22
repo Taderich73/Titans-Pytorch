@@ -151,33 +151,40 @@ class TitansDPOTrainer(TitansChunkMixin, DPOTrainer):
 
 ## Converting Existing Checkpoints
 
-The `convert_to_hf.py` script converts native `.pt` or `.safetensors` checkpoints to HF-compatible model directories.
+The unified `scripts/convert.py` script converts native `.pt` or
+`.safetensors` checkpoints to HF-compatible model directories (pass
+`--to hf`) as well as between the two native formats (`--to pt` /
+`--to safetensors`). It replaces the previous `convert_to_hf.py` and
+`convert_checkpoint.py` scripts, which remain as thin deprecation shims
+and will be removed in 0.8.
 
 ```bash
-# Basic conversion
-python scripts/convert_to_hf.py \
-    --checkpoint checkpoints/final.pt \
-    --output-dir ./hf_model
+# Basic conversion to HuggingFace directory
+python scripts/convert.py checkpoints/final.pt \
+    --to hf --output-dir ./hf_model
 
 # With tokenizer and chat template
-python scripts/convert_to_hf.py \
-    --checkpoint checkpoints/final.pt \
+python scripts/convert.py checkpoints/final.pt \
+    --to hf \
     --tokenizer gpt2 \
     --add-chat-template \
     --output-dir ./hf_model
 
 # Push directly to Hub
-python scripts/convert_to_hf.py \
-    --checkpoint checkpoints/final.pt \
+python scripts/convert.py checkpoints/final.pt \
+    --to hf \
     --tokenizer gpt2 \
     --output-dir ./hf_model \
     --push-to-hub your-org/titans-mac-1.5B
 
 # Explicit model type (for future variants)
-python scripts/convert_to_hf.py \
-    --checkpoint checkpoints/final.pt \
+python scripts/convert.py checkpoints/final.pt \
+    --to hf \
     --model-type mac \
     --output-dir ./hf_model
+
+# pt <-> safetensors (native formats only)
+python scripts/convert.py checkpoints/final.pt --to safetensors
 ```
 
 ### What the Converter Produces
@@ -262,7 +269,7 @@ The HF integration is designed so adding MAG, MAL, or LMM variants later is a co
 1. Add `TitansMAGConfig` with `model_type = "titans-mag"` to `configuration.py`
 2. Add `TitansMAGForCausalLM` wrapping `TitansMAG` to `modeling.py`
 3. Add one entry to `_VARIANT_REGISTRY` in `__init__.py`
-4. Add `--model-type mag` case to `convert_to_hf.py`
+4. Add `--model-type mag` case to `scripts/convert.py` (via the `MODEL_REGISTRY` dict)
 
 The `TitansTrainer`, `TitansChunkMixin`, `generate()` logic, chat template, and conversion pipeline are all variant-agnostic and require no changes.
 

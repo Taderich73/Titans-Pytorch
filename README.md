@@ -125,9 +125,11 @@ uv run python scripts/inference.py --checkpoint checkpoints/final.pt \
     --prompt "Once upon a time" --max-new-tokens 200 \
     --memory-dump session.npz --auto-checkpoint
 
-# Convert a native checkpoint to HuggingFace format
-uv run python scripts/convert_to_hf.py --checkpoint checkpoints/final.pt \
-    --tokenizer gpt2 --output-dir ./hf_model
+# Convert a native checkpoint (pt <-> safetensors or -> HuggingFace dir)
+uv run python scripts/convert.py checkpoints/final.pt --to hf \
+    --output-dir ./hf_model --tokenizer gpt2
+# (Legacy `scripts/convert_checkpoint.py` and `scripts/convert_to_hf.py`
+# remain as thin deprecation shims; removed in 0.8.)
 ```
 
 See the HF integration doc for `Trainer` usage and the config guide for

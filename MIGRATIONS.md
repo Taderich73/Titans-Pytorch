@@ -6,7 +6,7 @@ This file tracks schema changes to persisted state written by OpenTitans:
   (and therefore every training script under `scripts/`).
 - `.npz` memory dumps produced by `titans.save_memory_states`.
 - HuggingFace `config.json` produced by `titans.hf.configuration.TitansMACConfig`
-  (and `convert_to_hf.py`).
+  (and `scripts/convert.py --to hf`; formerly `convert_to_hf.py`).
 
 Every file written from 0.7.0 onwards carries a `titans_schema_version`
 integer at a well-known location. See

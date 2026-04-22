@@ -1,103 +1,81 @@
 #!/usr/bin/env python3
-"""Convert checkpoints between .pt and .safetensors formats.
+# Copyright 2024 Delanoe Pirard / Aedelon
+# Licensed under the Apache License, Version 2.0
 
-Usage:
-    python scripts/convert_checkpoint.py checkpoints/final.pt
-    python scripts/convert_checkpoint.py checkpoints/final.safetensors
-    python scripts/convert_checkpoint.py checkpoints/final.pt --output other/model
-    python scripts/convert_checkpoint.py checkpoints/final.pt --weights-only
+"""Deprecated -- use ``scripts/convert.py`` instead.
+
+Thin shim that forwards the legacy ``convert_checkpoint.py`` CLI to the
+unified ``scripts/convert.py --to safetensors`` entry point. The shim
+preserves the original ``<input> [--output <stem>] [--weights-only]``
+signature so existing workflows keep running while emitting a
+``DeprecationWarning`` on every invocation. Will be removed in 0.8.
+
+Example migration:
+
+    # Old
+    uv run python scripts/convert_checkpoint.py ckpt.pt
+
+    # New
+    uv run python scripts/convert.py ckpt.pt --to safetensors
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
+import os
 import sys
+import warnings
 from pathlib import Path
 
-# Allow running from repo root
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from titans.checkpoint import load_checkpoint, save_checkpoint
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-
-def main() -> None:
-    """Parse arguments and run conversion."""
+def _parse_legacy_args(argv: list[str]) -> argparse.Namespace:
+    """Re-parse the legacy CLI so we can translate it to the new one."""
     parser = argparse.ArgumentParser(
-        description="Convert checkpoints between .pt and .safetensors formats."
+        description="[deprecated] Convert checkpoints between .pt and .safetensors.",
     )
-    parser.add_argument(
-        "input",
-        type=str,
-        help="Input checkpoint path (.pt or .safetensors)",
+    parser.add_argument("input", type=str)
+    parser.add_argument("--output", type=str, default=None)
+    parser.add_argument("--weights-only", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Forward to ``scripts/convert.py`` with a deprecation warning."""
+    warnings.warn(
+        "scripts/convert_checkpoint.py is deprecated; use "
+        "`scripts/convert.py <input> --to safetensors` instead. "
+        "This shim will be removed in 0.8.",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help=(
-            "Output path without extension (default: same directory and stem "
-            "as input, with the target format extension)."
-        ),
-    )
-    parser.add_argument(
-        "--weights-only",
-        action="store_true",
-        help="Only convert model weights — skip optimizer/scheduler metadata.",
-    )
-    args = parser.parse_args()
-
-    input_path = Path(args.input)
-    if not input_path.exists():
-        logger.error(f"Input checkpoint not found: {input_path}")
-        sys.exit(1)
-
-    # Determine target format (opposite of input)
-    if input_path.suffix == ".pt":
-        target_format = "safetensors"
-    elif input_path.suffix == ".safetensors":
-        target_format = "pt"
-    else:
-        logger.error(
-            f"Cannot determine format from extension: {input_path.suffix!r}. "
-            "Use .pt or .safetensors."
-        )
-        sys.exit(1)
-
-    output_stem = Path(args.output) if args.output else input_path.with_suffix("")
-
-    # Load
-    logger.info(f"Loading {input_path} ...")
-    ckpt = load_checkpoint(input_path, weights_only=False)
-
-    # Prepare metadata. ``titans_schema_version`` is preserved when
-    # present on the input and stamped to the current version by
-    # ``save_checkpoint`` otherwise — see titans.checkpoint for details.
-    metadata = None
-    if not args.weights_only:
-        metadata = {k: v for k, v in ckpt.items() if k != "model"}
-        if metadata:
-            logger.info(f"Metadata keys: {list(metadata.keys())}")
-
-    # Save in target format. ``save_checkpoint`` always emits
-    # ``titans_schema_version`` (top-level for .pt, via the .meta.pt
-    # sidecar for safetensors) so the converted output is
-    # self-describing regardless of what was in the input.
-    paths = save_checkpoint(
-        ckpt["model"],
-        output_stem,
-        format=target_format,
-        metadata=metadata if metadata else None,
+    # Print to stderr too -- tests and users without warnings filters
+    # still want to see the notice.
+    print(
+        "[deprecated] scripts/convert_checkpoint.py is a shim; forwarding "
+        "to scripts/convert.py --to safetensors. Will be removed in 0.8.",
+        file=sys.stderr,
     )
 
-    for p in paths:
-        logger.info(f"Written: {p}")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    legacy = _parse_legacy_args(argv)
 
-    logger.info("Conversion complete.")
+    # Translate to the new CLI. Legacy script toggled between pt and
+    # safetensors based on the input extension; ``scripts/convert.py``
+    # preserves that toggle when --to matches the input extension, so we
+    # can unconditionally pass --to safetensors.
+    new_argv: list[str] = [legacy.input, "--to", "safetensors"]
+    if legacy.output is not None:
+        new_argv.extend(["--output", legacy.output])
+    if legacy.weights_only:
+        new_argv.append("--weights-only")
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import convert  # noqa: PLC0415 -- deferred so the warning fires first
+
+    return convert.main(new_argv)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

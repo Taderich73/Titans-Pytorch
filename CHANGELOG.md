@@ -32,11 +32,17 @@ to semantic versioning.
   `docs/` (#P2)
 - HF config surface routes unversioned checkpoint loads through the shared
   migration walker with a warning (#P5)
+- Unified `scripts/convert_checkpoint.py` and `scripts/convert_to_hf.py`
+  into a single `scripts/convert.py` with `--to={pt,safetensors,hf}`
+  (#P13). Old scripts retained as deprecated shims; removed in 0.8.
 
 ### Deprecated
 - Legacy top-level `titans.<name>` imports now emit `DeprecationWarning` on
   access; these shims will be removed in 0.8. See `docs/api.md` for the new
   import paths. (#P3)
+- `scripts/convert_checkpoint.py` and `scripts/convert_to_hf.py` are now
+  thin shims that forward to `scripts/convert.py` and emit a
+  `DeprecationWarning`; they will be removed in 0.8. (#P13)
 
 ### Fixed
 - Stale README test-count badge replaced with a live CI status badge (#P11)
