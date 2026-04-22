@@ -53,7 +53,7 @@ body:
     attributes:
       label: OpenTitans version
       description: Output of `python -c "import titans; print(titans.__version__)"`.
-      placeholder: "0.7.0"
+      placeholder: "e.g. 0.7.0"
     validations:
       required: true
 
