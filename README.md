@@ -2,7 +2,7 @@
 
 ![PyTorch](https://img.shields.io/badge/PyTorch-%3E%3D2.2-red.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)
-![Tests](https://img.shields.io/badge/tests-304%20passed-brightgreen.svg)
+[![CI](https://github.com/Taderich73/OpenTitans/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Taderich73/OpenTitans/actions/workflows/ci.yml)
 
 A complete **PyTorch** implementation of the **Titans** architecture from Google Research, with **TNT** hierarchical memory, **Attention Residuals (AttnRes)**, **Memory Cross-Attention (MCA)**, **Yaad Huber attentional bias**, **Adaptive Window Sizing**, and **Proportional RoPE (p-RoPE)** as composable, independent features.
 
@@ -888,7 +888,7 @@ titans-pytorch/
 |   +-- pretokenize.py       # Pre-tokenize datasets to disk for faster training
 |   +-- launch_pretraining_job.py # HF Jobs launcher
 |
-+-- tests/                   # 304 tests
++-- tests/                   # pytest suite (run `uv run pytest tests/`)
 ```
 
 ### Running Tests
