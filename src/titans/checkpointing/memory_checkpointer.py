@@ -25,21 +25,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from titans.checkpoint_signals import (
+from titans.memory import MemoryState, TNTMemoryState
+from titans.memory_dump import save_memory_states
+
+from .novelty_detector import StatisticalNoveltyDetector, TriggerDecision
+from .signals import (
     build_signal_frame,
     compute_momentum_norms,
     compute_weight_norms,
 )
-from titans.checkpoint_types import (
+from .types import (
     CheckpointEntry,
     GateSnapshot,
     MemoryCheckpointConfig,
     SignalFrame,
     TransitionRecord,
 )
-from titans.memory import MemoryState, TNTMemoryState
-from titans.memory_dump import save_memory_states
-from titans.novelty_detector import StatisticalNoveltyDetector, TriggerDecision
 
 
 # ---------------------------------------------------------------------------

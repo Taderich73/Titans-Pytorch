@@ -24,7 +24,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
-from titans.checkpoint_types import SignalFrame
+from .types import SignalFrame
 
 
 # ---------------------------------------------------------------------------

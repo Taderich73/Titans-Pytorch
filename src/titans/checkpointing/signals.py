@@ -9,8 +9,8 @@ the ``SignalFrame`` aggregation are project-specific observability plumbing.
 Computes per-layer Frobenius-norm signals (weight delta, momentum shift,
 absolute weight / momentum norms) from :class:`~titans.memory.MemoryState`
 and :class:`~titans.memory.TNTMemoryState` snapshots, and assembles them
-into a :class:`~titans.checkpoint_types.SignalFrame` for downstream novelty
-detection and optional signal logging.
+into a :class:`~titans.checkpointing.types.SignalFrame` for downstream
+novelty detection and optional signal logging.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from titans.checkpoint_types import GateSnapshot, SignalFrame
 from titans.memory import MemoryState, TNTMemoryState
+
+from .types import GateSnapshot, SignalFrame
 
 if TYPE_CHECKING:
     pass
