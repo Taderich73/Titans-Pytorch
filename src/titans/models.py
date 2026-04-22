@@ -64,21 +64,6 @@ class FeedForward(nn.Module):
         return self.down_proj(hidden)
 
 
-def _init_mca(block: nn.Module, config: TitansConfig, layer_idx: int) -> None:
-    """Initialize MCA components on a block (shared across MAC/MAG/MAL)."""
-    block.has_mca = layer_idx in config.mca_active_insertion_layers
-    if block.has_mca:
-        from titans.mca import MemoryCrossAttention
-
-        block.mca = MemoryCrossAttention(config)
-        if config.use_attn_res:
-            from titans.attn_res import BlockAttnRes
-
-            block.attn_res_mca = BlockAttnRes(
-                config.dim, logit_clip=config.attnres_logit_clip
-            )
-
-
 def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
     """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
     weights = (
@@ -238,8 +223,14 @@ def process_chunk(
     return completed_blocks[-1], new_states, gate_snapshots
 
 
-class MACBlock(nn.Module):
-    """Memory as Context Block."""
+class BaseTitansBlock(nn.Module):
+    """Shared plumbing for MAC/MAG/MAL blocks.
+
+    Builds memory (TNT branch or plain NLTM), persistent memory, FFN, the
+    RMSNorm pair (``norm1``/``norm2``), dropout, the MCA sidecar, and the
+    AttnRes sidecar. Subclasses add variant-specific attention/extras and
+    implement ``core_forward``. LMMBlock does NOT inherit from this class.
+    """
 
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__()
@@ -247,29 +238,31 @@ class MACBlock(nn.Module):
 
         if config.use_tnt:
             from titans.tnt_memory import HierarchicalMemory
+
             self.memory = HierarchicalMemory(config)
         else:
             self.memory = NeuralLongTermMemory(config)
-        if config.mac_per_position_memory_query:
-            # Paper Eq. 21: q_t = S^(t) W_Q (per-position linear projection).
-            self.memory_query_proj = nn.Linear(config.dim, config.dim, bias=False)
-            nn.init.normal_(self.memory_query_proj.weight, std=config.init_std)
-        else:
-            # Legacy: single learned query broadcast across batch and positions.
-            self.memory_query = nn.Parameter(
-                torch.randn(1, 1, config.dim) * config.init_std
-            )
-        self.persistent = PersistentMemory(config)
-        self.attention = SegmentedAttention(config)
-        self.ffn = FeedForward(config)
 
+        self.persistent = PersistentMemory(config)
+        self.ffn = FeedForward(config)
         self.norm1 = RMSNorm(config.dim)
         self.norm2 = RMSNorm(config.dim)
-        self.norm_mem = RMSNorm(config.dim)
-
         self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        _init_mca(self, config, layer_idx)
 
+        # MCA sidecar (+ optional AttnRes head for MCA).
+        self.has_mca = layer_idx in config.mca_active_insertion_layers
+        if self.has_mca:
+            from titans.mca import MemoryCrossAttention
+
+            self.mca = MemoryCrossAttention(config)
+            if config.use_attn_res:
+                from titans.attn_res import BlockAttnRes
+
+                self.attn_res_mca = BlockAttnRes(
+                    config.dim, logit_clip=config.attnres_logit_clip
+                )
+
+        # AttnRes sidecar (core/ffn heads + memory gate).
         if config.use_attn_res:
             from titans.attn_res import AttnResMemoryGate, BlockAttnRes
 
@@ -283,6 +276,103 @@ class MACBlock(nn.Module):
 
     def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
         return _mca_forward(self, h, mem_state)
+
+    def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
+        normed = self.norm2(h)
+        ffn_out = self.ffn(normed)
+        if self.dropout is not None:
+            ffn_out = self.dropout(ffn_out)
+        return ffn_out
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None = None,
+    ) -> tuple[torch.Tensor, MemoryState]:
+        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
+        x = x + core_out
+        ffn_out = self.ffn_forward(x)
+        x = x + ffn_out
+        return x, new_state
+
+class _SlidingWindowBlock(BaseTitansBlock):
+    """Shared base for MAG/MAL: sliding-window attention + adaptive window.
+
+    MAC uses SegmentedAttention and does not own a ``window_predictor``, so
+    it inherits directly from ``BaseTitansBlock``.
+    """
+
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
+        super().__init__(config, layer_idx)
+        self.attention = SlidingWindowAttention(config)
+        self._last_falloff_centers: torch.Tensor | None = None
+        if config.adaptive_window:
+            from titans.adaptive_window import AdaptiveWindowPredictor
+
+            self.window_predictor = AdaptiveWindowPredictor(config)
+
+    def _predict_adaptive_mask(
+        self, normed: torch.Tensor
+    ) -> torch.Tensor | None:
+        if hasattr(self, "window_predictor"):
+            mask, self._last_falloff_centers = self.window_predictor(normed)
+            return mask
+        return None
+
+    def _sw_attention(
+        self,
+        normed: torch.Tensor,
+        persistent: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Run SW-Attn with the adaptive window mask and optional dropout."""
+        adaptive_mask = self._predict_adaptive_mask(normed)
+        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
+        if self.dropout is not None:
+            attn_out = self.dropout(attn_out)
+        return attn_out
+
+    def _memory_on_persistent_prefix(
+        self,
+        normed: torch.Tensor,
+        persistent: torch.Tensor | None,
+        state: MemoryState | None,
+        memory_gate: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, MemoryState, object]:
+        """Run ``memory([persistent || normed])`` and slice off the prefix.
+
+        Shared by MAG (Eq. 27) and MAL (Eq. 31).
+        """
+        if persistent is not None:
+            mem_input = torch.cat([persistent, normed], dim=1)
+        else:
+            mem_input = normed
+        mem_out_full, new_state, gate_snapshot = self.memory(
+            mem_input, state=state, memory_gate=memory_gate
+        )
+        mem_out = (
+            mem_out_full[:, persistent.shape[1] :, :]
+            if persistent is not None
+            else mem_out_full
+        )
+        return mem_out, new_state, gate_snapshot
+
+
+class MACBlock(BaseTitansBlock):
+    """Memory as Context Block."""
+
+    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
+        super().__init__(config, layer_idx)
+        if config.mac_per_position_memory_query:
+            # Paper Eq. 21: q_t = S^(t) W_Q (per-position linear projection).
+            self.memory_query_proj = nn.Linear(config.dim, config.dim, bias=False)
+            nn.init.normal_(self.memory_query_proj.weight, std=config.init_std)
+        else:
+            # Legacy: single learned query broadcast across batch and positions.
+            self.memory_query = nn.Parameter(
+                torch.randn(1, 1, config.dim) * config.init_std
+            )
+        self.attention = SegmentedAttention(config)
+        self.norm_mem = RMSNorm(config.dim)
 
     def core_forward(
         self,
@@ -334,23 +424,89 @@ class MACBlock(nn.Module):
         core_out = y_t * mem_out
         return core_out, new_state, gate_snapshot
 
-    def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
-        normed = self.norm2(h)
-        ffn_out = self.ffn(normed)
-        if self.dropout is not None:
-            ffn_out = self.dropout(ffn_out)
-        return ffn_out
 
-    def forward(
+class MAGBlock(_SlidingWindowBlock):
+    """Memory as Gate Block (Titans Eq. 26-28).
+
+    Architecture:
+    1. y_t = SW-Attn([persistent || norm(h)]) — sliding window attention
+    2. mem_out = M([persistent || normed]) — memory on normed input (NOT y_t)
+    3. core_out = y_t * mem_out — element-wise multiplicative gate (Eq. 28)
+    """
+
+    def core_forward(
         self,
-        x: torch.Tensor,
+        h: torch.Tensor,
         state: MemoryState | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
-        x = x + core_out
-        ffn_out = self.ffn_forward(x)
-        x = x + ffn_out
-        return x, new_state
+        memory_gate: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, MemoryState, object]:
+        batch_size = h.shape[0]
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        persistent = self.persistent(batch_size)
+        normed = self.norm1(h)
+
+        # Eq. 26: y = SW-Attn([p || norm(h)])
+        attn_out = self._sw_attention(normed, persistent)
+        y_t = h + attn_out
+
+        # Eq. 27: Memory receives [persistent || normed], NOT y_t.
+        mem_out, new_state, gate_snapshot = self._memory_on_persistent_prefix(
+            normed, persistent, state, memory_gate
+        )
+
+        # Paper Eq. 28: o = y ⊗ M(x̃) (element-wise multiply).
+        # mem_out is per-position after slicing off the persistent prefix,
+        # with shape matching y_t naturally.
+        core_out = y_t * mem_out
+        return core_out, new_state, gate_snapshot
+
+
+class MALBlock(_SlidingWindowBlock):
+    """Memory as Layer Block (Titans Eq. 29-31 — parallel sum).
+
+    Architecture per paper:
+      x̃ = norm1(h)                                  (Eq. 29)
+      y  = SW-Attn(x̃, prefix=persistent)            (Eq. 30)
+      z  = M([persistent || x̃])                    (Eq. 31)
+      core_out = y + z
+
+    Attention and memory are computed in parallel on the SAME normalized
+    input; there is no internal residual from mem_out into the attention
+    input (which would double-count the memory contribution).
+    """
+
+    def core_forward(
+        self,
+        h: torch.Tensor,
+        state: MemoryState | None = None,
+        memory_gate: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, MemoryState, object]:
+        batch_size = h.shape[0]
+        if state is None:
+            state = self.memory.init_state(batch_size)
+
+        persistent = self.persistent(batch_size)
+
+        # Eq. 29: x̃ = norm1(h) — shared by both branches.
+        normed = self.norm1(h)
+
+        # Eq. 30: y = SW-Attn(x̃, prefix=persistent).  Attention sees the
+        # raw normed input — NOT h + mem_out — so memory doesn't leak into
+        # the attention pathway twice.
+        attn_out = self._sw_attention(normed, persistent)
+
+        # Eq. 31: z = M([persistent || x̃])
+        mem_out, new_state, gate_snapshot = self._memory_on_persistent_prefix(
+            normed, persistent, state, memory_gate
+        )
+        if self.dropout is not None:
+            mem_out = self.dropout(mem_out)
+
+        # Paper Eq. 31 closure: o = y + z (parallel sum).
+        core_out = attn_out + mem_out
+        return core_out, new_state, gate_snapshot
 
 
 def _maybe_build_schedule(
@@ -367,13 +523,87 @@ def _maybe_build_schedule(
     return schedule
 
 
-class TitansMAC(nn.Module):
-    """Titans with Memory as Context."""
+class _TitansModel(nn.Module):
+    """Shared plumbing for TitansMAC/TitansMAG/TitansMAL.
+
+    Holds embedding, final norm, tied LM head, step counter, and the
+    AttnRes schedule. Subclasses pick the block class via ``_BLOCK_CLS``.
+    """
+
+    _BLOCK_CLS: type[BaseTitansBlock]
 
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         self.config = config
+        self._check_config(config)
 
+        self.embed = nn.Embedding(config.vocab_size, config.dim)
+        self.blocks = nn.ModuleList(
+            [self._BLOCK_CLS(config, layer_idx=i) for i in range(config.num_layers)]
+        )
+        self.norm = RMSNorm(config.dim)
+        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
+
+        self._init_weights()
+        self.head.weight = self.embed.weight
+        self._step_count = 0
+        self._attnres_schedule = _maybe_build_schedule(config)
+
+    def _check_config(self, config: TitansConfig) -> None:
+        """Hook for variant-specific config validation/warnings."""
+
+    def _init_weights(self) -> None:
+        nn.init.normal_(self.embed.weight, std=self.config.init_std)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        states: list[MemoryState | TNTMemoryState] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
+        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
+
+        Args:
+            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
+            states: Per-block memory states from a previous chunk, or None.
+
+        Raises:
+            ValueError: If seq_len > chunk_size. Callers must chunk externally.
+        """
+        batch_size, seq_len = input_ids.shape
+        chunk_size = self.config.chunk_size
+
+        if seq_len > chunk_size:
+            raise ValueError(
+                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
+                f"Multi-chunk input is no longer supported in forward(). "
+                f"Split input_ids into chunks and call forward() per chunk."
+            )
+
+        if states is None:
+            states = [None] * len(self.blocks)
+
+        x = self.embed(input_ids)
+        x, new_states, gate_snapshots = process_chunk(
+            self.blocks,
+            x,
+            states,
+            self.config,
+            self._step_count,
+            attnres_schedule=self._attnres_schedule,
+        )
+
+        x = self.norm(x)
+        logits = self.head(x)
+        self._step_count += 1
+        return logits, new_states, gate_snapshots
+
+
+class TitansMAC(_TitansModel):
+    """Titans with Memory as Context."""
+
+    _BLOCK_CLS = MACBlock
+
+    def _check_config(self, config: TitansConfig) -> None:
         if config.adaptive_window:
             warnings.warn(
                 "config.adaptive_window=True has no effect with the MAC variant: "
@@ -385,426 +615,17 @@ class TitansMAC(nn.Module):
                 stacklevel=2,
             )
 
-        self.embed = nn.Embedding(config.vocab_size, config.dim)
-        self.blocks = nn.ModuleList(
-            [MACBlock(config, layer_idx=i) for i in range(config.num_layers)]
-        )
-        self.norm = RMSNorm(config.dim)
-        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
 
-        self._init_weights()
-        self.head.weight = self.embed.weight
-        self._step_count = 0
-        self._attnres_schedule = _maybe_build_schedule(config)
-
-    def _init_weights(self) -> None:
-        nn.init.normal_(self.embed.weight, std=self.config.init_std)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
-        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
-
-        Args:
-            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
-            states: Per-block memory states from a previous chunk, or None.
-
-        Raises:
-            ValueError: If seq_len > chunk_size. Callers must chunk externally.
-        """
-        batch_size, seq_len = input_ids.shape
-        chunk_size = self.config.chunk_size
-
-        if seq_len > chunk_size:
-            raise ValueError(
-                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
-                f"Multi-chunk input is no longer supported in forward(). "
-                f"Split input_ids into chunks and call forward() per chunk."
-            )
-
-        if states is None:
-            states = [None] * len(self.blocks)
-
-        x = self.embed(input_ids)
-        x, new_states, gate_snapshots = process_chunk(
-            self.blocks,
-            x,
-            states,
-            self.config,
-            self._step_count,
-            attnres_schedule=self._attnres_schedule,
-        )
-
-        x = self.norm(x)
-        logits = self.head(x)
-        self._step_count += 1
-        return logits, new_states, gate_snapshots
-
-
-class MAGBlock(nn.Module):
-    """Memory as Gate Block (Titans Eq. 26-28).
-
-    Architecture:
-    1. y_t = SW-Attn([persistent || norm(h)]) — sliding window attention
-    2. mem_out = M([persistent || normed]) — memory on normed input (NOT y_t)
-    3. core_out = y_t * mem_out — element-wise multiplicative gate (Eq. 28)
-    """
-
-    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
-        super().__init__()
-        self.config = config
-
-        if config.use_tnt:
-            from titans.tnt_memory import HierarchicalMemory
-            self.memory = HierarchicalMemory(config)
-        else:
-            self.memory = NeuralLongTermMemory(config)
-
-        self.persistent = PersistentMemory(config)
-        self.attention = SlidingWindowAttention(config)
-        self.ffn = FeedForward(config)
-
-        self.norm1 = RMSNorm(config.dim)
-        self.norm2 = RMSNorm(config.dim)
-
-        self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        self._last_falloff_centers: torch.Tensor | None = None
-        if config.adaptive_window:
-            from titans.adaptive_window import AdaptiveWindowPredictor
-
-            self.window_predictor = AdaptiveWindowPredictor(config)
-        _init_mca(self, config, layer_idx)
-
-        if config.use_attn_res:
-            from titans.attn_res import AttnResMemoryGate, BlockAttnRes
-
-            self.attn_res_core = BlockAttnRes(
-                config.dim, logit_clip=config.attnres_logit_clip
-            )
-            self.attn_res_ffn = BlockAttnRes(
-                config.dim, logit_clip=config.attnres_logit_clip
-            )
-            self.attn_res_gate = AttnResMemoryGate()
-
-    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
-        return _mca_forward(self, h, mem_state)
-
-    def core_forward(
-        self,
-        h: torch.Tensor,
-        state: MemoryState | None = None,
-        memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
-        batch_size = h.shape[0]
-
-        if state is None:
-            state = self.memory.init_state(batch_size)
-
-        persistent = self.persistent(batch_size)
-        normed = self.norm1(h)
-
-        # Eq. 26: y = SW-Attn([p || norm(h)])
-        adaptive_mask = None
-        if hasattr(self, "window_predictor"):
-            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
-
-        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
-        if self.dropout is not None:
-            attn_out = self.dropout(attn_out)
-
-        y_t = h + attn_out
-
-        # Eq. 27: Memory receives [persistent || normed], NOT y_t
-        if persistent is not None:
-            mem_input = torch.cat([persistent, normed], dim=1)
-        else:
-            mem_input = normed
-        mem_out_full, new_state, gate_snapshot = self.memory(
-            mem_input, state=state, memory_gate=memory_gate
-        )
-        # Slice off persistent prefix
-        if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1] :, :]
-        else:
-            mem_out = mem_out_full
-
-        # Paper Eq. 28: o = y ⊗ M(x̃) (element-wise multiply).
-        # mem_out is per-position after slicing off the persistent prefix,
-        # with shape matching y_t naturally.
-        core_out = y_t * mem_out
-        return core_out, new_state, gate_snapshot
-
-    def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
-        normed = self.norm2(h)
-        ffn_out = self.ffn(normed)
-        if self.dropout is not None:
-            ffn_out = self.dropout(ffn_out)
-        return ffn_out
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: MemoryState | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
-        x = x + core_out
-        ffn_out = self.ffn_forward(x)
-        x = x + ffn_out
-        return x, new_state
-
-
-class TitansMAG(nn.Module):
+class TitansMAG(_TitansModel):
     """Titans with Memory as Gate (Titans §4.2)."""
 
-    def __init__(self, config: TitansConfig) -> None:
-        super().__init__()
-        self.config = config
-
-        self.embed = nn.Embedding(config.vocab_size, config.dim)
-        self.blocks = nn.ModuleList(
-            [MAGBlock(config, layer_idx=i) for i in range(config.num_layers)]
-        )
-        self.norm = RMSNorm(config.dim)
-        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
-
-        self._init_weights()
-        self.head.weight = self.embed.weight
-        self._step_count = 0
-        self._attnres_schedule = _maybe_build_schedule(config)
-
-    def _init_weights(self) -> None:
-        nn.init.normal_(self.embed.weight, std=self.config.init_std)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
-        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
-
-        Args:
-            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
-            states: Per-block memory states from a previous chunk, or None.
-
-        Raises:
-            ValueError: If seq_len > chunk_size. Callers must chunk externally.
-        """
-        batch_size, seq_len = input_ids.shape
-        chunk_size = self.config.chunk_size
-
-        if seq_len > chunk_size:
-            raise ValueError(
-                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
-                f"Multi-chunk input is no longer supported in forward(). "
-                f"Split input_ids into chunks and call forward() per chunk."
-            )
-
-        if states is None:
-            states = [None] * len(self.blocks)
-
-        x = self.embed(input_ids)
-        x, new_states, gate_snapshots = process_chunk(
-            self.blocks,
-            x,
-            states,
-            self.config,
-            self._step_count,
-            attnres_schedule=self._attnres_schedule,
-        )
-
-        x = self.norm(x)
-        logits = self.head(x)
-        self._step_count += 1
-        return logits, new_states, gate_snapshots
+    _BLOCK_CLS = MAGBlock
 
 
-class MALBlock(nn.Module):
-    """Memory as Layer Block (Titans Eq. 29-31 — parallel sum).
-
-    Architecture per paper:
-      x̃ = norm1(h)                                  (Eq. 29)
-      y  = SW-Attn(x̃, prefix=persistent)            (Eq. 30)
-      z  = M([persistent || x̃])                    (Eq. 31)
-      core_out = y + z
-
-    Attention and memory are computed in parallel on the SAME normalized
-    input; there is no internal residual from mem_out into the attention
-    input (which would double-count the memory contribution).
-    """
-
-    def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
-        super().__init__()
-        self.config = config
-
-        if config.use_tnt:
-            from titans.tnt_memory import HierarchicalMemory
-            self.memory = HierarchicalMemory(config)
-        else:
-            self.memory = NeuralLongTermMemory(config)
-
-        self.persistent = PersistentMemory(config)
-        self.attention = SlidingWindowAttention(config)
-        self.ffn = FeedForward(config)
-
-        # Paper Eq. 29: x̃ = norm1(h) — shared by memory AND attention.
-        # norm2 is the FFN input norm.  (Former norm2/norm3 split is gone
-        # because attention no longer sees a memory-enriched residual.)
-        self.norm1 = RMSNorm(config.dim)
-        self.norm2 = RMSNorm(config.dim)
-
-        self.dropout = nn.Dropout(config.dropout) if config.dropout > 0 else None
-        self._last_falloff_centers: torch.Tensor | None = None
-        if config.adaptive_window:
-            from titans.adaptive_window import AdaptiveWindowPredictor
-
-            self.window_predictor = AdaptiveWindowPredictor(config)
-        _init_mca(self, config, layer_idx)
-
-        if config.use_attn_res:
-            from titans.attn_res import AttnResMemoryGate, BlockAttnRes
-
-            self.attn_res_core = BlockAttnRes(
-                config.dim, logit_clip=config.attnres_logit_clip
-            )
-            self.attn_res_ffn = BlockAttnRes(
-                config.dim, logit_clip=config.attnres_logit_clip
-            )
-            self.attn_res_gate = AttnResMemoryGate()
-
-    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
-        return _mca_forward(self, h, mem_state)
-
-    def core_forward(
-        self,
-        h: torch.Tensor,
-        state: MemoryState | None = None,
-        memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
-        batch_size = h.shape[0]
-
-        if state is None:
-            state = self.memory.init_state(batch_size)
-
-        persistent = self.persistent(batch_size)
-
-        # Eq. 29: x̃ = norm1(h) — shared by both branches.
-        normed = self.norm1(h)
-
-        # Eq. 30: y = SW-Attn(x̃, prefix=persistent).  Attention sees the
-        # raw normed input — NOT h + mem_out — so memory doesn't leak into
-        # the attention pathway twice.
-        adaptive_mask = None
-        if hasattr(self, "window_predictor"):
-            adaptive_mask, self._last_falloff_centers = self.window_predictor(normed)
-
-        attn_out = self.attention(normed, prefix=persistent, adaptive_mask=adaptive_mask)
-        if self.dropout is not None:
-            attn_out = self.dropout(attn_out)
-
-        # Eq. 31: z = M([persistent || x̃])
-        if persistent is not None:
-            mem_input = torch.cat([persistent, normed], dim=1)
-        else:
-            mem_input = normed
-        mem_out_full, new_state, gate_snapshot = self.memory(
-            mem_input, state=state, memory_gate=memory_gate
-        )
-        if persistent is not None:
-            mem_out = mem_out_full[:, persistent.shape[1] :, :]
-        else:
-            mem_out = mem_out_full
-        if self.dropout is not None:
-            mem_out = self.dropout(mem_out)
-
-        # Paper Eq. 31 closure: o = y + z (parallel sum).
-        core_out = attn_out + mem_out
-        return core_out, new_state, gate_snapshot
-
-    def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
-        # FFN uses norm2 now (norm3 was removed with the parallel-sum rewrite).
-        normed = self.norm2(h)
-        ffn_out = self.ffn(normed)
-        if self.dropout is not None:
-            ffn_out = self.dropout(ffn_out)
-        return ffn_out
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        state: MemoryState | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
-        core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
-        x = x + core_out
-        ffn_out = self.ffn_forward(x)
-        x = x + ffn_out
-        return x, new_state
-
-
-class TitansMAL(nn.Module):
+class TitansMAL(_TitansModel):
     """Titans with Memory as Layer (Titans §4.3)."""
 
-    def __init__(self, config: TitansConfig) -> None:
-        super().__init__()
-        self.config = config
-
-        self.embed = nn.Embedding(config.vocab_size, config.dim)
-        self.blocks = nn.ModuleList(
-            [MALBlock(config, layer_idx=i) for i in range(config.num_layers)]
-        )
-        self.norm = RMSNorm(config.dim)
-        self.head = nn.Linear(config.dim, config.vocab_size, bias=False)
-
-        self._init_weights()
-        self.head.weight = self.embed.weight
-        self._step_count = 0
-        self._attnres_schedule = _maybe_build_schedule(config)
-
-    def _init_weights(self) -> None:
-        nn.init.normal_(self.embed.weight, std=self.config.init_std)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        states: list[MemoryState | TNTMemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
-        """Process a single chunk. Returns (logits, new_states, gate_snapshots).
-
-        Args:
-            input_ids: Token IDs, shape (B, seq_len) where seq_len <= chunk_size.
-            states: Per-block memory states from a previous chunk, or None.
-
-        Raises:
-            ValueError: If seq_len > chunk_size. Callers must chunk externally.
-        """
-        batch_size, seq_len = input_ids.shape
-        chunk_size = self.config.chunk_size
-
-        if seq_len > chunk_size:
-            raise ValueError(
-                f"seq_len ({seq_len}) > chunk_size ({chunk_size}). "
-                f"Multi-chunk input is no longer supported in forward(). "
-                f"Split input_ids into chunks and call forward() per chunk."
-            )
-
-        if states is None:
-            states = [None] * len(self.blocks)
-
-        x = self.embed(input_ids)
-        x, new_states, gate_snapshots = process_chunk(
-            self.blocks,
-            x,
-            states,
-            self.config,
-            self._step_count,
-            attnres_schedule=self._attnres_schedule,
-        )
-
-        x = self.norm(x)
-        logits = self.head(x)
-        self._step_count += 1
-        return logits, new_states, gate_snapshots
+    _BLOCK_CLS = MALBlock
 
 
 class LMMBlock(nn.Module):
