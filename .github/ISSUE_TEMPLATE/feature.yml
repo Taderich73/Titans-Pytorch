@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a new feature or enhancement for OpenTitans
+title: "[feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please describe the problem first,
+        then the proposed solution — this helps us evaluate alternatives.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What are you trying to do that's currently hard or impossible?
+      placeholder: "I want to train with multiple local memories but the current API only exposes one chunk size."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Sketch the API if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds have you tried? Why aren't they sufficient?
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Papers, issues, or other projects that motivate this feature.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to help implement this feature.
+        - label: I'm willing to help review a PR for this feature.
