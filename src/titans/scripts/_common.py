@@ -684,6 +684,18 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
 
     log = parser.add_argument_group("Logging")
     log.add_argument("--log-every", type=int, default=10)
+    log.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help=(
+            "Root-logger level for structured (rich) console output. "
+            "Scripts install a RichHandler on the main process only, so "
+            "raising this to WARNING silences per-step info chatter on "
+            "all ranks at once."
+        ),
+    )
     log.add_argument("--wandb", action="store_true")
     log.add_argument("--wandb-project", type=str, default="titans")
     log.add_argument("--wandb-run-name", type=str, default=None)
@@ -737,22 +749,23 @@ class AcceleratorBundle:
 def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
     """Initialize the Accelerate runtime and a stdlib logger.
 
+    Installs a :class:`rich.logging.RichHandler` on the root logger of
+    the **main process only** (avoids interleaved output from rank->0
+    workers under multi-GPU). Non-main processes get the standard-
+    library default (no rich formatting) but still have ``logger.info``
+    etc. available for wandb.log / sync points.
+
     Args:
         cfg: Object with attributes ``gradient_accumulation_steps`` (int),
-            ``mixed_precision`` (str in {"no","fp16","bf16"}),
-            and ``wandb`` (bool).
+            ``mixed_precision`` (str in {"no","fp16","bf16"}), ``wandb``
+            (bool). An optional ``log_level`` attribute (string or int)
+            is honoured on the main process; defaults to ``"INFO"``.
 
     Returns:
         ``AcceleratorBundle`` with the accelerator instance (or a CPU
         stub), a module-level logger, ``is_main_process`` flag and a
         ``has_wandb`` flag indicating whether wandb logging is available.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
-    logger = logging.getLogger("scripts")
-
     if _HAS_ACCELERATE:
         accelerator = Accelerator(
             gradient_accumulation_steps=cfg.gradient_accumulation_steps,
@@ -773,6 +786,23 @@ def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
 
         accelerator = _Stub()
         is_main = True
+
+    # Rich logging only on the main process so multi-rank runs do not
+    # interleave per-step info output. Non-main ranks fall back to the
+    # stdlib default and are effectively silent at WARNING+.
+    log_level = getattr(cfg, "log_level", "INFO")
+    if is_main:
+        from titans._logging import setup_logging
+
+        setup_logging(log_level)
+    else:
+        root = logging.getLogger()
+        # Raise the bar so non-main ranks stay quiet by default.
+        if not root.handlers:
+            logging.basicConfig(level=logging.WARNING, format="%(message)s")
+        else:
+            root.setLevel(logging.WARNING)
+    logger = logging.getLogger("scripts")
 
     return AcceleratorBundle(
         accelerator=accelerator,

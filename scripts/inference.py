@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 
 from titans import TitansConfig, TitansMAC
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 
@@ -27,9 +28,7 @@ from titans.memory_dump import load_memory_states, save_memory_states
 # installed package instead of needing repo-root ``scripts/`` on disk.
 from titans.scripts import MODEL_CLASSES, create_model
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 try:

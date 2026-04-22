@@ -46,7 +46,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.lora import (
+    count_lora_parameters,
+    merge_lora_weights,
+    save_adapters,
+    wrap_lora_layers,
+)
 from titans.memory_dump import save_memory_states
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
@@ -65,12 +72,6 @@ from titans.scripts import (
     setup_checkpoint_dir,
 )
 from titans.scripts import tokenize_chat as _tokenize_chat_canonical
-from titans.lora import (
-    count_lora_parameters,
-    merge_lora_weights,
-    save_adapters,
-    wrap_lora_layers,
-)
 from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ except ImportError:
 HAS_DATASETS = importlib.util.find_spec("datasets") is not None
 HAS_WANDB = importlib.util.find_spec("wandb") is not None
 
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,7 @@ class LoRATrainingConfig:
 
     # Logging
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-lora"
     wandb_run_name: str | None = None
@@ -1340,6 +1343,7 @@ def parse_args() -> LoRATrainingConfig:
         resume=args.resume,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,

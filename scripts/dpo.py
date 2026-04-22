@@ -59,6 +59,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.lora import (
     count_lora_parameters,
@@ -111,10 +112,7 @@ HAS_WANDB = importlib.util.find_spec("wandb") is not None
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ChatML constants (IM_START, IM_END), format_chatml, build_loss_mask,
@@ -398,6 +396,7 @@ class DPOConfig:
 
     # --- Logging ---
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-dpo"
     wandb_run_name: str | None = None
@@ -1410,6 +1409,7 @@ def parse_args() -> DPOConfig:
         init_weights=args.init_weights,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,

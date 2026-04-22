@@ -69,8 +69,8 @@ import torch.nn.functional as F
 from torch.utils.data import IterableDataset
 from tqdm import tqdm
 
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
-from titans.memory_dump import load_memory_states, save_memory_states
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -78,6 +78,7 @@ from titans.lora import (
     set_lora_enabled,
     wrap_lora_layers,
 )
+from titans.memory_dump import load_memory_states, save_memory_states
 from titans.utils import seed_everything
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
@@ -121,10 +122,7 @@ HAS_WANDB = importlib.util.find_spec("wandb") is not None
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MODEL_CLASSES, create_model, and build_titans_config are imported from
@@ -861,6 +859,7 @@ class RLVRConfig:
 
     # --- Logging ---
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-rlvr"
     wandb_run_name: str | None = None
@@ -2147,6 +2146,7 @@ def parse_args() -> RLVRConfig:
         state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,

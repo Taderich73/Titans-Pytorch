@@ -44,6 +44,7 @@ from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
@@ -66,12 +67,12 @@ from titans.scripts import (
 )
 from titans.utils import seed_everything
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
-print(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}", flush=True)
+logger.info(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name()}", flush=True)
+    logger.info(f"GPU: {torch.cuda.get_device_name()}")
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +110,11 @@ def _log_mem(label: str) -> None:
     if not PROFILE_MEMORY:
         return
     alloc, max_alloc, reserved = _mem_snapshot()
-    print(
+    logger.info(
         f"[mem] {label:32s}  "
         f"alloc={alloc:6.2f}GB  "
         f"max_alloc={max_alloc:6.2f}GB  "
-        f"reserved={reserved:6.2f}GB",
-        flush=True,
+        f"reserved={reserved:6.2f}GB"
     )
 
 
@@ -195,19 +195,17 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
                 if not _under_limit():
                     return original(*args, **kwargs)
                 before_alloc, _ = _snapshot()
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward start: "
-                    f"alloc={before_alloc:6.2f}GB",
-                    flush=True,
+                    f"alloc={before_alloc:6.2f}GB"
                 )
                 result = original(*args, **kwargs)
                 after_alloc, max_alloc = _snapshot()
                 delta = after_alloc - before_alloc
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward done:  "
                     f"alloc={after_alloc:6.2f}GB  delta={delta:+6.3f}GB  "
-                    f"max={max_alloc:6.2f}GB",
-                    flush=True,
+                    f"max={max_alloc:6.2f}GB"
                 )
                 return result
             return wrapped
@@ -225,10 +223,9 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
                 if not _under_limit():
                     return
                 alloc, max_alloc = _snapshot()
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] memory done:        "
-                    f"alloc={alloc:6.2f}GB  max={max_alloc:6.2f}GB",
-                    flush=True,
+                    f"alloc={alloc:6.2f}GB  max={max_alloc:6.2f}GB"
                 )
             return hook
 
@@ -688,11 +685,11 @@ def train():
                 if _profile_this_step:
                     _log_mem(f"step {global_step:03d}: after optimizer step")
         except torch.cuda.OutOfMemoryError as oom:
-            print(f"\n[mem] CUDA OOM at step {global_step}", flush=True)
-            print(f"[mem] {oom}", flush=True)
+            logger.error(f"[mem] CUDA OOM at step {global_step}")
+            logger.error(f"[mem] {oom}")
             if torch.cuda.is_available():
                 summary = torch.cuda.memory_summary(abbreviated=True)
-                print(f"[mem] memory_summary:\n{summary}", flush=True)
+                logger.error(f"[mem] memory_summary:\n{summary}")
             raise
 
         # Capture delta/weight norms BEFORE optional global state reset
@@ -904,6 +901,6 @@ if __name__ == "__main__":
     try:
         train()
     except Exception as e:
-        print(f"\nFATAL ERROR: {e}", flush=True)
+        logger.error(f"FATAL ERROR: {e}")
         traceback.print_exc()
         sys.exit(1)
