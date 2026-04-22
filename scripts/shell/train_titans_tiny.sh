@@ -27,11 +27,10 @@ uv run python -u scripts/launch_pretraining_job.py \
       --dataset-subset sample-10BT \
       --max-steps 50000 \
       --save-every 2500 \
-      --titans-sha 4d45c52 \
+      --titans-sha 7327468 \
       --reset-global-state false \
       --hub-repo FlatFootInternational/opentitans-mac-145m \
       --flavor a10g-large \
       --timeout 24h
 
-      #--resume checkpoints/step_20000.safetensors \
-      #--save-format safetensors \
+      #--resume checkpoints/step_50000.safetensors \
