@@ -279,8 +279,7 @@ def main() -> None:
     if args.auto_checkpoint:
         import hashlib
         import json as json_mod
-        from titans.checkpoint_types import MemoryCheckpointConfig
-        from titans.memory_checkpointer import MemoryCheckpointer
+        from titans.checkpointing import MemoryCheckpointer, MemoryCheckpointConfig
         ckpt_config = MemoryCheckpointConfig(signal_log_enabled=args.signal_log)
         config_hash = hashlib.sha256(
             json_mod.dumps(config.to_dict(), sort_keys=True).encode()

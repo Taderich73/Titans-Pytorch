@@ -11,12 +11,12 @@ from pathlib import Path
 
 import torch
 
-from titans.checkpoint_types import (
+from titans.checkpointing.types import (
     GateSnapshot,
     MemoryCheckpointConfig,
     MemoryState,
 )
-from titans.memory_checkpointer import CheckpointerState, MemoryCheckpointer
+from titans.checkpointing.memory_checkpointer import CheckpointerState, MemoryCheckpointer
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +406,10 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
     """Regression: signal_source was being truncated to the last underscore
     segment, turning 'weight_delta' into 'delta'. Fix uses the decision object
     directly."""
-    from titans.checkpoint_types import CheckpointEntry, MemoryCheckpointConfig, MemoryState
-    from titans.memory_checkpointer import MemoryCheckpointer
-    from titans.novelty_detector import TriggerDecision
+    from titans.checkpointing.types import CheckpointEntry, MemoryCheckpointConfig
+    from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
+    from titans.checkpointing.novelty_detector import TriggerDecision
+    from titans.memory import MemoryState
 
     cfg = MemoryCheckpointConfig(
         checkpoint_dir=str(tmp_path),
@@ -459,7 +460,7 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
 def test_checkpointer_state_enum_has_no_triggered():
     """TRIGGERED was set then immediately overwritten in the same method, so
     it was never observable externally. Remove it from the enum."""
-    from titans.memory_checkpointer import CheckpointerState
+    from titans.checkpointing.memory_checkpointer import CheckpointerState
     names = {s.name for s in CheckpointerState}
     assert "TRIGGERED" not in names, (
         "Dead CheckpointerState.TRIGGERED still present"

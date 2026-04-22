@@ -5,8 +5,8 @@ import json
 import torch
 
 from titans import TitansConfig, TitansMAC
-from titans.checkpoint_types import MemoryCheckpointConfig
-from titans.memory_checkpointer import MemoryCheckpointer
+from titans.checkpointing.types import MemoryCheckpointConfig
+from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
 
 
 class TestAutoCheckpointIntegration:

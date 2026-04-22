@@ -253,7 +253,7 @@ class TitansMACConfig(PretrainedConfig):
 
         cp = kwargs.get("checkpoint_config")
         if isinstance(cp, dict):
-            from titans.checkpoint_types import MemoryCheckpointConfig
+            from titans.checkpointing import MemoryCheckpointConfig
 
             kwargs["checkpoint_config"] = MemoryCheckpointConfig.from_dict(cp)
         return TitansConfig(**kwargs)

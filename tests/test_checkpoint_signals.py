@@ -55,7 +55,7 @@ def _make_tnt_state(
 
 
 def _make_gate_snapshot(n_layers: int, device: torch.device) -> object:
-    from titans.checkpoint_types import GateSnapshot
+    from titans.checkpointing.types import GateSnapshot
 
     return GateSnapshot(
         alpha=[torch.tensor(0.9, device=device) for _ in range(n_layers)],
@@ -81,7 +81,7 @@ class TestComputeWeightDelta:
 
     def test_identical_states_delta_near_zero(self, device: torch.device) -> None:
         """Identical old and new states produce delta norms close to zero."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         state = _make_memory_state(2, 8, device)
         deltas = compute_weight_delta(state, state)
@@ -94,7 +94,7 @@ class TestComputeWeightDelta:
 
     def test_different_states_delta_positive(self, device: torch.device) -> None:
         """Different old and new states produce positive delta norms."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         old_state = _make_memory_state(1, 8, device, fill_value=0.0)
         new_state = _make_memory_state(1, 8, device, fill_value=1.0)
@@ -105,7 +105,7 @@ class TestComputeWeightDelta:
 
     def test_delta_matches_frobenius_norm(self, device: torch.device) -> None:
         """Delta norm equals ||W_new - W_old||_F for a known pair."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         dim = 4
         w_old = torch.zeros(dim, dim, device=device)
@@ -121,7 +121,7 @@ class TestComputeWeightDelta:
 
     def test_multi_layer_states(self, device: torch.device) -> None:
         """Returns one delta per layer for multi-layer states."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         n_layers = 3
         old_state = _make_memory_state(n_layers, 8, device, fill_value=0.0)
@@ -134,7 +134,7 @@ class TestComputeWeightDelta:
 
     def test_tnt_state_uses_global_weights(self, device: torch.device) -> None:
         """For TNTMemoryState, uses global_state.weights."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         dim = 4
         w_old = torch.zeros(dim, dim, device=device)
@@ -151,7 +151,7 @@ class TestComputeWeightDelta:
 
     def test_return_type_is_list_of_float(self, device: torch.device) -> None:
         """Return value is a list of Python floats (not tensors)."""
-        from titans.checkpoint_signals import compute_weight_delta
+        from titans.checkpointing.signals import compute_weight_delta
 
         state = _make_memory_state(2, 4, device)
         deltas = compute_weight_delta(state, state)
@@ -169,7 +169,7 @@ class TestComputeMomentumShift:
 
     def test_identical_momentum_near_zero(self, device: torch.device) -> None:
         """Identical states produce momentum shift norms close to zero."""
-        from titans.checkpoint_signals import compute_momentum_shift
+        from titans.checkpointing.signals import compute_momentum_shift
 
         state = _make_memory_state(2, 8, device)
         shifts = compute_momentum_shift(state, state)
@@ -181,7 +181,7 @@ class TestComputeMomentumShift:
 
     def test_different_momentum_positive(self, device: torch.device) -> None:
         """Different momentum states produce positive shift norms."""
-        from titans.checkpoint_signals import compute_momentum_shift
+        from titans.checkpointing.signals import compute_momentum_shift
 
         old_state = MemoryState(
             weights=[torch.zeros(4, 4, device=device)],
@@ -198,7 +198,7 @@ class TestComputeMomentumShift:
 
     def test_shift_matches_frobenius_norm(self, device: torch.device) -> None:
         """Shift norm equals ||m_new - m_old||_F for a known pair."""
-        from titans.checkpoint_signals import compute_momentum_shift
+        from titans.checkpointing.signals import compute_momentum_shift
 
         dim = 4
         m_old = torch.zeros(dim, dim, device=device)
@@ -213,7 +213,7 @@ class TestComputeMomentumShift:
 
     def test_tnt_state_uses_global_momentum(self, device: torch.device) -> None:
         """For TNTMemoryState, uses global_state.momentum."""
-        from titans.checkpoint_signals import compute_momentum_shift
+        from titans.checkpointing.signals import compute_momentum_shift
 
         old_tnt = _make_tnt_state(1, 1, 4, device, fill_value=0.0)
         new_tnt = _make_tnt_state(1, 1, 4, device, fill_value=2.0)
@@ -224,7 +224,7 @@ class TestComputeMomentumShift:
 
     def test_return_type_is_list_of_float(self, device: torch.device) -> None:
         """Return value is a list of Python floats."""
-        from titans.checkpoint_signals import compute_momentum_shift
+        from titans.checkpointing.signals import compute_momentum_shift
 
         state = _make_memory_state(2, 4, device)
         shifts = compute_momentum_shift(state, state)
@@ -242,7 +242,7 @@ class TestComputeNorms:
 
     def test_weight_norms_match_frobenius(self, device: torch.device) -> None:
         """compute_weight_norms() matches torch.linalg.norm(..., 'fro')."""
-        from titans.checkpoint_signals import compute_weight_norms
+        from titans.checkpointing.signals import compute_weight_norms
 
         dim = 4
         w = torch.full((dim, dim), 2.0, device=device)
@@ -255,7 +255,7 @@ class TestComputeNorms:
 
     def test_momentum_norms_match_frobenius(self, device: torch.device) -> None:
         """compute_momentum_norms() matches torch.linalg.norm(..., 'fro')."""
-        from titans.checkpoint_signals import compute_momentum_norms
+        from titans.checkpointing.signals import compute_momentum_norms
 
         dim = 4
         m = torch.full((dim, dim), 3.0, device=device)
@@ -268,7 +268,7 @@ class TestComputeNorms:
 
     def test_zero_weights_give_zero_norm(self, device: torch.device) -> None:
         """Zero weight tensors produce zero norms."""
-        from titans.checkpoint_signals import compute_weight_norms
+        from titans.checkpointing.signals import compute_weight_norms
 
         state = MemoryState(
             weights=[torch.zeros(4, 4, device=device)],
@@ -279,7 +279,7 @@ class TestComputeNorms:
 
     def test_multi_layer_norms_length(self, device: torch.device) -> None:
         """Returns one norm per layer."""
-        from titans.checkpoint_signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
 
         n_layers = 4
         state = _make_memory_state(n_layers, 8, device)
@@ -291,7 +291,7 @@ class TestComputeNorms:
 
     def test_weight_norms_tnt_uses_global(self, device: torch.device) -> None:
         """compute_weight_norms() on TNTMemoryState uses global_state.weights."""
-        from titans.checkpoint_signals import compute_weight_norms
+        from titans.checkpointing.signals import compute_weight_norms
 
         tnt = _make_tnt_state(2, 1, 4, device, fill_value=1.0)
         plain = _make_memory_state(2, 4, device, fill_value=1.0)
@@ -303,7 +303,7 @@ class TestComputeNorms:
 
     def test_momentum_norms_tnt_uses_global(self, device: torch.device) -> None:
         """compute_momentum_norms() on TNTMemoryState uses global_state.momentum."""
-        from titans.checkpoint_signals import compute_momentum_norms
+        from titans.checkpointing.signals import compute_momentum_norms
 
         tnt = _make_tnt_state(1, 1, 4, device, fill_value=2.0)
         plain = _make_memory_state(1, 4, device, fill_value=2.0)
@@ -315,7 +315,7 @@ class TestComputeNorms:
 
     def test_norms_are_non_negative(self, device: torch.device) -> None:
         """Frobenius norms are always non-negative."""
-        from titans.checkpoint_signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
 
         state = _make_memory_state(3, 8, device)
         for norm in compute_weight_norms(state) + compute_momentum_norms(state):
@@ -323,7 +323,7 @@ class TestComputeNorms:
 
     def test_return_type_is_list_of_float(self, device: torch.device) -> None:
         """Return values are lists of Python floats."""
-        from titans.checkpoint_signals import compute_weight_norms, compute_momentum_norms
+        from titans.checkpointing.signals import compute_weight_norms, compute_momentum_norms
 
         state = _make_memory_state(2, 4, device)
         assert all(isinstance(v, float) for v in compute_weight_norms(state))
@@ -340,8 +340,8 @@ class TestBuildSignalFrame:
 
     def test_basic_frame_from_memory_state(self, device: torch.device) -> None:
         """build_signal_frame() returns a SignalFrame for a MemoryState."""
-        from titans.checkpoint_signals import build_signal_frame
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.signals import build_signal_frame
+        from titans.checkpointing.types import SignalFrame
 
         n_layers = 2
         old_state = _make_memory_state(n_layers, 8, device, fill_value=0.0)
@@ -354,7 +354,7 @@ class TestBuildSignalFrame:
 
     def test_chunk_index_stored_correctly(self, device: torch.device) -> None:
         """chunk_index is propagated to the SignalFrame."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(1, 4, device)
         gates = _make_gate_snapshot(1, device)
@@ -364,7 +364,7 @@ class TestBuildSignalFrame:
 
     def test_tnt_fields_none_for_memory_state(self, device: torch.device) -> None:
         """TNT-only fields are None when state is MemoryState."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -374,7 +374,7 @@ class TestBuildSignalFrame:
 
     def test_all_list_fields_have_correct_length(self, device: torch.device) -> None:
         """All per-layer list fields have length == n_layers."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         n_layers = 3
         old_state = _make_memory_state(n_layers, 8, device, fill_value=0.0)
@@ -393,7 +393,7 @@ class TestBuildSignalFrame:
 
     def test_weight_delta_nonzero_when_states_differ(self, device: torch.device) -> None:
         """weight_delta_norms > 0 when old and new states differ."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         old_state = _make_memory_state(1, 4, device, fill_value=0.0)
         new_state = _make_memory_state(1, 4, device, fill_value=1.0)
@@ -404,7 +404,7 @@ class TestBuildSignalFrame:
 
     def test_prediction_error_norms_default_to_zeros(self, device: torch.device) -> None:
         """prediction_error_norms defaults to a list of zeros."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -414,7 +414,7 @@ class TestBuildSignalFrame:
 
     def test_gradient_norms_default_to_zeros(self, device: torch.device) -> None:
         """gradient_norms defaults to a list of zeros."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -424,7 +424,7 @@ class TestBuildSignalFrame:
 
     def test_optional_prediction_error_norms_accepted(self, device: torch.device) -> None:
         """Passing prediction_error_norms stores them in the frame."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -436,7 +436,7 @@ class TestBuildSignalFrame:
 
     def test_optional_gradient_norms_accepted(self, device: torch.device) -> None:
         """Passing gradient_norms stores them in the frame."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -448,7 +448,7 @@ class TestBuildSignalFrame:
 
     def test_batch_variance_stored(self, device: torch.device) -> None:
         """batch_variance is passed through to the frame."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(1, 4, device)
         gates = _make_gate_snapshot(1, device)
@@ -458,7 +458,7 @@ class TestBuildSignalFrame:
 
     def test_batch_variance_defaults_to_none(self, device: torch.device) -> None:
         """batch_variance defaults to None when not provided."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(1, 4, device)
         gates = _make_gate_snapshot(1, device)
@@ -468,7 +468,7 @@ class TestBuildSignalFrame:
 
     def test_gate_means_are_scalar_floats(self, device: torch.device) -> None:
         """Gate mean fields are lists of scalar Python floats."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -479,7 +479,7 @@ class TestBuildSignalFrame:
 
     def test_tnt_state_populates_tnt_fields(self, device: torch.device) -> None:
         """build_signal_frame() on TNTMemoryState populates TNT-only fields."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         n_layers = 1
         n_local = 2
@@ -495,7 +495,7 @@ class TestBuildSignalFrame:
 
     def test_tnt_local_signal_norms_shape(self, device: torch.device) -> None:
         """local_signal_norms outer dim equals n_local, inner equals n_layers."""
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         n_layers = 2
         n_local = 3
@@ -513,7 +513,7 @@ class TestBuildSignalFrame:
     def test_frame_to_dict_is_serializable(self, device: torch.device) -> None:
         """Frame produced by build_signal_frame() survives JSON round-trip."""
         import json
-        from titans.checkpoint_signals import build_signal_frame
+        from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
         gates = _make_gate_snapshot(2, device)
@@ -529,7 +529,7 @@ def test_signal_frame_no_duplicate_tnt_weight_norms():
     """Regression: global_signal_norms was populated with exactly the same
     values as weight_norms on the TNT path. Either remove the duplicate field
     or populate with distinct semantics. We choose removal."""
-    from titans.checkpoint_types import SignalFrame
+    from titans.checkpointing.types import SignalFrame
     import dataclasses
 
     field_names = {f.name for f in dataclasses.fields(SignalFrame)}
@@ -542,7 +542,7 @@ def test_signal_frame_no_duplicate_tnt_weight_norms():
 def test_signal_frame_no_local_reset_flags_field():
     """local_reset_flags was hard-coded to [False] * N, making the consumer
     branch in memory_checkpointer unreachable. Remove the field."""
-    from titans.checkpoint_types import SignalFrame
+    from titans.checkpointing.types import SignalFrame
     import dataclasses
 
     field_names = {f.name for f in dataclasses.fields(SignalFrame)}
@@ -561,8 +561,8 @@ def test_build_signal_frame_single_cpu_sync(monkeypatch) -> None:
     a single stacked tensor. Budget is generous (<= 4) to accommodate a few
     small scalar tolists without regressing the core contract.
     """
-    from titans.checkpoint_signals import build_signal_frame
-    from titans.checkpoint_types import GateSnapshot
+    from titans.checkpointing.signals import build_signal_frame
+    from titans.checkpointing.types import GateSnapshot
 
     item_calls = {"count": 0}
     tolist_calls = {"count": 0}
@@ -610,14 +610,14 @@ def test_build_signal_frame_single_cpu_sync(monkeypatch) -> None:
 
 def test_build_signal_frame_numeric_parity_after_batching() -> None:
     """Batched implementation must match element-wise the naive per-tensor one."""
-    from titans.checkpoint_signals import (
+    from titans.checkpointing.signals import (
         build_signal_frame,
         compute_momentum_norms,
         compute_momentum_shift,
         compute_weight_delta,
         compute_weight_norms,
     )
-    from titans.checkpoint_types import GateSnapshot
+    from titans.checkpointing.types import GateSnapshot
 
     n_layers = 3
     torch.manual_seed(17)
@@ -658,8 +658,8 @@ def test_build_signal_frame_numeric_parity_after_batching() -> None:
 
 def test_build_signal_frame_tnt_parity_and_batching(monkeypatch) -> None:
     """TNT path must also be batched and numerically equivalent."""
-    from titans.checkpoint_signals import build_signal_frame, compute_weight_norms
-    from titans.checkpoint_types import GateSnapshot
+    from titans.checkpointing.signals import build_signal_frame, compute_weight_norms
+    from titans.checkpointing.types import GateSnapshot
 
     n_layers = 3
     n_local = 2

@@ -14,6 +14,10 @@ Legacy top-level names that were exported in 0.6.x still resolve via
 :class:`DeprecationWarning` pointing at the canonical sub-module path.
 These shims will be removed in 0.8.
 
+The auto-checkpointing stack (``MemoryCheckpointer``, detectors, signal
+helpers, data types) lives under :mod:`titans.checkpointing` and is
+loaded only on demand; importing :mod:`titans` does not drag it in.
+
 Usage::
 
     import torch
@@ -92,10 +96,12 @@ __all__ = [
 # should be imported from going forward. The shim preserves import
 # compatibility for one release while nudging users toward the sub-module.
 #
-# NOTE: P9 will move ``checkpoint_types``, ``checkpoint_signals``,
-# ``novelty_detector`` and ``memory_checkpointer`` under
-# ``titans.checkpointing``. When that lands, update the corresponding
-# targets here.
+# The auto-checkpointing entries point at the ``titans.checkpointing``
+# package (new canonical home as of P9) rather than at the legacy
+# top-level shim modules (``titans.novelty_detector`` etc.). That way
+# ``from titans import StatisticalNoveltyDetector`` emits exactly one
+# DeprecationWarning — from here — instead of also triggering the
+# shim-module warning.
 _DEPRECATED_EXPORTS: dict[str, str] = {
     # titans.adaptive_window
     "AdaptiveWindowPredictor": "titans.adaptive_window",
@@ -130,23 +136,23 @@ _DEPRECATED_EXPORTS: dict[str, str] = {
     "save_adapters": "titans.lora",
     "set_lora_enabled": "titans.lora",
     "wrap_lora_layers": "titans.lora",
-    # titans.checkpoint_types (P9 will relocate to titans.checkpointing)
-    "CheckpointEntry": "titans.checkpoint_types",
-    "GateSnapshot": "titans.checkpoint_types",
-    "MemoryCheckpointConfig": "titans.checkpoint_types",
-    "SignalFrame": "titans.checkpoint_types",
-    "TransitionRecord": "titans.checkpoint_types",
-    # titans.checkpoint_signals (P9 will relocate to titans.checkpointing)
-    "build_signal_frame": "titans.checkpoint_signals",
-    "compute_momentum_norms": "titans.checkpoint_signals",
-    "compute_momentum_shift": "titans.checkpoint_signals",
-    "compute_weight_delta": "titans.checkpoint_signals",
-    "compute_weight_norms": "titans.checkpoint_signals",
-    # titans.novelty_detector (P9 will relocate to titans.checkpointing)
-    "StatisticalNoveltyDetector": "titans.novelty_detector",
-    "TriggerDecision": "titans.novelty_detector",
-    # titans.memory_checkpointer (P9 will relocate to titans.checkpointing)
-    "MemoryCheckpointer": "titans.memory_checkpointer",
+    # titans.checkpointing — data types (previously titans.checkpoint_types)
+    "CheckpointEntry": "titans.checkpointing",
+    "GateSnapshot": "titans.checkpointing",
+    "MemoryCheckpointConfig": "titans.checkpointing",
+    "SignalFrame": "titans.checkpointing",
+    "TransitionRecord": "titans.checkpointing",
+    # titans.checkpointing — signal helpers (previously titans.checkpoint_signals)
+    "build_signal_frame": "titans.checkpointing",
+    "compute_momentum_norms": "titans.checkpointing",
+    "compute_momentum_shift": "titans.checkpointing",
+    "compute_weight_delta": "titans.checkpointing",
+    "compute_weight_norms": "titans.checkpointing",
+    # titans.checkpointing — detection (previously titans.novelty_detector)
+    "StatisticalNoveltyDetector": "titans.checkpointing",
+    "TriggerDecision": "titans.checkpointing",
+    # titans.checkpointing — orchestrator (previously titans.memory_checkpointer)
+    "MemoryCheckpointer": "titans.checkpointing",
 }
 
 

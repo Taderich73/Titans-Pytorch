@@ -54,7 +54,7 @@ def test_load_memory_states_preserves_qk_projections_by_default(tmp_path):
     for training resume callers that used the default.
     """
     import torch
-    from titans.checkpoint_types import MemoryState, TNTMemoryState
+    from titans.memory import MemoryState, TNTMemoryState
     from titans.memory_dump import save_memory_states, load_memory_states
 
     qk = torch.randn(3, 4)
@@ -100,7 +100,7 @@ def test_load_memory_states_ignores_legacy_local_inits_key(tmp_path):
     must still load cleanly - the unknown keys should be ignored."""
     import numpy as np
 
-    from titans.checkpoint_types import MemoryState, TNTMemoryState
+    from titans.memory import MemoryState, TNTMemoryState
     from titans.memory_dump import load_memory_states, save_memory_states
 
     # Build a valid TNTMemoryState npz via save, then re-open and inject

@@ -103,26 +103,28 @@ will be deleted in 0.8 — migrate now.
 | `from titans import load_adapters` | `from titans.lora import load_adapters` |
 | `from titans import merge_lora_weights` | `from titans.lora import merge_lora_weights` |
 | `from titans import count_lora_parameters` | `from titans.lora import count_lora_parameters` |
-| `from titans import CheckpointEntry` | `from titans.checkpoint_types import CheckpointEntry` |
-| `from titans import GateSnapshot` | `from titans.checkpoint_types import GateSnapshot` |
-| `from titans import MemoryCheckpointConfig` | `from titans.checkpoint_types import MemoryCheckpointConfig` |
-| `from titans import SignalFrame` | `from titans.checkpoint_types import SignalFrame` |
-| `from titans import TransitionRecord` | `from titans.checkpoint_types import TransitionRecord` |
-| `from titans import build_signal_frame` | `from titans.checkpoint_signals import build_signal_frame` |
-| `from titans import compute_momentum_norms` | `from titans.checkpoint_signals import compute_momentum_norms` |
-| `from titans import compute_momentum_shift` | `from titans.checkpoint_signals import compute_momentum_shift` |
-| `from titans import compute_weight_delta` | `from titans.checkpoint_signals import compute_weight_delta` |
-| `from titans import compute_weight_norms` | `from titans.checkpoint_signals import compute_weight_norms` |
-| `from titans import StatisticalNoveltyDetector` | `from titans.novelty_detector import StatisticalNoveltyDetector` |
-| `from titans import TriggerDecision` | `from titans.novelty_detector import TriggerDecision` |
-| `from titans import MemoryCheckpointer` | `from titans.memory_checkpointer import MemoryCheckpointer` |
+| `from titans import CheckpointEntry` | `from titans.checkpointing import CheckpointEntry` |
+| `from titans import GateSnapshot` | `from titans.checkpointing import GateSnapshot` |
+| `from titans import MemoryCheckpointConfig` | `from titans.checkpointing import MemoryCheckpointConfig` |
+| `from titans import SignalFrame` | `from titans.checkpointing import SignalFrame` |
+| `from titans import TransitionRecord` | `from titans.checkpointing import TransitionRecord` |
+| `from titans import build_signal_frame` | `from titans.checkpointing import build_signal_frame` |
+| `from titans import compute_momentum_norms` | `from titans.checkpointing import compute_momentum_norms` |
+| `from titans import compute_momentum_shift` | `from titans.checkpointing import compute_momentum_shift` |
+| `from titans import compute_weight_delta` | `from titans.checkpointing import compute_weight_delta` |
+| `from titans import compute_weight_norms` | `from titans.checkpointing import compute_weight_norms` |
+| `from titans import StatisticalNoveltyDetector` | `from titans.checkpointing import StatisticalNoveltyDetector` |
+| `from titans import TriggerDecision` | `from titans.checkpointing import TriggerDecision` |
+| `from titans import MemoryCheckpointer` | `from titans.checkpointing import MemoryCheckpointer` |
 
-> A follow-up refactor (P9) will consolidate `checkpoint_types`,
-> `checkpoint_signals`, `novelty_detector`, and `memory_checkpointer`
-> under a single `titans.checkpointing` package. When that lands the
-> "New import" column for those rows will point at
-> `titans.checkpointing` and the current paths will themselves be
-> deprecated for one more release.
+> P9 consolidated `checkpoint_types`, `checkpoint_signals`,
+> `novelty_detector`, and `memory_checkpointer` into the
+> `titans.checkpointing` subpackage (`titans.checkpointing.types`,
+> `titans.checkpointing.signals`, `titans.checkpointing.novelty_detector`,
+> `titans.checkpointing.memory_checkpointer`). The old top-level module
+> paths still resolve via deprecation shims that will be removed in 0.8.
+> The subpackage is lazy — `import titans` does not load it; it's only
+> pulled in when you actually touch a name from `titans.checkpointing`.
 
 ## Stability policy
 

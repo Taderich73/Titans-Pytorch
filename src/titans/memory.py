@@ -501,7 +501,7 @@ class NeuralLongTermMemory(nn.Module):
 
         gate_snapshot = None
         if self.config.auto_checkpoint:
-            from titans.checkpoint_types import GateSnapshot
+            from titans.checkpointing import GateSnapshot
             gate_snapshot = GateSnapshot(
                 alpha=[alpha.detach()],
                 theta=[theta.detach()],

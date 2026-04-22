@@ -301,7 +301,7 @@ class TitansConfig:
         d = dict(d)  # Don't mutate the input
         known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
         if known.get("checkpoint_config") is not None and isinstance(known["checkpoint_config"], dict):
-            from titans.checkpoint_types import MemoryCheckpointConfig
+            from titans.checkpointing import MemoryCheckpointConfig
             known["checkpoint_config"] = MemoryCheckpointConfig.from_dict(known["checkpoint_config"])
         return cls(**known)
 

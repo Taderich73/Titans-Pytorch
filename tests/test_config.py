@@ -118,7 +118,7 @@ class TestAutoCheckpointConfig:
         assert config2.auto_checkpoint is True
 
     def test_checkpoint_config_in_dict(self):
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
         config = TitansConfig(
             auto_checkpoint=True,
             checkpoint_config=MemoryCheckpointConfig(sigma_threshold=3.0),

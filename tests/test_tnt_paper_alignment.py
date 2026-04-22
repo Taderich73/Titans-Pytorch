@@ -362,12 +362,12 @@ class TestPredictionErrorWiring:
     """Task 8: MemoryCheckpointer plumbs prediction_errors into SignalFrame."""
 
     def test_on_chunk_commit_accepts_prediction_errors(self, tmp_path, device):
-        from titans.checkpoint_types import (
+        from titans.checkpointing.types import (
             GateSnapshot,
             MemoryCheckpointConfig,
         )
         from titans.memory import MemoryState
-        from titans.memory_checkpointer import MemoryCheckpointer
+        from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
 
         cfg = MemoryCheckpointConfig(
             checkpoint_dir=str(tmp_path),
@@ -427,12 +427,12 @@ class TestPredictionErrorWiring:
     def test_on_chunk_commit_defaults_pred_errors_to_none(self, tmp_path, device):
         """Legacy callers that omit prediction_errors still get zero-filled
         primary signal (falls back to cascade)."""
-        from titans.checkpoint_types import (
+        from titans.checkpointing.types import (
             GateSnapshot,
             MemoryCheckpointConfig,
         )
         from titans.memory import MemoryState
-        from titans.memory_checkpointer import MemoryCheckpointer
+        from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
 
         cfg = MemoryCheckpointConfig(
             checkpoint_dir=str(tmp_path),

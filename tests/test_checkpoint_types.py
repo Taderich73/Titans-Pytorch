@@ -47,7 +47,7 @@ class TestGateSnapshot:
 
     def test_construction_without_delta(self, device: torch.device) -> None:
         """GateSnapshot can be constructed with delta=None."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.tensor(0.9, device=device)],
@@ -63,7 +63,7 @@ class TestGateSnapshot:
 
     def test_construction_with_delta(self, device: torch.device) -> None:
         """GateSnapshot can be constructed with delta set."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.tensor(0.9, device=device)],
@@ -78,7 +78,7 @@ class TestGateSnapshot:
 
     def test_detach_removes_grad(self, device: torch.device) -> None:
         """detach() returns new GateSnapshot with all tensors detached."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         alpha = torch.tensor(0.9, device=device, requires_grad=True)
         theta = torch.tensor(0.1, device=device, requires_grad=True)
@@ -105,7 +105,7 @@ class TestGateSnapshot:
 
     def test_detach_preserves_values(self, device: torch.device) -> None:
         """detach() preserves tensor values."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.tensor(0.77, device=device)],
@@ -122,7 +122,7 @@ class TestGateSnapshot:
 
     def test_detach_none_delta(self, device: torch.device) -> None:
         """detach() handles delta=None without error."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.zeros(1, device=device)],
@@ -137,7 +137,7 @@ class TestGateSnapshot:
 
     def test_to_device_cpu(self, device: torch.device) -> None:
         """to() moves all tensors to the given device."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.tensor(0.5, device=device)],
@@ -156,7 +156,7 @@ class TestGateSnapshot:
 
     def test_to_preserves_delta_none(self) -> None:
         """to() keeps delta as None when original is None."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         snap = GateSnapshot(
             alpha=[torch.zeros(1)],
@@ -171,7 +171,7 @@ class TestGateSnapshot:
 
     def test_multiple_layers(self, device: torch.device) -> None:
         """GateSnapshot supports multi-layer gate lists."""
-        from titans.checkpoint_types import GateSnapshot
+        from titans.checkpointing.types import GateSnapshot
 
         n = 3
         snap = GateSnapshot(
@@ -196,7 +196,7 @@ class TestSignalFrame:
     """Tests for the SignalFrame dataclass."""
 
     def _make_frame(self, chunk_index: int = 0, n_layers: int = 2) -> object:
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.types import SignalFrame
 
         return SignalFrame(
             chunk_index=chunk_index,
@@ -215,7 +215,7 @@ class TestSignalFrame:
 
     def test_construction_mac_mode(self) -> None:
         """SignalFrame constructs correctly with TNT-only fields as None."""
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.types import SignalFrame
 
         frame = SignalFrame(
             chunk_index=7,
@@ -236,7 +236,7 @@ class TestSignalFrame:
 
     def test_construction_tnt_mode(self) -> None:
         """SignalFrame constructs with TNT-only fields populated."""
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.types import SignalFrame
 
         frame = SignalFrame(
             chunk_index=2,
@@ -285,7 +285,7 @@ class TestSignalFrame:
 
     def test_to_dict_tnt_fields(self) -> None:
         """to_dict() serializes TNT-specific fields correctly."""
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.types import SignalFrame
 
         frame = SignalFrame(
             chunk_index=0,
@@ -316,7 +316,7 @@ class TestCheckpointEntry:
     def _make_entry(
         self, device: torch.device, trigger_phase: str = "before"
     ) -> object:
-        from titans.checkpoint_types import CheckpointEntry
+        from titans.checkpointing.types import CheckpointEntry
 
         state = _make_memory_state(2, 8, device)
         return CheckpointEntry(
@@ -345,7 +345,7 @@ class TestCheckpointEntry:
 
     def test_with_gates(self, device: torch.device) -> None:
         """CheckpointEntry accepts a GateSnapshot for gates."""
-        from titans.checkpoint_types import CheckpointEntry, GateSnapshot
+        from titans.checkpointing.types import CheckpointEntry, GateSnapshot
 
         gates = GateSnapshot(
             alpha=[torch.tensor(0.9, device=device)],
@@ -368,7 +368,7 @@ class TestCheckpointEntry:
 
     def test_tnt_state(self, device: torch.device) -> None:
         """CheckpointEntry accepts TNTMemoryState."""
-        from titans.checkpoint_types import CheckpointEntry
+        from titans.checkpointing.types import CheckpointEntry
 
         state = _make_tnt_memory_state(2, 2, 8, device)
         entry = CheckpointEntry(
@@ -392,7 +392,7 @@ class TestTransitionRecord:
     """Tests for the TransitionRecord dataclass."""
 
     def _make_entry(self, device: torch.device) -> object:
-        from titans.checkpoint_types import CheckpointEntry
+        from titans.checkpointing.types import CheckpointEntry
 
         return CheckpointEntry(
             state=_make_memory_state(1, 8, device),
@@ -405,7 +405,7 @@ class TestTransitionRecord:
         )
 
     def _make_signal_frame(self, idx: int) -> object:
-        from titans.checkpoint_types import SignalFrame
+        from titans.checkpointing.types import SignalFrame
 
         return SignalFrame(
             chunk_index=idx,
@@ -424,7 +424,7 @@ class TestTransitionRecord:
 
     def test_construction(self, device: torch.device) -> None:
         """TransitionRecord stores all sub-structures."""
-        from titans.checkpoint_types import TransitionRecord
+        from titans.checkpointing.types import TransitionRecord
 
         before = self._make_entry(device)
         during = self._make_entry(device)
@@ -448,7 +448,7 @@ class TestTransitionRecord:
 
     def test_after_can_be_empty(self, device: torch.device) -> None:
         """TransitionRecord.after may be an empty list (in-progress)."""
-        from titans.checkpoint_types import TransitionRecord
+        from titans.checkpointing.types import TransitionRecord
 
         record = TransitionRecord(
             before=self._make_entry(device),
@@ -473,7 +473,7 @@ class TestMemoryCheckpointConfig:
 
     def test_defaults(self) -> None:
         """Default values match specification."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         cfg = MemoryCheckpointConfig()
         assert cfg.checkpoint_dir == "memory_checkpoints"
@@ -493,7 +493,7 @@ class TestMemoryCheckpointConfig:
 
     def test_custom_construction(self) -> None:
         """MemoryCheckpointConfig accepts custom values."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         cfg = MemoryCheckpointConfig(
             checkpoint_dir="/tmp/ckpts",
@@ -508,7 +508,7 @@ class TestMemoryCheckpointConfig:
 
     def test_to_dict_contains_all_keys(self) -> None:
         """to_dict() includes every config field."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         cfg = MemoryCheckpointConfig()
         d = cfg.to_dict()
@@ -532,7 +532,7 @@ class TestMemoryCheckpointConfig:
 
     def test_to_dict_values_match(self) -> None:
         """to_dict() values match the config fields."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         cfg = MemoryCheckpointConfig(ring_size=99, sigma_threshold=1.5)
         d = cfg.to_dict()
@@ -541,7 +541,7 @@ class TestMemoryCheckpointConfig:
 
     def test_to_dict_is_json_serializable(self) -> None:
         """to_dict() output is JSON-serializable."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         cfg = MemoryCheckpointConfig()
         d = cfg.to_dict()
@@ -550,7 +550,7 @@ class TestMemoryCheckpointConfig:
 
     def test_from_dict_roundtrip(self) -> None:
         """from_dict(cfg.to_dict()) reconstructs an equivalent config."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         original = MemoryCheckpointConfig(
             checkpoint_dir="/ckpts",
@@ -572,7 +572,7 @@ class TestMemoryCheckpointConfig:
 
     def test_from_dict_missing_keys_use_defaults(self) -> None:
         """from_dict() uses default values for keys absent from the dict."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         # Partial dict — only override ring_size
         restored = MemoryCheckpointConfig.from_dict({"ring_size": 7})
@@ -582,7 +582,7 @@ class TestMemoryCheckpointConfig:
 
     def test_from_dict_ignores_unknown_keys(self) -> None:
         """from_dict() does not raise on unknown keys."""
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
 
         # Should not raise
         cfg = MemoryCheckpointConfig.from_dict({"ring_size": 5, "unknown_key": "foo"})

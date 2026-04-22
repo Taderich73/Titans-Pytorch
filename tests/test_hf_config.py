@@ -93,7 +93,7 @@ class TestTitansMACConfig:
 def test_titans_mac_config_roundtrips_auto_checkpoint_fields():
     """auto_checkpoint and checkpoint_config must survive the
     TitansConfig -> TitansMACConfig -> TitansConfig round-trip."""
-    from titans.checkpoint_types import MemoryCheckpointConfig
+    from titans.checkpointing.types import MemoryCheckpointConfig
 
     cp_cfg = MemoryCheckpointConfig(
         checkpoint_dir="./some/path",
@@ -123,7 +123,7 @@ def test_titans_mac_config_roundtrips_auto_checkpoint_fields():
 
 def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
     """Auto-checkpoint fields must survive save_pretrained / from_pretrained."""
-    from titans.checkpoint_types import MemoryCheckpointConfig
+    from titans.checkpointing.types import MemoryCheckpointConfig
 
     cp_cfg = MemoryCheckpointConfig(checkpoint_dir="./cp", ring_size=4)
     hf_cfg = TitansMACConfig(

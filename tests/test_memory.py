@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from titans.checkpoint_types import GateSnapshot
+from titans.checkpointing.types import GateSnapshot
 from titans.config import TitansConfig
 from titans.memory import MemoryState, NeuralLongTermMemory
 
