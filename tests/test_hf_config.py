@@ -44,7 +44,9 @@ class TestTitansMACConfig:
 
     def test_from_titans_config(self):
         """Creates HF config from native TitansConfig."""
-        titans_config = TitansConfig(dim=128, num_heads=2, num_layers=4, vocab_size=1000)
+        titans_config = TitansConfig(
+            dim=128, num_heads=2, num_layers=4, vocab_size=1000
+        )
         hf_config = TitansMACConfig.from_titans_config(titans_config)
         assert hf_config.dim == 128
         assert hf_config.num_heads == 2
@@ -54,9 +56,16 @@ class TestTitansMACConfig:
     def test_roundtrip_titans_config(self):
         """TitansConfig -> HF -> TitansConfig preserves all fields."""
         original = TitansConfig(
-            dim=512, num_heads=8, num_layers=12, vocab_size=32000,
-            chunk_size=256, use_tnt=True, use_attn_res=True, use_mca=True,
-            memory_objective="huber", adaptive_window=True,
+            dim=512,
+            num_heads=8,
+            num_layers=12,
+            vocab_size=32000,
+            chunk_size=256,
+            use_tnt=True,
+            use_attn_res=True,
+            use_mca=True,
+            memory_objective="huber",
+            adaptive_window=True,
         )
         hf_config = TitansMACConfig.from_titans_config(original)
         restored = hf_config.to_titans_config()
@@ -93,7 +102,7 @@ class TestTitansMACConfig:
 def test_titans_mac_config_roundtrips_auto_checkpoint_fields():
     """auto_checkpoint and checkpoint_config must survive the
     TitansConfig -> TitansMACConfig -> TitansConfig round-trip."""
-    from titans.checkpoint_types import MemoryCheckpointConfig
+    from titans.checkpointing.types import MemoryCheckpointConfig
 
     cp_cfg = MemoryCheckpointConfig(
         checkpoint_dir="./some/path",
@@ -123,7 +132,7 @@ def test_titans_mac_config_roundtrips_auto_checkpoint_fields():
 
 def test_titans_mac_config_auto_checkpoint_survives_save_pretrained():
     """Auto-checkpoint fields must survive save_pretrained / from_pretrained."""
-    from titans.checkpoint_types import MemoryCheckpointConfig
+    from titans.checkpointing.types import MemoryCheckpointConfig
 
     cp_cfg = MemoryCheckpointConfig(checkpoint_dir="./cp", ring_size=4)
     hf_cfg = TitansMACConfig(
@@ -159,8 +168,10 @@ def test_safe_register_passes_exist_ok_true():
 
     mock_cfg = MagicMock()
     mock_model = MagicMock()
-    with patch("transformers.AutoConfig.register", mock_cfg), \
-         patch("transformers.AutoModelForCausalLM.register", mock_model):
+    with (
+        patch("transformers.AutoConfig.register", mock_cfg),
+        patch("transformers.AutoModelForCausalLM.register", mock_model),
+    ):
         _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
 
     mock_cfg.assert_called_once_with("titans-mac", TitansMACConfig, exist_ok=True)
@@ -177,8 +188,10 @@ def test_safe_register_propagates_unrelated_valueerror():
     ``exist_ok=True`` at the upstream level and has no try/except of its own,
     so unrelated errors must propagate untouched.
     """
-    import pytest
     from unittest.mock import patch
+
+    import pytest
+
     from titans.hf import _safe_register
     from titans.hf.configuration import TitansMACConfig
     from titans.hf.modeling import TitansMACForCausalLM
@@ -186,9 +199,11 @@ def test_safe_register_propagates_unrelated_valueerror():
     def raise_other(*args, **kwargs):
         raise ValueError("Some unrelated validation failure")
 
-    with patch("transformers.AutoConfig.register", side_effect=raise_other):
-        with pytest.raises(ValueError, match="unrelated"):
-            _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
+    with (
+        patch("transformers.AutoConfig.register", side_effect=raise_other),
+        pytest.raises(ValueError, match="unrelated"),
+    ):
+        _safe_register("titans-mac", TitansMACConfig, TitansMACForCausalLM)
 
 
 class TestNewFieldsRoundTrip:
@@ -255,6 +270,7 @@ def test_titans_hf_double_import_is_idempotent():
     module reload is tolerated at the upstream level.
     """
     import importlib
+
     import titans.hf
 
     importlib.reload(titans.hf)

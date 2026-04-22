@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import torch
 
 from titans.checkpoint import load_checkpoint, save_checkpoint
@@ -121,9 +123,7 @@ class TestLoRAMemoryPersistence:
             mem_path = resume_path.parent / "memory_final.npz"
 
         memory_states = None
-        try:
+        with contextlib.suppress(Exception):
             memory_states = load_memory_states(mem_path, device=torch.device("cpu"))
-        except Exception:
-            pass
 
         assert memory_states is None

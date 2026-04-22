@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 
 from titans import TitansConfig, TitansMAC
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint
 from titans.memory_dump import load_memory_states, save_memory_states
 
@@ -27,9 +28,7 @@ from titans.memory_dump import load_memory_states, save_memory_states
 # installed package instead of needing repo-root ``scripts/`` on disk.
 from titans.scripts import MODEL_CLASSES, create_model
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 try:
@@ -67,7 +66,9 @@ def _save_final_memory(
 
 
 def load_model(
-    checkpoint_path: str, device: torch.device, variant: str = "mac",
+    checkpoint_path: str,
+    device: torch.device,
+    variant: str = "mac",
 ) -> tuple[TitansMAC, TitansConfig]:
     """Load model from checkpoint (.pt or .safetensors, auto-detected).
 
@@ -156,9 +157,7 @@ def generate(
     # We restore from this each step so partial-buffer re-processing
     # doesn't compound memory updates
     committed_states = (
-        [s.detach() if s is not None else None for s in states]
-        if states
-        else None
+        [s.detach() if s is not None else None for s in states] if states else None
     )
     buffer_start = generated.shape[1]  # where the decode buffer begins
     chunk_idx = 0
@@ -201,7 +200,9 @@ def generate(
             # re-process them for the next logits
             if buffer_len > chunk_size:
                 remainder = buffer[:, chunk_size:]
-                logits, states, gate_snapshots = model(remainder, states=committed_states)
+                logits, states, gate_snapshots = model(
+                    remainder, states=committed_states
+                )
                 if states is not None:
                     states = [s.detach() if s is not None else None for s in states]
         else:
@@ -221,7 +222,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Titans inference")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument(
-        "--model", type=str, default="mac",
+        "--model",
+        type=str,
+        default="mac",
         choices=sorted(MODEL_CLASSES.keys()),
         help="Titans model variant to instantiate from the checkpoint",
     )
@@ -241,11 +244,15 @@ def main() -> None:
         help="Save memory state after inference",
     )
     parser.add_argument(
-        "--auto-checkpoint", action="store_true", default=False,
+        "--auto-checkpoint",
+        action="store_true",
+        default=False,
         help="Enable novelty-triggered memory state checkpointing",
     )
     parser.add_argument(
-        "--signal-log", action="store_true", default=False,
+        "--signal-log",
+        action="store_true",
+        default=False,
         help="Enable signal log (WAL) for post-hoc analysis (requires --auto-checkpoint)",
     )
 
@@ -273,14 +280,17 @@ def main() -> None:
     logger.info(f"Model loaded: dim={config.dim}, layers={config.num_layers}")
 
     if args.signal_log and not args.auto_checkpoint:
-        logger.warning("--signal-log has no effect without --auto-checkpoint. Ignoring.")
+        logger.warning(
+            "--signal-log has no effect without --auto-checkpoint. Ignoring."
+        )
 
     checkpointer = None
     if args.auto_checkpoint:
         import hashlib
         import json as json_mod
-        from titans.checkpoint_types import MemoryCheckpointConfig
-        from titans.memory_checkpointer import MemoryCheckpointer
+
+        from titans.checkpointing import MemoryCheckpointConfig, MemoryCheckpointer
+
         ckpt_config = MemoryCheckpointConfig(signal_log_enabled=args.signal_log)
         config_hash = hashlib.sha256(
             json_mod.dumps(config.to_dict(), sort_keys=True).encode()

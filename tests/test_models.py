@@ -151,9 +151,7 @@ class TestTitansMAC:
             global_nltm = block.memory.global_memory.memory
             for name in gate_names_all:
                 proj = getattr(global_nltm, name, None)
-                assert proj is not None, (
-                    f"block[{block_idx}].global.{name} missing"
-                )
+                assert proj is not None, f"block[{block_idx}].global.{name} missing"
                 assert proj.bias.grad is not None, (
                     f"block[{block_idx}].global.{name}.bias.grad is None"
                 )
@@ -211,7 +209,9 @@ class TestTitansMAC:
         model.train()
 
         # Simulate 4-chunk training step via manual loop.
-        ids = torch.randint(0, config.vocab_size, (2, config.chunk_size * 4), device=device)
+        ids = torch.randint(
+            0, config.vocab_size, (2, config.chunk_size * 4), device=device
+        )
         chunks = ids.split(config.chunk_size, dim=1)
         states = None
 
@@ -234,9 +234,7 @@ class TestTitansMAC:
             global_nltm = block.memory.global_memory.memory
             for name in gate_names:
                 proj = getattr(global_nltm, name, None)
-                assert proj is not None, (
-                    f"block[{block_idx}].global.{name} missing"
-                )
+                assert proj is not None, f"block[{block_idx}].global.{name} missing"
                 assert proj.bias.grad is not None, (
                     f"block[{block_idx}].global.{name}.bias.grad is None "
                     f"(within-chunk gradient flow broken under manual chunk loop)"
@@ -377,11 +375,19 @@ class TestTNTIntegration:
     @pytest.fixture
     def tnt_config(self):
         return TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=1, num_persistent_tokens=4,
-            use_tnt=True, global_chunk_size=64,
-            local_chunk_sizes=[8], local_shard_length=64,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            global_chunk_size=64,
+            local_chunk_sizes=[8],
+            local_shard_length=64,
             use_qk_projection=True,
         )
 
@@ -407,10 +413,17 @@ class TestTNTIntegration:
 class TestMCAIntegration:
     def test_mac_with_mca(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_mca=True, mca_insertion_layers=[0],
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_mca=True,
+            mca_insertion_layers=[0],
         )
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -419,10 +432,17 @@ class TestMCAIntegration:
 
     def test_mag_with_mca(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_mca=True, mca_insertion_layers=[0],
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_mca=True,
+            mca_insertion_layers=[0],
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -433,10 +453,17 @@ class TestMCAIntegration:
 class TestAttnResIntegration:
     def test_mac_with_attn_res(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_attn_res=True, num_attnres_blocks=2,
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -445,10 +472,17 @@ class TestAttnResIntegration:
 
     def test_mag_with_attn_res(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_attn_res=True, num_attnres_blocks=2,
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -457,10 +491,17 @@ class TestAttnResIntegration:
 
     def test_mal_with_attn_res(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_attn_res=True, num_attnres_blocks=2,
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAL(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -469,10 +510,17 @@ class TestAttnResIntegration:
 
     def test_attn_res_backward(self, device):
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=4, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            use_attn_res=True, num_attnres_blocks=2,
+            dim=64,
+            num_heads=4,
+            num_layers=4,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_attn_res=True,
+            num_attnres_blocks=2,
         )
         model = TitansMAC(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)
@@ -491,9 +539,16 @@ class TestSingleChunkForward:
     def test_forward_single_chunk(self):
         """forward() with seq_len == chunk_size works and returns logits + states."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, num_memory_layers=2, num_persistent_tokens=4,
-            use_tnt=True, local_chunk_sizes=[8], local_shard_length=128,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            local_chunk_sizes=[8],
+            local_shard_length=128,
         )
         model = TitansMAC(config)
         model.train()
@@ -508,8 +563,13 @@ class TestSingleChunkForward:
     def test_forward_rejects_multi_chunk_input(self):
         """forward() should raise when seq_len > chunk_size."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, num_memory_layers=2, num_persistent_tokens=4,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
         )
         model = TitansMAC(config)
 
@@ -520,10 +580,18 @@ class TestSingleChunkForward:
     def test_manual_chunk_loop_matches_gate_gradients(self):
         """Manual chunk loop (simulating training) must give gate gradients."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, num_memory_layers=2, num_persistent_tokens=4,
-            use_tnt=True, local_chunk_sizes=[8], local_shard_length=128,
-            memory_objective="huber", huber_delta_init=-10.0,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            local_chunk_sizes=[8],
+            local_shard_length=128,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
         )
         model = TitansMAC(config)
         model.train()
@@ -554,11 +622,19 @@ class TestHierarchicalMemoryCleanup:
     def test_tnt_forward_output_has_gate_gradients(self):
         """HierarchicalMemory.forward output should have gradient path to gates."""
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=1, vocab_size=64,
-            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
-            use_tnt=True, local_chunk_sizes=[8], local_shard_length=128,
+            dim=32,
+            num_heads=4,
+            num_layers=1,
+            vocab_size=64,
+            chunk_size=16,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            use_tnt=True,
+            local_chunk_sizes=[8],
+            local_shard_length=128,
         )
         from titans.tnt_memory import HierarchicalMemory
+
         hm = HierarchicalMemory(config)
         hm.train()
 
@@ -583,6 +659,7 @@ class TestMACRetrieveOrdering:
         retrieve_after_update=True (default).  The two outputs must differ
         whenever the update is non-trivial."""
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 
@@ -626,6 +703,7 @@ class TestMACRetrieveOrdering:
         memory module (paper Eq. 24).  Verified by checking that mem_out
         matches an explicit pre-update retrieve(y_t, state)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -672,6 +750,7 @@ class TestMACRetrieveOrdering:
         non-default incoming state is supplied (the pre-update retrieval path
         must not assume identity weights)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -687,9 +766,7 @@ class TestMACRetrieveOrdering:
         block = MACBlock(config, layer_idx=0)
         h = torch.randn(1, 8, 32)
         state = block.memory.init_state(1)
-        state.weights[0] = state.weights[0] + 0.5 * torch.randn_like(
-            state.weights[0]
-        )
+        state.weights[0] = state.weights[0] + 0.5 * torch.randn_like(state.weights[0])
 
         core_out, _new_state, _ = block.core_forward(h, state=state)
         assert core_out.shape == (1, 8, 32)
@@ -701,6 +778,7 @@ class TestMACPerPositionQuery:
     def test_retrieved_shape_is_per_position(self):
         """mem_out consumed by the gate has shape (B, seq_len, D), not (B, 1, D)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -734,6 +812,7 @@ class TestMACPerPositionQuery:
     def test_different_positions_retrieve_differently(self):
         """Two positions with different content produce different retrieved tokens."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -770,6 +849,7 @@ class TestMACPerPositionQuery:
     def test_legacy_constant_query_mode(self):
         """With mac_per_position_memory_query=False, fall back to learned constant."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 

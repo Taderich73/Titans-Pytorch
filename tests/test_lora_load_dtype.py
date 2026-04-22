@@ -1,6 +1,7 @@
 """Regression: load_adapters silently cast incoming tensors to whatever dtype
 the target parameter used, discarding user intent and without a warning.
 Ensure we emit a warning and explicitly preserve target device."""
+
 from __future__ import annotations
 
 import logging

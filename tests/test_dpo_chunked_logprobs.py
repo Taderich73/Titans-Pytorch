@@ -6,7 +6,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
 import torch
 import torch.nn.functional as F
 
@@ -87,8 +86,12 @@ def test_compute_log_probs_matches_single_shot_when_seq_fits() -> None:
     with torch.no_grad():
         # New chunked path
         sum_logps_chunked, _, _ = compute_log_probs(
-            model, input_ids, labels, loss_mask,
-            vocab_size=32, states=None,
+            model,
+            input_ids,
+            labels,
+            loss_mask,
+            vocab_size=32,
+            states=None,
         )
 
         # Single-shot reference
@@ -99,9 +102,7 @@ def test_compute_log_probs_matches_single_shot_when_seq_fits() -> None:
         token_lp = log_probs.gather(-1, labels_clamped.unsqueeze(-1)).squeeze(-1)
         sum_logps_ref = (token_lp * loss_mask).sum(dim=-1)
 
-    torch.testing.assert_close(
-        sum_logps_chunked, sum_logps_ref, rtol=1e-5, atol=1e-5
-    )
+    torch.testing.assert_close(sum_logps_chunked, sum_logps_ref, rtol=1e-5, atol=1e-5)
 
 
 def test_compute_log_probs_no_crash_seq_gt_chunk() -> None:
@@ -116,8 +117,12 @@ def test_compute_log_probs_no_crash_seq_gt_chunk() -> None:
 
     with torch.no_grad():
         sum_logps, lengths, _ = compute_log_probs(
-            model, input_ids, labels, loss_mask,
-            vocab_size=32, states=None,
+            model,
+            input_ids,
+            labels,
+            loss_mask,
+            vocab_size=32,
+            states=None,
         )
 
     assert torch.isfinite(sum_logps).all()
@@ -146,12 +151,20 @@ def test_chosen_vs_rejected_differ_after_chunking() -> None:
 
     with torch.no_grad():
         chosen_lp, _, _ = compute_log_probs(
-            model, chosen_ids, chosen_labels, mask,
-            vocab_size=32, states=None,
+            model,
+            chosen_ids,
+            chosen_labels,
+            mask,
+            vocab_size=32,
+            states=None,
         )
         rejected_lp, _, _ = compute_log_probs(
-            model, rejected_ids, rejected_labels, mask,
-            vocab_size=32, states=None,
+            model,
+            rejected_ids,
+            rejected_labels,
+            mask,
+            vocab_size=32,
+            states=None,
         )
 
     assert chosen_lp.shape == rejected_lp.shape == (1,)

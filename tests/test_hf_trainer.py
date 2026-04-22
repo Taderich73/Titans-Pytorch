@@ -32,9 +32,15 @@ class DummyDataset(Dataset):
 @pytest.fixture
 def small_hf_config():
     return TitansMACConfig(
-        dim=64, num_heads=4, num_layers=2, vocab_size=256,
-        chunk_size=32, window_size=32, max_seq_len=256,
-        num_memory_layers=2, num_persistent_tokens=4,
+        dim=64,
+        num_heads=4,
+        num_layers=2,
+        vocab_size=256,
+        chunk_size=32,
+        window_size=32,
+        max_seq_len=256,
+        num_memory_layers=2,
+        num_persistent_tokens=4,
     )
 
 
@@ -66,7 +72,9 @@ class TestTitansTrainer:
             report_to="none",
         )
         trainer = TitansTrainer(
-            model=small_model, args=args, train_dataset=dataset,
+            model=small_model,
+            args=args,
+            train_dataset=dataset,
         )
         assert trainer._memory_states is None
         assert trainer.reset_memory_per_batch is True
@@ -82,7 +90,9 @@ class TestTitansTrainer:
             logging_steps=1,
         )
         trainer = TitansTrainer(
-            model=small_model, args=args, train_dataset=dataset,
+            model=small_model,
+            args=args,
+            train_dataset=dataset,
         )
         result = trainer.train()
         assert result.training_loss > 0
@@ -98,7 +108,9 @@ class TestTitansTrainer:
             report_to="none",
         )
         trainer = TitansTrainer(
-            model=small_model, args=args, train_dataset=dataset,
+            model=small_model,
+            args=args,
+            train_dataset=dataset,
             reset_memory_per_batch=True,
         )
         trainer.train()

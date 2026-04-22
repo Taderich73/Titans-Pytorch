@@ -33,7 +33,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from datasets import load_dataset
@@ -50,6 +49,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Core functions
 # ---------------------------------------------------------------------------
+
 
 def _save_shard(sequences: list[list[int]], output_path: Path, shard_idx: int) -> None:
     """Write a list of token sequences to a .npy shard file.
@@ -70,7 +70,7 @@ def pretokenize(
     output_dir: str,
     tokenizer_name: str = "gpt2",
     seq_len: int = 2048,
-    subset: Optional[str] = None,
+    subset: str | None = None,
     split: str = "train",
     max_tokens: int = -1,
     shard_size: int = 100_000,
@@ -95,12 +95,16 @@ def pretokenize(
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    logger.info(f"Loaded tokenizer: {tokenizer_name} (vocab_size={tokenizer.vocab_size})")
+    logger.info(
+        f"Loaded tokenizer: {tokenizer_name} (vocab_size={tokenizer.vocab_size})"
+    )
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Loading dataset: {dataset_name} (subset={subset!r}, split={split!r}, streaming=True)")
+    logger.info(
+        f"Loading dataset: {dataset_name} (subset={subset!r}, split={split!r}, streaming=True)"
+    )
     ds = load_dataset(dataset_name, subset, split=split, streaming=True)
 
     buffer: list[int] = []
@@ -172,6 +176,7 @@ def pretokenize(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -251,15 +256,21 @@ def main() -> None:
     logger.info("=" * 55)
     logger.info("Pre-tokenization complete!")
     logger.info(f"  Sequences : {meta['total_sequences']:>15,}")
-    logger.info(f"  Tokens    : {meta['total_tokens']:>15,}  ({meta['total_tokens'] / 1e9:.3f}B)")
+    logger.info(
+        f"  Tokens    : {meta['total_tokens']:>15,}  ({meta['total_tokens'] / 1e9:.3f}B)"
+    )
     logger.info(f"  Shards    : {meta['total_shards']:>15,}")
-    logger.info(f"  Token bytes: {meta['token_bytes']:>14,}  ({meta['token_bytes'] / 1024**3:.2f} GB)")
+    logger.info(
+        f"  Token bytes: {meta['token_bytes']:>14,}  ({meta['token_bytes'] / 1024**3:.2f} GB)"
+    )
     logger.info(f"  Compression ratio (chars/bytes): {meta['compression_ratio']:.2f}x")
     logger.info(f"  Output    : {args.output_dir}")
     logger.info("=" * 55)
     logger.info("")
     logger.info("Load shards in training with:")
-    logger.info(f"    np.load('{args.output_dir}/shard_00000.npy')  # shape (N, {args.seq_len + 1})")
+    logger.info(
+        f"    np.load('{args.output_dir}/shard_00000.npy')  # shape (N, {args.seq_len + 1})"
+    )
 
 
 if __name__ == "__main__":

@@ -131,9 +131,7 @@ def test_sft_evaluate_uses_chunked_loop() -> None:
     eval_start = src.index("def evaluate(")
     eval_end = src.index("def train(", eval_start)
     eval_body = src[eval_start:eval_end]
-    assert ".split(chunk_size, dim=1)" in eval_body, (
-        "evaluate() must chunk input_ids"
-    )
+    assert ".split(chunk_size, dim=1)" in eval_body, "evaluate() must chunk input_ids"
 
 
 def test_sft_eval_numerical_equivalence_single_chunk() -> None:
@@ -179,7 +177,7 @@ def _import_sft_module():
     scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
-    import sft  # noqa: WPS433
+    import sft
 
     return sft
 
@@ -199,10 +197,14 @@ def test_sft_parse_args_exposes_reset_flag(monkeypatch) -> None:
 
     sft = _import_sft_module()
 
-    monkeypatch.setattr(sys, "argv", [
-        "sft.py",
-        "--no-reset-memory-per-batch",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sft.py",
+            "--no-reset-memory-per-batch",
+        ],
+    )
     cfg = sft.parse_args()
     assert cfg.reset_memory_per_batch is False
 

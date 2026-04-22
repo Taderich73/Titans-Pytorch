@@ -307,7 +307,9 @@ def load_adapters(model: nn.Module, path: Path) -> dict[str, Any]:
             logger.warning(
                 "load_adapters: dtype mismatch for %s (ckpt=%s, "
                 "param=%s); casting to param dtype",
-                key, tensor.dtype, param.dtype,
+                key,
+                tensor.dtype,
+                param.dtype,
             )
         with torch.no_grad():
             param.data.copy_(tensor.to(param.device, param.dtype))

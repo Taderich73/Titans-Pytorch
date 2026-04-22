@@ -31,9 +31,7 @@ def test_chunked_forward_yields_per_chunk() -> None:
     model = _tiny_mac(chunk_size=chunk_size).eval()
     input_ids = torch.randint(0, 32, (2, chunk_size * 3))
 
-    chunks = list(
-        chunked_forward(model, input_ids, chunk_size, states=None)
-    )
+    chunks = list(chunked_forward(model, input_ids, chunk_size, states=None))
     assert len(chunks) == 3
     for logits, chunk_ids, _states in chunks:
         assert logits.shape == (2, chunk_size, 32)
@@ -49,9 +47,7 @@ def test_chunked_forward_ragged_last_chunk() -> None:
     model = _tiny_mac(chunk_size=chunk_size).eval()
     input_ids = torch.randint(0, 32, (1, chunk_size * 2 + 3))
 
-    chunks = list(
-        chunked_forward(model, input_ids, chunk_size, states=None)
-    )
+    chunks = list(chunked_forward(model, input_ids, chunk_size, states=None))
     assert len(chunks) == 3
     assert chunks[0][1].shape == (1, chunk_size)
     assert chunks[1][1].shape == (1, chunk_size)
@@ -68,9 +64,7 @@ def test_chunked_forward_detaches_between_chunks() -> None:
     input_ids = torch.randint(0, 32, (1, chunk_size * 2))
 
     chunks = list(
-        chunked_forward(
-            model, input_ids, chunk_size, states=None, detach_between=True
-        )
+        chunked_forward(model, input_ids, chunk_size, states=None, detach_between=True)
     )
     # Every chunk's yielded state must be detached.
     for _, _, chunk_states in chunks:
@@ -92,9 +86,7 @@ def test_chunked_forward_preserves_graph_when_detach_false() -> None:
     input_ids = torch.randint(0, 32, (1, chunk_size * 2))
 
     chunks = list(
-        chunked_forward(
-            model, input_ids, chunk_size, states=None, detach_between=False
-        )
+        chunked_forward(model, input_ids, chunk_size, states=None, detach_between=False)
     )
     # First chunk's logits must require grad so loss.backward() is valid.
     logits0, _, _ = chunks[0]
@@ -110,9 +102,7 @@ def test_chunked_forward_single_chunk_when_seq_eq_chunk() -> None:
     model = _tiny_mac(chunk_size=chunk_size).eval()
     input_ids = torch.randint(0, 32, (1, chunk_size))
 
-    chunks = list(
-        chunked_forward(model, input_ids, chunk_size, states=None)
-    )
+    chunks = list(chunked_forward(model, input_ids, chunk_size, states=None))
     assert len(chunks) == 1
     assert chunks[0][1].shape == (1, chunk_size)
 
@@ -129,9 +119,7 @@ def test_chunked_forward_threads_states_across_chunks() -> None:
     # Single-shot reference (one full chunk pair through the model).
     with torch.no_grad():
         logits_ref_1, states_1, _ = model(input_ids[:, :chunk_size], states=None)
-        logits_ref_2, states_2, _ = model(
-            input_ids[:, chunk_size:], states=states_1
-        )
+        logits_ref_2, states_2, _ = model(input_ids[:, chunk_size:], states=states_1)
 
         chunks = list(
             chunked_forward(

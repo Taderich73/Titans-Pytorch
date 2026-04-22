@@ -28,7 +28,10 @@ def log_sdpa_backend() -> str:
         backends.append("mem_efficient")
     if torch.backends.cuda.math_sdp_enabled():
         backends.append("math")
-    if hasattr(torch.backends.cuda, "cudnn_sdp_enabled") and torch.backends.cuda.cudnn_sdp_enabled():
+    if (
+        hasattr(torch.backends.cuda, "cudnn_sdp_enabled")
+        and torch.backends.cuda.cudnn_sdp_enabled()
+    ):
         backends.append("cudnn")
     return ",".join(backends) if backends else "none_enabled"
 

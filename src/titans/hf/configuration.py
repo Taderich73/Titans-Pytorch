@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import warnings
+from collections.abc import Iterator
 from typing import Any
 
 from transformers import PretrainedConfig
 
+from titans import TITANS_SCHEMA_VERSION
 from titans.config import TitansConfig
+
+
+@contextlib.contextmanager
+def _suppress_unversioned_warning() -> Iterator[None]:
+    """Silence the schema-version ``DeprecationWarning`` emitted by
+    ``TitansMACConfig.__init__`` when the HF base class makes internal
+    default-instance calls (``self.__class__()``) for diffing or
+    generation-parameter filtering.
+
+    Scoped narrowly to our specific message so unrelated deprecations
+    (e.g. ``torch_dtype``) still surface.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="HF config missing 'titans_schema_version' field.*",
+            category=DeprecationWarning,
+        )
+        yield
 
 
 class TitansMACConfig(PretrainedConfig):
@@ -85,11 +108,44 @@ class TitansMACConfig(PretrainedConfig):
         checkpoint_config: Any | None = None,
         mac_per_position_memory_query: bool = True,
         num_memory_inner_steps: int = 1,
+        titans_schema_version: int | None = None,
         **kwargs,
     ) -> None:
         # Set architectures before super().__init__ so save_pretrained includes it.
         kwargs.setdefault("architectures", ["TitansMACForCausalLM"])
         super().__init__(**kwargs)
+        # Schema-version dispatch (P5). Sentinel default (``None``) is how
+        # we distinguish "caller omitted the field entirely" (which includes
+        # loading an unversioned, pre-0.7 ``config.json``) from "caller
+        # asked for the current version explicitly." Silently defaulting to
+        # ``TITANS_SCHEMA_VERSION`` would upgrade legacy configs in place
+        # and defeat the whole point of versioning.
+        if titans_schema_version is None:
+            warnings.warn(
+                (
+                    "HF config missing 'titans_schema_version' field; "
+                    "assuming pre-0.7 unversioned layout. Re-save the "
+                    "config with a current version of titans to silence "
+                    "this warning. See MIGRATIONS.md."
+                ),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            titans_schema_version = TITANS_SCHEMA_VERSION  # best-effort
+        elif titans_schema_version > TITANS_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"HF config schema version {titans_schema_version} > "
+                f"current {TITANS_SCHEMA_VERSION}; upgrade titans. See "
+                "MIGRATIONS.md."
+            )
+        elif titans_schema_version < TITANS_SCHEMA_VERSION:
+            # v1 has no migrations; future versions should dispatch here
+            # via a registry analogous to titans.memory_dump._MIGRATIONS.
+            raise RuntimeError(
+                f"HF config schema version {titans_schema_version} is "
+                f"older than current {TITANS_SCHEMA_VERSION} and no "
+                "migration is registered. See MIGRATIONS.md."
+            )
         self.dim = dim
         self.num_heads = num_heads
         self.num_layers = num_layers
@@ -113,7 +169,9 @@ class TitansMACConfig(PretrainedConfig):
         self.rope_proportion = rope_proportion
         self.use_tnt = use_tnt
         self.global_chunk_size = global_chunk_size
-        self.local_chunk_sizes = local_chunk_sizes if local_chunk_sizes is not None else [8, 16]
+        self.local_chunk_sizes = (
+            local_chunk_sizes if local_chunk_sizes is not None else [8, 16]
+        )
         self.local_shard_length = local_shard_length
         self.use_qk_projection = use_qk_projection
         self.tnt_qk_projection = tnt_qk_projection
@@ -151,13 +209,17 @@ class TitansMACConfig(PretrainedConfig):
         self.init_std = init_std
         self.mac_per_position_memory_query = mac_per_position_memory_query
         self.num_memory_inner_steps = num_memory_inner_steps
+        # Schema version (P5) — always surfaced as a top-level config.json
+        # attribute so downstream consumers can branch on it. Dispatch
+        # (missing -> warn; newer/older -> RuntimeError) is handled
+        # immediately after ``super().__init__`` above so any failure
+        # happens before we populate the rest of the object.
+        self.titans_schema_version = titans_schema_version
         self.auto_checkpoint = auto_checkpoint
         # Serialize MemoryCheckpointConfig as a dict on the HF side so it
         # survives JSON round-trips (config.json); rehydrate in
         # to_titans_config().
-        if checkpoint_config is not None and not isinstance(
-            checkpoint_config, dict
-        ):
+        if checkpoint_config is not None and not isinstance(checkpoint_config, dict):
             self.checkpoint_config = (
                 checkpoint_config.to_dict()
                 if hasattr(checkpoint_config, "to_dict")
@@ -166,6 +228,25 @@ class TitansMACConfig(PretrainedConfig):
         else:
             self.checkpoint_config = checkpoint_config
 
+    def to_diff_dict(self) -> dict[str, Any]:
+        """Serialize only fields that differ from class defaults.
+
+        Overrides :meth:`PretrainedConfig.to_diff_dict` solely to suppress
+        the unversioned-config ``DeprecationWarning`` that would otherwise
+        fire when the base implementation constructs a throw-away
+        ``self.__class__()`` instance to compute defaults.
+        """
+        with _suppress_unversioned_warning():
+            return super().to_diff_dict()
+
+    def _get_generation_parameters(self) -> dict[str, Any]:
+        """Same rationale as :meth:`to_diff_dict` — the base impl
+        constructs a throw-away default instance, which would otherwise
+        emit a spurious unversioned-config warning on every
+        :meth:`save_pretrained`."""
+        with _suppress_unversioned_warning():
+            return super()._get_generation_parameters()
+
     def to_titans_config(self) -> TitansConfig:
         """Convert to native TitansConfig for model construction."""
         field_names = {f.name for f in dataclasses.fields(TitansConfig)}
@@ -173,7 +254,7 @@ class TitansMACConfig(PretrainedConfig):
 
         cp = kwargs.get("checkpoint_config")
         if isinstance(cp, dict):
-            from titans.checkpoint_types import MemoryCheckpointConfig
+            from titans.checkpointing import MemoryCheckpointConfig
 
             kwargs["checkpoint_config"] = MemoryCheckpointConfig.from_dict(cp)
         return TitansConfig(**kwargs)
@@ -182,7 +263,15 @@ class TitansMACConfig(PretrainedConfig):
     def from_titans_config(
         cls, titans_config: TitansConfig, **kwargs
     ) -> TitansMACConfig:
-        """Create from an existing native TitansConfig."""
+        """Create from an existing native TitansConfig.
+
+        Stamps the current ``TITANS_SCHEMA_VERSION`` explicitly — this
+        is a fresh in-memory construction, not a load from disk, so it
+        should not take the unversioned legacy path. Callers can still
+        override via ``**kwargs`` (useful for tests that exercise the
+        version-dispatch branches).
+        """
         d = titans_config.to_dict()
+        d.setdefault("titans_schema_version", TITANS_SCHEMA_VERSION)
         d.update(kwargs)
         return cls(**d)

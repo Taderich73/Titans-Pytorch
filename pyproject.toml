@@ -10,7 +10,7 @@ authors = [
 ]
 keywords = ["deep-learning", "memory", "transformers", "pytorch", "cuda", "gpu"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3.12",
@@ -85,9 +85,30 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
+    "ARG001",  # unused function arguments (fixtures, mock sigs, API parity)
     "ARG002",  # unused method arguments
     "E402",    # module-level imports
 ]
+# scripts/pretrain.py must reconfigure stdout/stderr line buffering before
+# importing numpy/torch so HF Jobs logs stream in real-time.
+"scripts/pretrain.py" = ["E402"]
+# titans.__init__ defines TITANS_SCHEMA_VERSION before the curated re-export
+# imports on purpose (the constant is part of the public surface and must be
+# declared alongside its docstring, before the eager imports below).
+"src/titans/__init__.py" = ["E402"]
+# titans.hf.__init__ places the transformers import after _VARIANT_REGISTRY so
+# the registry table reads as a self-contained block above the registration
+# helper.
+"src/titans/hf/__init__.py" = ["E402"]
+# titans.scripts._common.py uses section-header imports (importlib.util, re,
+# Path) introduced partway through the file to keep each helper's dependencies
+# co-located with the function that uses them.
+"src/titans/scripts/_common.py" = ["E402"]
+# HF integration layer mirrors upstream transformers signatures (attention_mask,
+# **kwargs, etc.) so Trainer/AutoModel dispatch works; ruff flags these as
+# unused but they are load-bearing API parity.
+"src/titans/hf/modeling.py" = ["ARG002"]
+"src/titans/hf/trainer.py" = ["ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["titans"]
@@ -114,6 +135,20 @@ testpaths = ["tests"]
 # via ``from scripts import pretrain`` for smoke / help-exit checks.
 pythonpath = ["src", "."]
 addopts = "-v --tb=short"
+markers = [
+    "slow: exhaustive / subprocess-heavy tests; skipped in default fast-path runs",
+]
+
+[tool.coverage.run]
+source = ["src/titans"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
 
 [dependency-groups]
 dev = [

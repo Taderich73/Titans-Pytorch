@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import sys
 
 import pytest
 import torch
 
+from tests._subprocess_helpers import subprocess_python
 from titans import TitansConfig
 from titans.scripts import (
     CHATML_IM_END,
@@ -89,9 +89,7 @@ def test_maybe_compile_attn_res_no_longer_auto_disables(caplog) -> None:
     """
     model = torch.nn.Linear(4, 4)
     with caplog.at_level(logging.WARNING, logger="titans.scripts._common"):
-        out = maybe_compile(
-            model, enabled=True, device_type="cpu", use_attn_res=True
-        )
+        out = maybe_compile(model, enabled=True, device_type="cpu", use_attn_res=True)
     assert out is model  # CPU path is a no-op
     assert not any("attn_res" in r.message.lower() for r in caplog.records)
 
@@ -305,8 +303,12 @@ class TestCreateModel:
     @pytest.mark.parametrize("variant", ["mac", "mag", "mal", "lmm"])
     def test_every_variant_instantiates(self, variant: str) -> None:
         cfg = TitansConfig(
-            dim=32, num_heads=2, num_layers=2, vocab_size=128,
-            chunk_size=8, window_size=8,
+            dim=32,
+            num_heads=2,
+            num_layers=2,
+            vocab_size=128,
+            chunk_size=8,
+            window_size=8,
         )
         model = create_model(variant, cfg)
         # One forward pass must not explode.
@@ -435,6 +437,7 @@ class TestBaseArgparseParser:
 
     def test_returns_argparse_parser(self) -> None:
         import argparse
+
         p = base_argparse_parser(description="x")
         assert isinstance(p, argparse.ArgumentParser)
 
@@ -524,6 +527,7 @@ class TestInitAcceleratorAndLogging:
     def test_without_accelerate_graceful(self, monkeypatch) -> None:
         """Callers that run without accelerate still get a usable object."""
         from titans.scripts import _common
+
         monkeypatch.setattr(_common, "_HAS_ACCELERATE", False, raising=False)
         bundle = _common.init_accelerator_and_logging(_CfgForAcc())
         # Stub accelerator should still expose is_main_process + device attrs.
@@ -618,7 +622,7 @@ class TestDPOMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/dpo.py", "--help"],
+            [*subprocess_python(), "scripts/dpo.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -638,7 +642,7 @@ class TestRLVRMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/rlvr.py", "--help"],
+            [*subprocess_python(), "scripts/rlvr.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -659,7 +663,7 @@ class TestPretrainMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/pretrain.py", "--help"],
+            [*subprocess_python(), "scripts/pretrain.py", "--help"],
             capture_output=True,
             timeout=30,
         )
@@ -688,7 +692,7 @@ class TestInferenceMigrationSmoke:
         import subprocess
 
         r = subprocess.run(
-            [sys.executable, "scripts/inference.py", "--help"],
+            [*subprocess_python(), "scripts/inference.py", "--help"],
             capture_output=True,
             timeout=30,
         )

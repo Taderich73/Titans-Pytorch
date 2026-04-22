@@ -5,16 +5,21 @@ import json
 import torch
 
 from titans import TitansConfig, TitansMAC
-from titans.checkpoint_types import MemoryCheckpointConfig
-from titans.memory_checkpointer import MemoryCheckpointer
+from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
+from titans.checkpointing.types import MemoryCheckpointConfig
 
 
 class TestAutoCheckpointIntegration:
     def test_end_to_end_no_trigger(self, tmp_path):
         """Run a short generation with checkpointing — no trigger expected."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=16, window_size=16, num_memory_layers=1,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=16,
+            window_size=16,
+            num_memory_layers=1,
             auto_checkpoint=True,
         )
         model = TitansMAC(config)
@@ -47,8 +52,13 @@ class TestAutoCheckpointIntegration:
     def test_end_to_end_with_signal_log(self, tmp_path):
         """Run with signal log enabled — verify log files created."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=16, window_size=16, num_memory_layers=1,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=16,
+            window_size=16,
+            num_memory_layers=1,
             auto_checkpoint=True,
         )
         model = TitansMAC(config)
@@ -80,8 +90,13 @@ class TestAutoCheckpointIntegration:
     def test_gate_snapshots_populated(self, tmp_path):
         """Verify gate snapshots are actually populated when auto_checkpoint=True."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=16, window_size=16, num_memory_layers=1,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=16,
+            window_size=16,
+            num_memory_layers=1,
             auto_checkpoint=True,
         )
         model = TitansMAC(config)

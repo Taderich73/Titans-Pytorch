@@ -47,9 +47,7 @@ def example_tnt() -> None:
     print(f"  Local step counters: {state.local_step_counters}")
 
     # Two-stage training configs
-    stage1 = TitansConfig.tnt_stage1(
-        dim=128, num_heads=4, num_layers=2, vocab_size=256
-    )
+    stage1 = TitansConfig.tnt_stage1(dim=128, num_heads=4, num_layers=2, vocab_size=256)
     stage2 = TitansConfig.tnt_stage2(stage1)
     print(f"  Stage 1 chunk sizes: {stage1.local_chunk_sizes}")
     print(f"  Stage 2 chunk sizes: {stage2.active_local_chunk_sizes}")
@@ -151,8 +149,10 @@ def example_adaptive_window() -> None:
     input_ids = torch.randint(0, 256, (1, 64))
 
     logits, states = model(input_ids)
-    print(f"  Window range: [{config.adaptive_window_min}, "
-          f"{config.effective_adaptive_window_max}]")
+    print(
+        f"  Window range: [{config.adaptive_window_min}, "
+        f"{config.effective_adaptive_window_max}]"
+    )
     print(f"  Temperature: {config.adaptive_window_temperature}")
     print(f"  Output shape: {logits.shape}")
 
@@ -219,9 +219,11 @@ def example_full_composition() -> None:
     logits, states = model(input_ids)
     print(f"  Parameters: {total_params:,}")
     print(f"  Output shape: {logits.shape}")
-    print(f"  Features: TNT={config.use_tnt}, AttnRes={config.use_attn_res}, "
-          f"MCA={config.use_mca}, Huber={config.memory_objective}, "
-          f"p-RoPE={config.rope_proportion}")
+    print(
+        f"  Features: TNT={config.use_tnt}, AttnRes={config.use_attn_res}, "
+        f"MCA={config.use_mca}, Huber={config.memory_objective}, "
+        f"p-RoPE={config.rope_proportion}"
+    )
 
 
 def main() -> None:

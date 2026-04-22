@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from titans.checkpoint_types import GateSnapshot
+from titans.checkpointing.types import GateSnapshot
 from titans.config import TitansConfig
 from titans.memory import MemoryState, NeuralLongTermMemory
 
@@ -130,7 +130,9 @@ class TestNeuralLongTermMemory:
 
     def test_gate_snapshot_none_when_auto_checkpoint_false(self, device):
         """gate_snapshot is None when auto_checkpoint=False (default)."""
-        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=False)
+        config = TitansConfig(
+            dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=False
+        )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
         _, _, gate_snapshot = mem(x)
@@ -138,7 +140,9 @@ class TestNeuralLongTermMemory:
 
     def test_gate_snapshot_populated_when_auto_checkpoint_true(self, device):
         """gate_snapshot is a GateSnapshot when auto_checkpoint=True."""
-        config = TitansConfig(dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=True)
+        config = TitansConfig(
+            dim=64, num_heads=4, num_memory_layers=1, auto_checkpoint=True
+        )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
         _, _, gate_snapshot = mem(x)
@@ -153,8 +157,11 @@ class TestNeuralLongTermMemory:
     def test_gate_snapshot_has_delta_with_huber(self, device):
         """gate_snapshot.delta is populated when memory_objective='huber'."""
         config = TitansConfig(
-            dim=64, num_heads=4, num_memory_layers=1,
-            auto_checkpoint=True, memory_objective="huber",
+            dim=64,
+            num_heads=4,
+            num_memory_layers=1,
+            auto_checkpoint=True,
+            memory_objective="huber",
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 8, 64, device=device)
@@ -249,6 +256,7 @@ class TestNeuralLongTermMemory:
             assert proj.weight.grad.abs().max() > 0, (
                 f"{name}.weight.grad is all zero (expected nonzero)"
             )
+
 
 class TestPerChunkDecay:
     """Verify per-chunk decay reparameterization identity and gradient health."""
@@ -405,7 +413,7 @@ class TestDeltaMemoryParam:
             num_memory_layers=1,
             delta_memory_param=True,
             gate_decay_bias_init=2.0,  # High decay: sigmoid(2) ≈ 0.88
-            per_chunk_decay=False,     # Raw alpha for aggressive decay test
+            per_chunk_decay=False,  # Raw alpha for aggressive decay test
         )
         mem = NeuralLongTermMemory(config).to(device)
         x = torch.randn(2, 16, config.dim, device=device)
@@ -497,8 +505,13 @@ class TestNLTMRetrievalOrder:
         requires), the output depends on alpha via new_state.weights.
         """
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=1, vocab_size=64,
-            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
+            dim=32,
+            num_heads=4,
+            num_layers=1,
+            vocab_size=64,
+            chunk_size=16,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
         )
         mem = NeuralLongTermMemory(config)
         mem.eval()
@@ -528,9 +541,15 @@ class TestNLTMRetrievalOrder:
         gate_decay_proj.bias.
         """
         config = TitansConfig(
-            dim=32, num_heads=4, num_layers=1, vocab_size=64,
-            chunk_size=16, num_memory_layers=1, num_persistent_tokens=4,
-            memory_objective="huber", huber_delta_init=-10.0,
+            dim=32,
+            num_heads=4,
+            num_layers=1,
+            vocab_size=64,
+            chunk_size=16,
+            num_memory_layers=1,
+            num_persistent_tokens=4,
+            memory_objective="huber",
+            huber_delta_init=-10.0,
         )
         mem = NeuralLongTermMemory(config)
         mem.train()
@@ -542,8 +561,12 @@ class TestNLTMRetrievalOrder:
         loss = output.sum()
         loss.backward()
 
-        gate_names = ["gate_decay_proj", "gate_lr_proj", "gate_momentum_proj",
-                      "gate_delta_proj"]
+        gate_names = [
+            "gate_decay_proj",
+            "gate_lr_proj",
+            "gate_momentum_proj",
+            "gate_delta_proj",
+        ]
         for name in gate_names:
             proj = getattr(mem, name, None)
             if proj is None:
@@ -606,8 +629,9 @@ def test_memory_module_no_module_state_stash(num_memory_layers):
     on the module after forward, regardless of which consumer path ran.
     """
     import torch
-    from titans.memory import NeuralLongTermMemory
+
     from titans.config import TitansConfig
+    from titans.memory import NeuralLongTermMemory
 
     cfg = TitansConfig(
         dim=16,
@@ -635,6 +659,7 @@ class TestVProjectionActivation:
         Post-fix: v = x @ W_V.T with no activation -> norms can exceed 1.
         """
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 
@@ -654,6 +679,7 @@ class TestVProjectionActivation:
     def test_v_is_unchanged_between_proj_and_loss(self):
         """Walk the forward path manually; verify v is not activated."""
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 
@@ -668,7 +694,10 @@ class TestVProjectionActivation:
         def capture2(keys, values, weights, delta=None, return_pred_error=False):
             captured2["values"] = values.detach().clone()
             return orig2(
-                keys, values, weights, delta=delta,
+                keys,
+                values,
+                weights,
+                delta=delta,
                 return_pred_error=return_pred_error,
             )
 
@@ -775,9 +804,9 @@ class TestErrorScale:
         k = memory.proj_k(x)
         v = memory.proj_v(x)  # post-Task-1: raw linear
         k_proc = F.silu(k)
-        k_proc = (k_proc.float() / (k_proc.float().norm(dim=-1, keepdim=True) + 1e-8)).to(
-            k.dtype
-        )
+        k_proc = (
+            k_proc.float() / (k_proc.float().norm(dim=-1, keepdim=True) + 1e-8)
+        ).to(k.dtype)
 
         alpha = torch.tensor(1.0)  # decay = 0
         eta = torch.tensor(0.0)  # no momentum
@@ -869,16 +898,22 @@ class TestDeepMemoryKStep:
         """K=1 must produce exactly the same result as the pre-K-step code."""
         torch.manual_seed(0)
         config = TitansConfig(
-            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
-            num_memory_inner_steps=1, delta_memory_param=False,
+            dim=16,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_memory_inner_steps=1,
+            delta_memory_param=False,
         )
         memory = NeuralLongTermMemory(config)
         x = torch.randn(2, 8, 16)
         out1, state1, _ = memory(x, state=None)
         torch.manual_seed(0)
         config2 = TitansConfig(
-            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
-            num_memory_inner_steps=1, delta_memory_param=False,
+            dim=16,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_memory_inner_steps=1,
+            delta_memory_param=False,
         )
         memory2 = NeuralLongTermMemory(config2)
         out2, state2, _ = memory2(x, state=None)
@@ -889,16 +924,22 @@ class TestDeepMemoryKStep:
         """With K=8, the final weights should be farther from init than K=1."""
         torch.manual_seed(42)
         cfg_k1 = TitansConfig(
-            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
-            num_memory_inner_steps=1, delta_memory_param=False,
+            dim=16,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_memory_inner_steps=1,
+            delta_memory_param=False,
         )
         torch.manual_seed(42)
         m1 = NeuralLongTermMemory(cfg_k1)
 
         torch.manual_seed(42)
         cfg_k8 = TitansConfig(
-            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
-            num_memory_inner_steps=8, delta_memory_param=False,
+            dim=16,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_memory_inner_steps=8,
+            delta_memory_param=False,
         )
         torch.manual_seed(42)
         m8 = NeuralLongTermMemory(cfg_k8)
@@ -922,8 +963,11 @@ class TestDeepMemoryKStep:
         """Gate projections receive non-zero grads after a K=8 forward+backward."""
         torch.manual_seed(0)
         config = TitansConfig(
-            dim=16, num_memory_layers=2, memory_hidden_mult=2.0,
-            num_memory_inner_steps=8, delta_memory_param=False,
+            dim=16,
+            num_memory_layers=2,
+            memory_hidden_mult=2.0,
+            num_memory_inner_steps=8,
+            delta_memory_param=False,
         )
         memory = NeuralLongTermMemory(config)
         x = torch.randn(2, 8, 16)
@@ -941,7 +985,9 @@ class TestDeepMemoryKStep:
         """For num_memory_layers=1, K is irrelevant (parallel update)."""
         torch.manual_seed(0)
         cfg = TitansConfig(
-            dim=16, num_memory_layers=1, num_memory_inner_steps=8,
+            dim=16,
+            num_memory_layers=1,
+            num_memory_inner_steps=8,
         )
         memory = NeuralLongTermMemory(cfg)
         x = torch.randn(1, 8, 16)
@@ -1051,9 +1097,7 @@ def test_deep_memory_forward_does_not_pin_inner_activations() -> None:
     out, new_state, _ = mem(x)
     # Keep output + state alive so graph isn't GC'd before the scan.
     keep_alive = (out, new_state)
-    after_objs = {
-        id(o): o for o in gc.get_objects() if isinstance(o, torch.Tensor)
-    }
+    after_objs = {id(o): o for o in gc.get_objects() if isinstance(o, torch.Tensor)}
     new_count = len(set(after_objs.keys()) - before_ids)
     assert new_count < 55, (
         f"Too many live tensors after forward ({new_count}); "

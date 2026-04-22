@@ -81,9 +81,7 @@ def chunked_forward(
     for chunk_ids in id_chunks:
         logits, states, _ = model(chunk_ids, states=states)
         if detach_between and states is not None:
-            states = [
-                s.detach() if s is not None else None for s in states
-            ]
+            states = [s.detach() if s is not None else None for s in states]
         yield logits, chunk_ids, states
 
 
@@ -246,6 +244,7 @@ def format_chatml(messages: list[dict[str, str]]) -> str:
         parts.append(f"{CHATML_IM_START}{role}\n{content}{CHATML_IM_END}\n")
     return "".join(parts)
 
+
 # ---------------------------------------------------------------------------
 # Loss-mask helpers
 # ---------------------------------------------------------------------------
@@ -346,7 +345,9 @@ def tokenize_chat(
 
     if use_native_template:
         full_ids: list[int] = tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=False,
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
         )
 
         assistant_spans: list[tuple[int, int]] = []
@@ -359,15 +360,20 @@ def tokenize_chat(
                 prefix_turns = messages[:i]
                 if prefix_turns:
                     prefix_ids = tokenizer.apply_chat_template(
-                        prefix_turns, tokenize=True, add_generation_prompt=True,
+                        prefix_turns,
+                        tokenize=True,
+                        add_generation_prompt=True,
                     )
                 else:
                     prefix_ids = tokenizer.encode(
-                        f"{CHATML_IM_START}assistant\n", add_special_tokens=False,
+                        f"{CHATML_IM_START}assistant\n",
+                        add_special_tokens=False,
                     )
                 content_start = len(prefix_ids)
                 through_ids = tokenizer.apply_chat_template(
-                    messages[: i + 1], tokenize=True, add_generation_prompt=False,
+                    messages[: i + 1],
+                    tokenize=True,
+                    add_generation_prompt=False,
                 )
                 content_end = len(through_ids)
                 if content_end < len(full_ids):
@@ -420,7 +426,13 @@ def tokenize_chat(
 # Model factory
 # ---------------------------------------------------------------------------
 
-from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL  # noqa: E402
+from titans import (  # noqa: E402
+    TitansConfig,
+    TitansLMM,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
+)
 
 MODEL_CLASSES: dict[str, type[nn.Module]] = {
     "mac": TitansMAC,
@@ -575,7 +587,7 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
         - "Checkpointing": --checkpoint-dir, --save-every, --save-format,
           --resume, --init-weights
         - "Logging": --log-every, --wandb, --wandb-project, --wandb-run-name
-        - "Misc": --seed
+        - "Misc": --seed, --deterministic
 
     Args:
         description: Passed through to ``ArgumentParser(description=...)``.
@@ -591,8 +603,11 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
 
     arch = parser.add_argument_group("Model architecture")
     arch.add_argument(
-        "--model", type=str, default="mac",
-        choices=["mac", "mag", "mal", "lmm"], help="Titans model variant",
+        "--model",
+        type=str,
+        default="mac",
+        choices=["mac", "mag", "mal", "lmm"],
+        help="Titans model variant",
     )
     arch.add_argument("--dim", type=int, default=512)
     arch.add_argument("--num-heads", type=int, default=8)
@@ -604,7 +619,10 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     arch.add_argument("--num-persistent-tokens", type=int, default=16)
     arch.add_argument("--num-memory-layers", type=int, default=2)
     arch.add_argument(
-        "--memory-objective", type=str, default="l2", choices=["l2", "huber"],
+        "--memory-objective",
+        type=str,
+        default="l2",
+        choices=["l2", "huber"],
     )
     arch.add_argument("--huber-delta-init", type=float, default=0.0)
     arch.add_argument("--dropout", type=float, default=0.0)
@@ -614,13 +632,20 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     tnt.add_argument("--use-tnt", action="store_true")
     tnt.add_argument("--global-chunk-size", type=int, default=2048)
     tnt.add_argument(
-        "--local-chunk-sizes", type=int, nargs="+", default=[8, 16], metavar="N",
+        "--local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=[8, 16],
+        metavar="N",
     )
     tnt.add_argument("--local-shard-length", type=int, default=2048)
     tnt.add_argument("--use-qk-projection", action="store_true", default=True)
     tnt.add_argument("--tnt-stage", type=int, default=1)
     tnt.add_argument(
-        "--finetune-local-chunk-sizes", type=int, nargs="+", default=None,
+        "--finetune-local-chunk-sizes",
+        type=int,
+        nargs="+",
+        default=None,
         metavar="N",
     )
 
@@ -629,11 +654,14 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     attn.add_argument("--num-attnres-blocks", type=int, default=8)
     attn.add_argument("--attnres-warmup-steps", type=int, default=0)
     attn.add_argument(
-        "--attnres-modulate-global-memory", action="store_true", default=True,
+        "--attnres-modulate-global-memory",
+        action="store_true",
+        default=True,
     )
     attn.add_argument(
         "--no-attnres-modulate-global-memory",
-        dest="attnres_modulate_global_memory", action="store_false",
+        dest="attnres_modulate_global_memory",
+        action="store_false",
     )
     attn.add_argument("--attnres-modulate-local-memory", action="store_true")
 
@@ -647,7 +675,11 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     mca = parser.add_argument_group("Multi-context attention (MCA)")
     mca.add_argument("--use-mca", action="store_true")
     mca.add_argument(
-        "--mca-insertion-layers", type=int, nargs="+", default=None, metavar="N",
+        "--mca-insertion-layers",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="N",
     )
     mca.add_argument("--mca-num-heads", type=int, default=8)
     mca.add_argument("--mca-gate-type", type=str, default="scalar")
@@ -663,20 +695,26 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
     train_g.add_argument("--grad-clip", type=float, default=1.0)
     train_g.add_argument("--warmup-ratio", type=float, default=0.03)
     train_g.add_argument(
-        "--mixed-precision", type=str, default="no",
+        "--mixed-precision",
+        type=str,
+        default="no",
         choices=["no", "fp16", "bf16"],
     )
     train_g.add_argument("--num-workers", type=int, default=0)
     train_g.add_argument("--pin-memory", action="store_true", default=False)
     train_g.add_argument(
-        "--persistent-workers", action="store_true", default=False,
+        "--persistent-workers",
+        action="store_true",
+        default=False,
     )
 
     ckpt = parser.add_argument_group("Checkpointing")
     ckpt.add_argument("--checkpoint-dir", type=str, default="checkpoints/run")
     ckpt.add_argument("--save-every", type=int, default=1000)
     ckpt.add_argument(
-        "--save-format", type=str, default="pt",
+        "--save-format",
+        type=str,
+        default="pt",
         choices=["pt", "safetensors"],
     )
     ckpt.add_argument("--resume", type=str, default=None, metavar="PATH")
@@ -684,12 +722,37 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
 
     log = parser.add_argument_group("Logging")
     log.add_argument("--log-every", type=int, default=10)
+    log.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help=(
+            "Root-logger level for structured (rich) console output. "
+            "Scripts install a RichHandler on the main process only, so "
+            "raising this to WARNING silences per-step info chatter on "
+            "all ranks at once."
+        ),
+    )
     log.add_argument("--wandb", action="store_true")
     log.add_argument("--wandb-project", type=str, default="titans")
     log.add_argument("--wandb-run-name", type=str, default=None)
 
     misc = parser.add_argument_group("Misc")
     misc.add_argument("--seed", type=int, default=42)
+    misc.add_argument(
+        "--deterministic",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable fully deterministic kernels via "
+            "torch.use_deterministic_algorithms(True) and "
+            "CUBLAS_WORKSPACE_CONFIG=:4096:8. CPU-only runs are already "
+            "deterministic; this flag is mostly a belt-and-suspenders "
+            "switch for CUDA at a moderate speed cost. See "
+            "docs/reproducibility.md for the full contract."
+        ),
+    )
 
     return parser
 
@@ -724,22 +787,23 @@ class AcceleratorBundle:
 def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
     """Initialize the Accelerate runtime and a stdlib logger.
 
+    Installs a :class:`rich.logging.RichHandler` on the root logger of
+    the **main process only** (avoids interleaved output from rank->0
+    workers under multi-GPU). Non-main processes get the standard-
+    library default (no rich formatting) but still have ``logger.info``
+    etc. available for wandb.log / sync points.
+
     Args:
         cfg: Object with attributes ``gradient_accumulation_steps`` (int),
-            ``mixed_precision`` (str in {"no","fp16","bf16"}),
-            and ``wandb`` (bool).
+            ``mixed_precision`` (str in {"no","fp16","bf16"}), ``wandb``
+            (bool). An optional ``log_level`` attribute (string or int)
+            is honoured on the main process; defaults to ``"INFO"``.
 
     Returns:
         ``AcceleratorBundle`` with the accelerator instance (or a CPU
         stub), a module-level logger, ``is_main_process`` flag and a
         ``has_wandb`` flag indicating whether wandb logging is available.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
-    logger = logging.getLogger("scripts")
-
     if _HAS_ACCELERATE:
         accelerator = Accelerator(
             gradient_accumulation_steps=cfg.gradient_accumulation_steps,
@@ -748,6 +812,7 @@ def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
         )
         is_main = accelerator.is_main_process
     else:
+
         class _Stub:
             is_main_process = True
             device = "cpu"
@@ -760,6 +825,23 @@ def init_accelerator_and_logging(cfg: Any) -> AcceleratorBundle:
 
         accelerator = _Stub()
         is_main = True
+
+    # Rich logging only on the main process so multi-rank runs do not
+    # interleave per-step info output. Non-main ranks fall back to the
+    # stdlib default and are effectively silent at WARNING+.
+    log_level = getattr(cfg, "log_level", "INFO")
+    if is_main:
+        from titans._logging import setup_logging
+
+        setup_logging(log_level)
+    else:
+        root = logging.getLogger()
+        # Raise the bar so non-main ranks stay quiet by default.
+        if not root.handlers:
+            logging.basicConfig(level=logging.WARNING, format="%(message)s")
+        else:
+            root.setLevel(logging.WARNING)
+    logger = logging.getLogger("scripts")
 
     return AcceleratorBundle(
         accelerator=accelerator,
@@ -787,7 +869,8 @@ class CheckpointSetup:
 
 
 def setup_checkpoint_dir(
-    output_dir: str, resume_path: str | None = None,
+    output_dir: str,
+    resume_path: str | None = None,
 ) -> CheckpointSetup:
     """Create the output directory (if missing) and resolve a resume path.
 

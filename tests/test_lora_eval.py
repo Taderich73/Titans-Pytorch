@@ -91,9 +91,7 @@ def test_evaluate_helper_runs_on_synthetic_data():
     )
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=2)
 
-    loss = evaluate(
-        model, dataloader, accelerator, config.vocab_size, max_batches=1
-    )
+    loss = evaluate(model, dataloader, accelerator, config.vocab_size, max_batches=1)
     assert isinstance(loss, float)
     assert loss > 0.0 and loss != float("inf")
 
@@ -125,9 +123,7 @@ def test_train_fires_eval_branch_end_to_end(tmp_path, caplog, monkeypatch):
     with caplog.at_level(logging.INFO, logger="lora"):
         train(config)
 
-    val_messages = [
-        r.message for r in caplog.records if "val loss" in r.message
-    ]
+    val_messages = [r.message for r in caplog.records if "val loss" in r.message]
     assert val_messages, (
         "Expected at least one 'val loss' log line; got none. "
         f"All messages: {[r.message for r in caplog.records]}"
@@ -143,8 +139,6 @@ def test_train_without_eval_dataset_does_not_crash(tmp_path, caplog):
         train(config)
 
     skip_messages = [
-        r.message
-        for r in caplog.records
-        if "skipping periodic evaluation" in r.message
+        r.message for r in caplog.records if "skipping periodic evaluation" in r.message
     ]
     assert skip_messages, "Expected skip-eval log line when no eval data set."

@@ -6,6 +6,18 @@ import torch
 from titans.config import TitansConfig
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers so unknown-marker warnings do not surface."""
+    config.addinivalue_line(
+        "markers",
+        (
+            "compile_cpu: torch.compile tests runnable on CPU. May be slow "
+            "(10-30s per test on first compile). Skip via "
+            "TITANS_SKIP_COMPILE_TESTS=1 when torch.compile is flaky."
+        ),
+    )
+
+
 @pytest.fixture(params=["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
 def device(request):
     """Test on CPU always, CUDA when available."""

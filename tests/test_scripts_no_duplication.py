@@ -40,9 +40,7 @@ ALLOWED_WRAPPERS = {
 
 def _top_level_defs(path: pathlib.Path) -> list[str]:
     tree = ast.parse(path.read_text())
-    return [
-        n.name for n in tree.body if isinstance(n, ast.FunctionDef)
-    ]
+    return [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
 
 
 @pytest.mark.parametrize(
@@ -53,7 +51,8 @@ def test_no_duplicate_top_level_definitions(script_name: str) -> None:
     path = SCRIPTS_DIR / script_name
     defs = _top_level_defs(path)
     duplicates = [
-        d for d in defs
+        d
+        for d in defs
         if d in CONSOLIDATED_NAMES and (script_name, d) not in ALLOWED_WRAPPERS
     ]
     assert duplicates == [], (

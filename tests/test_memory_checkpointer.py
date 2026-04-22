@@ -11,13 +11,15 @@ from pathlib import Path
 
 import torch
 
-from titans.checkpoint_types import (
+from titans.checkpointing.memory_checkpointer import (
+    CheckpointerState,
+    MemoryCheckpointer,
+)
+from titans.checkpointing.types import (
     GateSnapshot,
     MemoryCheckpointConfig,
     MemoryState,
 )
-from titans.memory_checkpointer import CheckpointerState, MemoryCheckpointer
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -183,7 +185,10 @@ class TestTransitionCapture:
         # Inject a massive spike (weight jumps from 1.0 to 100.0)
         cp.on_chunk_commit(_make_state(100.0), gates, chunk_index=6)
         # Should have triggered; state is either CAPTURING_AFTER or COOLDOWN
-        assert cp.state in (CheckpointerState.CAPTURING_AFTER, CheckpointerState.COOLDOWN)
+        assert cp.state in (
+            CheckpointerState.CAPTURING_AFTER,
+            CheckpointerState.COOLDOWN,
+        )
 
     def test_flush_writes_ring_buffer_final(self, tmp_path: Path) -> None:
         """flush() should write ring_buffer_final.npz."""
@@ -208,8 +213,13 @@ class TestTransitionCapture:
         session_path = Path(cfg.checkpoint_dir) / "session.json"
         assert session_path.exists()
         data = json.loads(session_path.read_text())
-        for key in ("session_start", "session_end", "total_chunks_processed",
-                    "transitions_recorded", "config"):
+        for key in (
+            "session_start",
+            "session_end",
+            "total_chunks_processed",
+            "transitions_recorded",
+            "config",
+        ):
             assert key in data, f"Missing key: {key}"
 
     def test_transition_writes_disk_files(self, tmp_path: Path) -> None:
@@ -406,9 +416,10 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
     """Regression: signal_source was being truncated to the last underscore
     segment, turning 'weight_delta' into 'delta'. Fix uses the decision object
     directly."""
-    from titans.checkpoint_types import CheckpointEntry, MemoryCheckpointConfig, MemoryState
-    from titans.memory_checkpointer import MemoryCheckpointer
-    from titans.novelty_detector import TriggerDecision
+    from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
+    from titans.checkpointing.novelty_detector import TriggerDecision
+    from titans.checkpointing.types import CheckpointEntry, MemoryCheckpointConfig
+    from titans.memory import MemoryState
 
     cfg = MemoryCheckpointConfig(
         checkpoint_dir=str(tmp_path),
@@ -459,10 +470,9 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
 def test_checkpointer_state_enum_has_no_triggered():
     """TRIGGERED was set then immediately overwritten in the same method, so
     it was never observable externally. Remove it from the enum."""
-    from titans.memory_checkpointer import CheckpointerState
+    from titans.checkpointing.memory_checkpointer import CheckpointerState
+
     names = {s.name for s in CheckpointerState}
-    assert "TRIGGERED" not in names, (
-        "Dead CheckpointerState.TRIGGERED still present"
-    )
+    assert "TRIGGERED" not in names, "Dead CheckpointerState.TRIGGERED still present"
     # Expected surviving states:
     assert {"MONITORING", "CAPTURING_AFTER", "COOLDOWN"} <= names

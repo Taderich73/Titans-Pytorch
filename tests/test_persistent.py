@@ -10,7 +10,11 @@ class TestPersistentMemory:
     def test_forward_shape(self, default_config, device):
         mem = PersistentMemory(default_config).to(device)
         result = mem(batch_size=2)
-        assert result.shape == (2, default_config.num_persistent_tokens, default_config.dim)
+        assert result.shape == (
+            2,
+            default_config.num_persistent_tokens,
+            default_config.dim,
+        )
         assert result.device.type == device.type
 
     def test_returns_none_when_zero_tokens(self, device):

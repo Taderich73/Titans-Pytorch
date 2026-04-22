@@ -38,7 +38,6 @@ import argparse
 import importlib.util
 import logging
 import os
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,6 +48,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
@@ -69,6 +69,7 @@ from titans.scripts import (
     setup_checkpoint_dir,
     tokenize_chat,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -96,10 +97,7 @@ HAS_WANDB = importlib.util.find_spec("wandb") is not None
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -195,6 +193,7 @@ class SFTConfig:
 
     # --- Logging ---
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-sft"
     wandb_run_name: str | None = None
@@ -205,6 +204,7 @@ class SFTConfig:
 
     # --- Misc ---
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 5000
 
 
@@ -234,7 +234,7 @@ class SFTStreamingDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         messages_field: str = "messages",
         train_on_all: bool = False,
@@ -331,7 +331,7 @@ class SyntheticSFTDataset(Dataset):
 def evaluate(
     model: torch.nn.Module,
     dataloader: DataLoader,
-    accelerator: "Accelerator",
+    accelerator: Accelerator,
     vocab_size: int,
     max_batches: int = 50,
 ) -> float:
@@ -362,9 +362,7 @@ def evaluate(
             msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
 
             batch_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
-            batch_tokens_num = torch.tensor(
-                0.0, device=batch["input_ids"].device
-            )
+            batch_tokens_num = torch.tensor(0.0, device=batch["input_ids"].device)
 
             chunk_iter = chunked_forward(
                 model,
@@ -381,16 +379,12 @@ def evaluate(
                 labels_flat = lbl_c.reshape(-1)
                 mask_flat = msk_c.reshape(-1).float()
 
-                per_token = F.cross_entropy(
-                    logits_flat, labels_flat, reduction="none"
-                )
+                per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
                 batch_loss_num = batch_loss_num + (per_token * mask_flat).sum()
                 batch_tokens_num = batch_tokens_num + mask_flat.sum()
 
             # Gather across processes
-            batch_loss = (
-                accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
-            )
+            batch_loss = accelerator.gather(batch_loss_num.unsqueeze(0)).sum().item()
             batch_tokens = (
                 accelerator.gather(batch_tokens_num.unsqueeze(0)).sum().item()
             )
@@ -423,6 +417,11 @@ def train(config: SFTConfig) -> None:
             "accelerate is required. Install with: pip install accelerate"
         )
 
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
+
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
 
@@ -433,10 +432,6 @@ def train(config: SFTConfig) -> None:
         logger.info(
             f"Gradient accumulation steps: {config.gradient_accumulation_steps}"
         )
-
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
 
     # ------------------------------------------------------------------
     # Tokenizer
@@ -579,7 +574,9 @@ def train(config: SFTConfig) -> None:
     if config.max_steps > 0:
         total_steps = config.max_steps
     elif not is_streaming:
-        total_steps = (len(train_dataloader) // config.gradient_accumulation_steps) * config.epochs
+        total_steps = (
+            len(train_dataloader) // config.gradient_accumulation_steps
+        ) * config.epochs
     else:
         # Streaming dataset — set a large number; training stops at max_steps or
         # when the dataset is exhausted.
@@ -594,7 +591,9 @@ def train(config: SFTConfig) -> None:
         progress = float(current_step - warmup_steps) / float(
             max(1, total_steps - warmup_steps)
         )
-        return max(0.0, 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item()))
+        return max(
+            0.0, 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress)).item())
+        )
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -603,7 +602,9 @@ def train(config: SFTConfig) -> None:
     # ------------------------------------------------------------------
     if eval_dataloader is not None:
         model, optimizer, train_dataloader, eval_dataloader, scheduler = (
-            accelerator.prepare(model, optimizer, train_dataloader, eval_dataloader, scheduler)
+            accelerator.prepare(
+                model, optimizer, train_dataloader, eval_dataloader, scheduler
+            )
         )
     else:
         model, optimizer, train_dataloader, scheduler = accelerator.prepare(
@@ -768,8 +769,7 @@ def train(config: SFTConfig) -> None:
             # Detach memory states to prevent BPTT across batch boundaries
             if memory_states is not None:
                 memory_states = [
-                    s.detach() if s is not None else None
-                    for s in memory_states
+                    s.detach() if s is not None else None for s in memory_states
                 ]
 
             loss_val = loss.item()
@@ -914,7 +914,10 @@ def parse_args() -> SFTConfig:
     # SFT-only data flags
     data = parser.add_argument_group("SFT data")
     data.add_argument(
-        "--dataset", type=str, default=None, help="HuggingFace dataset repo id",
+        "--dataset",
+        type=str,
+        default=None,
+        help="HuggingFace dataset repo id",
     )
     data.add_argument("--dataset-subset", type=str, default=None)
     data.add_argument("--eval-dataset", type=str, default=None)
@@ -1036,6 +1039,7 @@ def parse_args() -> SFTConfig:
         init_weights=args.init_weights,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
@@ -1044,6 +1048,7 @@ def parse_args() -> SFTConfig:
         state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

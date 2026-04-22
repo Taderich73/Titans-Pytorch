@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from titans.checkpoint_types import SignalFrame
-
+from titans.checkpointing.types import SignalFrame
 
 # ---------------------------------------------------------------------------
 # Test helper
@@ -59,7 +58,7 @@ class TestTriggerDecision:
 
     def test_basic_creation_no_trigger(self) -> None:
         """TriggerDecision can be created with triggered=False."""
-        from titans.novelty_detector import TriggerDecision
+        from titans.checkpointing.novelty_detector import TriggerDecision
 
         td = TriggerDecision(
             triggered=False,
@@ -74,7 +73,7 @@ class TestTriggerDecision:
 
     def test_basic_creation_trigger(self) -> None:
         """TriggerDecision can be created with triggered=True and valid fields."""
-        from titans.novelty_detector import TriggerDecision
+        from titans.checkpointing.novelty_detector import TriggerDecision
 
         td = TriggerDecision(
             triggered=True,
@@ -89,7 +88,7 @@ class TestTriggerDecision:
 
     def test_valid_signal_sources(self) -> None:
         """All three signal_source values are accepted."""
-        from titans.novelty_detector import TriggerDecision
+        from titans.checkpointing.novelty_detector import TriggerDecision
 
         for source in ("prediction_error", "weight_delta", "momentum_shift"):
             td = TriggerDecision(
@@ -102,17 +101,21 @@ class TestTriggerDecision:
 
     def test_no_trigger_constant(self) -> None:
         """_NO_TRIGGER sentinel has correct default values."""
-        from titans.novelty_detector import _NO_TRIGGER
+        from titans.checkpointing.novelty_detector import _NO_TRIGGER
 
         assert _NO_TRIGGER.triggered is False
         assert _NO_TRIGGER.confidence == 0.0
 
     def test_confidence_bounds(self) -> None:
         """Confidence field accepts 0.0 and 1.0 boundary values."""
-        from titans.novelty_detector import TriggerDecision
+        from titans.checkpointing.novelty_detector import TriggerDecision
 
-        lo = TriggerDecision(triggered=False, reason="", confidence=0.0, signal_source="")
-        hi = TriggerDecision(triggered=True, reason="", confidence=1.0, signal_source="prediction_error")
+        lo = TriggerDecision(
+            triggered=False, reason="", confidence=0.0, signal_source=""
+        )
+        hi = TriggerDecision(
+            triggered=True, reason="", confidence=1.0, signal_source="prediction_error"
+        )
         assert lo.confidence == pytest.approx(0.0)
         assert hi.confidence == pytest.approx(1.0)
 
@@ -131,7 +134,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_construction_defaults(self) -> None:
         """StatisticalNoveltyDetector can be constructed with default args."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector()
         assert det.window_size == 50
@@ -141,7 +144,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_construction_custom(self) -> None:
         """StatisticalNoveltyDetector accepts custom constructor parameters."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=20,
@@ -160,18 +163,20 @@ class TestStatisticalNoveltyDetector:
 
     def test_no_trigger_during_warmup(self) -> None:
         """No trigger before min_observations frames have been observed."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(min_observations=10, window_size=20)
         # Feed 9 frames — still in warmup
         for i in range(9):
             frame = _make_frame(chunk_index=i, error_norms=[1.0])
             result = det.observe(frame)
-            assert result.triggered is False, f"Should not trigger during warmup (frame {i})"
+            assert result.triggered is False, (
+                f"Should not trigger during warmup (frame {i})"
+            )
 
     def test_no_trigger_on_stable_signal(self) -> None:
         """No trigger when all values are constant (~1.0) — no z-score anomaly."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=30, sigma_threshold=2.0, min_observations=10
@@ -188,7 +193,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_spike_triggers(self) -> None:
         """A spike (10.0 after 20 frames of 1.0) triggers the detector."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -204,7 +209,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_spike_confidence_scales_with_magnitude(self) -> None:
         """Larger spike should produce equal or higher confidence."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         def _run_spike(spike_val: float) -> float:
             det = StatisticalNoveltyDetector(
@@ -225,24 +230,28 @@ class TestStatisticalNoveltyDetector:
 
     def test_cascade_to_weight_delta_when_error_zeros(self) -> None:
         """When prediction_error is all zeros, cascades to weight_delta."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
         )
         # 20 frames of stable weight_delta, zero error
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
-                error_norms=[0.0],
-                weight_delta_norms=[1.0],
-            ))
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.0],
+                    weight_delta_norms=[1.0],
+                )
+            )
         # Spike in weight_delta while error stays zero
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[0.0],
-            weight_delta_norms=[10.0],
-        ))
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
+                error_norms=[0.0],
+                weight_delta_norms=[10.0],
+            )
+        )
         assert result.triggered is True
         assert result.signal_source == "weight_delta"
 
@@ -252,24 +261,28 @@ class TestStatisticalNoveltyDetector:
 
     def test_cascade_to_momentum_shift_when_error_and_delta_zeros(self) -> None:
         """When both error and weight_delta are zero, cascades to momentum_shift."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
         )
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[0.0],
+                    weight_delta_norms=[0.0],
+                    momentum_shift_norms=[1.0],
+                )
+            )
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
                 error_norms=[0.0],
                 weight_delta_norms=[0.0],
-                momentum_shift_norms=[1.0],
-            ))
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[0.0],
-            weight_delta_norms=[0.0],
-            momentum_shift_norms=[10.0],
-        ))
+                momentum_shift_norms=[10.0],
+            )
+        )
         assert result.triggered is True
         assert result.signal_source == "momentum_shift"
 
@@ -279,24 +292,30 @@ class TestStatisticalNoveltyDetector:
 
     def test_no_cascade_when_primary_available_and_stable(self) -> None:
         """When prediction_error is available but stable, no cascade occurs."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
         )
         # Stable error norms, but spike in weight_delta
         for i in range(20):
-            det.observe(_make_frame(
-                chunk_index=i,
-                error_norms=[1.0],
-                weight_delta_norms=[1.0],
-            ))
+            det.observe(
+                _make_frame(
+                    chunk_index=i,
+                    error_norms=[1.0],
+                    weight_delta_norms=[1.0],
+                )
+            )
         # error stays stable; weight_delta spikes — should NOT trigger because error is primary
-        result = det.observe(_make_frame(
-            chunk_index=20,
-            error_norms=[1.0],         # identical to all prior frames — no anomaly
-            weight_delta_norms=[10.0], # large spike in fallback signal — must be ignored
-        ))
+        result = det.observe(
+            _make_frame(
+                chunk_index=20,
+                error_norms=[1.0],  # identical to all prior frames — no anomaly
+                weight_delta_norms=[
+                    10.0
+                ],  # large spike in fallback signal — must be ignored
+            )
+        )
         assert result.triggered is False
 
     # ------------------------------------------------------------------
@@ -305,7 +324,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_drop_detection_via_rate_of_change(self) -> None:
         """Sudden drop from high error to near zero triggers via rate-of-change."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -320,7 +339,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_gradual_decline_does_not_trigger(self) -> None:
         """A slow, gradual decline in error should not trigger drop detection."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -339,7 +358,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_reset_clears_state(self) -> None:
         """After reset(), a spike immediately after shouldn't trigger (back in warmup)."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -356,7 +375,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_reset_allows_re_arming(self) -> None:
         """After reset(), detector re-arms and triggers normally once warmed up."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -381,7 +400,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_per_layer_spike_in_single_layer_triggers(self) -> None:
         """With per_layer=True, a spike in one layer triggers even if others are stable."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=True
@@ -396,7 +415,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_per_layer_false_mean_aggregation(self) -> None:
         """With per_layer=False, layers are averaged; a spike in one layer diluted by stable others."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         # Use many layers so that one spike is diluted below threshold
         det = StatisticalNoveltyDetector(
@@ -418,7 +437,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_reset_local_windows_clears_flagged_layers(self) -> None:
         """reset_local_windows() clears windows only for flagged layers."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=True
@@ -436,7 +455,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_reset_local_windows_all_false_is_noop(self) -> None:
         """reset_local_windows([False, False]) doesn't change any windows."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=True
@@ -456,7 +475,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_implements_novelty_detector_protocol(self) -> None:
         """StatisticalNoveltyDetector is structurally compatible with NoveltyDetector."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector()
         # Structural protocol check: must have observe and reset
@@ -471,7 +490,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_confidence_at_threshold_is_nonzero(self) -> None:
         """A z-score exactly at threshold should give non-zero confidence."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -486,7 +505,7 @@ class TestStatisticalNoveltyDetector:
 
     def test_confidence_capped_at_one(self) -> None:
         """Confidence is capped at 1.0 even for very large spikes."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10
@@ -510,7 +529,7 @@ class TestStatisticalNoveltyDetector:
         the winning direction ("drop" vs "spike") so downstream logging can
         tell a grokking cliff apart from a noise spike.
         """
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=True
@@ -535,9 +554,7 @@ class TestStatisticalNoveltyDetector:
         # Layer 1: large cliff drop (5.0 -> 0.01, huge negative RoC z).
         # Drop magnitude in z-units dwarfs the spike magnitude, so the
         # winning trigger reason must mention "drop".
-        result = det.observe(
-            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
-        )
+        result = det.observe(_make_frame(chunk_index=30, error_norms=[1.6, 0.01]))
 
         assert result.triggered is True
         assert result.signal_source == "prediction_error"
@@ -553,7 +570,7 @@ class TestStatisticalNoveltyDetector:
         between signed spike z and magnitude drop z, and label the winning
         direction in the reason.
         """
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=50, sigma_threshold=2.0, min_observations=10, per_layer=False
@@ -579,9 +596,7 @@ class TestStatisticalNoveltyDetector:
         # baseline 3.0 -> negative signed z, which _z_score_spike filters out
         # (it only returns positive z above +sigma). So the winning signal is
         # the drop, and the reason must mention "drop".
-        result = det.observe(
-            _make_frame(chunk_index=30, error_norms=[1.6, 0.01])
-        )
+        result = det.observe(_make_frame(chunk_index=30, error_norms=[1.6, 0.01]))
 
         assert result.triggered is True
         assert result.signal_source == "prediction_error"
@@ -607,7 +622,7 @@ class TestNoveltyCascadePriority:
     def test_cascade_prefers_prediction_error_when_both_spike(self) -> None:
         """When both pred_error and weight_delta are populated and spike,
         the decision must cite prediction_error as the signal source."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=10,
@@ -641,7 +656,7 @@ class TestNoveltyCascadePriority:
     ) -> None:
         """When prediction_error is unavailable (all-zero history) the
         cascade must fall through to weight_delta."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=10,
@@ -683,7 +698,7 @@ class TestWelfordStats:
         """Welford must give identical mean/variance to a naive recompute."""
         import math
 
-        from titans.novelty_detector import WelfordStats
+        from titans.checkpointing.novelty_detector import WelfordStats
 
         data = [3.1, 2.7, 5.0, -1.4, 0.0, 8.2, 2.2, -3.3, 7.9, 1.0]
         stats = WelfordStats()
@@ -702,7 +717,7 @@ class TestWelfordStats:
         import math
         from collections import deque
 
-        from titans.novelty_detector import WelfordStats
+        from titans.checkpointing.novelty_detector import WelfordStats
 
         stats = WelfordStats()
         buf: deque[float] = deque(maxlen=4)
@@ -719,7 +734,7 @@ class TestWelfordStats:
 
     def test_empty_stats_are_zero(self) -> None:
         """Newly-constructed stats report zero mean/variance with count 0."""
-        from titans.novelty_detector import WelfordStats
+        from titans.checkpointing.novelty_detector import WelfordStats
 
         stats = WelfordStats()
         assert stats.count == 0
@@ -730,7 +745,7 @@ class TestWelfordStats:
         """Push below window_max should never evict."""
         import math
 
-        from titans.novelty_detector import WelfordStats
+        from titans.checkpointing.novelty_detector import WelfordStats
 
         stats = WelfordStats()
         for x in [1.0, 2.0, 3.0]:
@@ -743,7 +758,7 @@ class TestWelfordStats:
         import math
         from collections import deque
 
-        from titans.novelty_detector import WelfordStats
+        from titans.checkpointing.novelty_detector import WelfordStats
 
         stats = WelfordStats()
         buf: deque[float] = deque(maxlen=3)
@@ -759,7 +774,7 @@ class TestWelfordStats:
 
 def test_novelty_detector_spike_still_fires_with_welford() -> None:
     """The detector must still trigger on large spikes after Welford migration."""
-    from titans.novelty_detector import StatisticalNoveltyDetector
+    from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
     det = StatisticalNoveltyDetector(
         window_size=8,
@@ -783,7 +798,7 @@ def test_layer_windows_welford_matches_deque_reference() -> None:
     """Welford stats on _LayerWindows must match from-scratch computation."""
     import math
 
-    from titans.novelty_detector import StatisticalNoveltyDetector
+    from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
     det = StatisticalNoveltyDetector(
         window_size=16,
@@ -800,16 +815,12 @@ def test_layer_windows_welford_matches_deque_reference() -> None:
     ref_mean = sum(ref_values) / len(ref_values)
     ref_var = sum((x - ref_mean) ** 2 for x in ref_values) / len(ref_values)
     assert math.isclose(lw.value_stats.mean, ref_mean, rel_tol=1e-10)
-    assert math.isclose(
-        lw.value_stats.population_variance, ref_var, rel_tol=1e-10
-    )
+    assert math.isclose(lw.value_stats.population_variance, ref_var, rel_tol=1e-10)
 
     roc_values = list(lw.roc_values)
     if roc_values:
         ref_roc_mean = sum(roc_values) / len(roc_values)
-        ref_roc_var = sum(
-            (x - ref_roc_mean) ** 2 for x in roc_values
-        ) / len(roc_values)
+        ref_roc_var = sum((x - ref_roc_mean) ** 2 for x in roc_values) / len(roc_values)
         assert math.isclose(lw.roc_stats.mean, ref_roc_mean, rel_tol=1e-10)
         assert math.isclose(
             lw.roc_stats.population_variance, ref_roc_var, rel_tol=1e-10
@@ -818,7 +829,7 @@ def test_layer_windows_welford_matches_deque_reference() -> None:
 
 def test_layer_windows_welford_reset() -> None:
     """Reset must clear Welford state alongside the deques."""
-    from titans.novelty_detector import _LayerWindows
+    from titans.checkpointing.novelty_detector import _LayerWindows
 
     lw = _LayerWindows(window_size=4)
     for v in [1.0, 2.0, 3.0, 4.0, 5.0]:
@@ -840,7 +851,7 @@ class TestAggregatedRingBuffer:
 
     def test_aggregated_stream_attribute_exists(self) -> None:
         """After refactor, detector holds _aggregated_stream keyed by signal."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=8,
@@ -861,7 +872,7 @@ class TestAggregatedRingBuffer:
     def test_aggregated_ring_buffer_matches_recompute(self) -> None:
         """A ring-buffer-backed aggregated evaluator produces the same decision
         stream as the previous from-scratch implementation."""
-        from titans.novelty_detector import (
+        from titans.checkpointing.novelty_detector import (
             StatisticalNoveltyDetector,
             WelfordStats,
         )
@@ -913,7 +924,7 @@ class TestAggregatedRingBuffer:
 
     def test_aggregated_detects_spike(self) -> None:
         """Aggregated mode still triggers on obvious spikes after the refactor."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=12,
@@ -926,18 +937,14 @@ class TestAggregatedRingBuffer:
             det.observe(_make_frame(chunk_index=i, error_norms=[1.0, 1.0, 1.0]))
         # Small wiggles
         for i in range(5):
-            det.observe(
-                _make_frame(chunk_index=10 + i, error_norms=[1.02, 0.99, 1.01])
-            )
+            det.observe(_make_frame(chunk_index=10 + i, error_norms=[1.02, 0.99, 1.01]))
         # Big spike across layers
-        d = det.observe(
-            _make_frame(chunk_index=16, error_norms=[10.0, 10.0, 10.0])
-        )
+        d = det.observe(_make_frame(chunk_index=16, error_norms=[10.0, 10.0, 10.0]))
         assert d.triggered
 
     def test_aggregated_reset_clears_stream(self) -> None:
         """Calling reset() clears the cached aggregated stream."""
-        from titans.novelty_detector import StatisticalNoveltyDetector
+        from titans.checkpointing.novelty_detector import StatisticalNoveltyDetector
 
         det = StatisticalNoveltyDetector(
             window_size=8,

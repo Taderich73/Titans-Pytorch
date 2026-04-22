@@ -21,16 +21,15 @@ the TurboQuant paper) are not implemented in this baseline.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 
 from titans.memory import MemoryState
 
-
 # ---------------------------------------------------------------------------
 # Low-level packing helpers
 # ---------------------------------------------------------------------------
+
 
 def _pack_4bit(x: torch.Tensor) -> torch.Tensor:
     """Pack a uint8 tensor of 4-bit values (values 0–15) into half-size uint8.
@@ -74,6 +73,7 @@ def _unpack_4bit(packed: torch.Tensor, original_numel: int) -> torch.Tensor:
 # QuantizedTensor
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class QuantizedTensor:
     """Quantized representation of a float tensor.
@@ -90,9 +90,9 @@ class QuantizedTensor:
         bits: Quantization bit-width (4 or 8).
     """
 
-    data: torch.Tensor       # uint8, packed for 4-bit
-    scale: torch.Tensor      # scalar float32
-    zero_point: torch.Tensor # scalar float32
+    data: torch.Tensor  # uint8, packed for 4-bit
+    scale: torch.Tensor  # scalar float32
+    zero_point: torch.Tensor  # scalar float32
     shape: torch.Size
     bits: int
 
@@ -131,6 +131,7 @@ class QuantizedTensor:
 # for memory-state compression during long runs; NOT a substitute for
 # weight-quantization schemes with tight distortion bounds.
 # ---------------------------------------------------------------------------
+
 
 def quantize_tensor(x: torch.Tensor, bits: int) -> QuantizedTensor:
     """Quantize a float tensor to 4 or 8 bits (per-tensor asymmetric).
@@ -189,6 +190,7 @@ def quantize_tensor(x: torch.Tensor, bits: int) -> QuantizedTensor:
 # tensor for momentum when momentum_bits=None). No TurboQuant primitives.
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class QuantizedMemoryState:
     """Memory-efficient version of ``MemoryState`` using quantized tensors.
@@ -240,8 +242,7 @@ class QuantizedMemoryState:
             A new ``QuantizedMemoryState`` with detached momentum tensors.
         """
         detached_momentum = [
-            m if isinstance(m, QuantizedTensor) else m.detach()
-            for m in self.momentum
+            m if isinstance(m, QuantizedTensor) else m.detach() for m in self.momentum
         ]
         return QuantizedMemoryState(
             weights=list(self.weights),
@@ -253,10 +254,11 @@ class QuantizedMemoryState:
 # quantize_memory_state
 # ---------------------------------------------------------------------------
 
+
 def quantize_memory_state(
     state: MemoryState,
     weight_bits: int = 8,
-    momentum_bits: Optional[int] = None,
+    momentum_bits: int | None = None,
 ) -> QuantizedMemoryState:
     """Quantize a ``MemoryState`` into a ``QuantizedMemoryState``.
 
@@ -286,6 +288,7 @@ def quantize_memory_state(
 # ---------------------------------------------------------------------------
 # Convenience accessors
 # ---------------------------------------------------------------------------
+
 
 def get_weights(state: MemoryState | QuantizedMemoryState) -> list[torch.Tensor]:
     """Extract dequantized weight tensors from either state type.

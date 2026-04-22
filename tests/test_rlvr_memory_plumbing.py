@@ -7,7 +7,6 @@ import inspect
 import sys
 from pathlib import Path
 
-import pytest
 import torch
 import torch.nn.functional as F
 
@@ -80,9 +79,7 @@ def test_compute_token_log_probs_matches_single_shot_when_fits() -> None:
         targets = input_ids[:, 1:].clamp(min=0, max=31)
         token_lp_ref = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
 
-    torch.testing.assert_close(
-        token_lp_chunked, token_lp_ref, rtol=1e-5, atol=1e-5
-    )
+    torch.testing.assert_close(token_lp_chunked, token_lp_ref, rtol=1e-5, atol=1e-5)
 
 
 def test_compute_token_log_probs_no_crash_seq_gt_chunk() -> None:
@@ -223,9 +220,7 @@ def test_generate_rollouts_no_double_commit_of_partial_prompt_tail() -> None:
         for i in range(prompt_len // chunk_size):
             chunk = prompt[:, i * chunk_size : (i + 1) * chunk_size]
             _, ref_states, _ = model(chunk, states=ref_states)
-            ref_states = [
-                s.detach() if s is not None else None for s in ref_states
-            ]
+            ref_states = [s.detach() if s is not None else None for s in ref_states]
 
     # Capture the ``committed_states`` that generate_rollouts builds during
     # prefill by patching model.__call__ and snapshotting state right after
@@ -369,9 +364,7 @@ def test_rlvr_memory_roundtrip(tmp_path) -> None:
         )
     ]
     global_step = 500
-    save_memory_states(
-        memory_states, ckpt_dir / f"memory_step_{global_step}.npz"
-    )
+    save_memory_states(memory_states, ckpt_dir / f"memory_step_{global_step}.npz")
     loaded = load_memory_states(
         ckpt_dir / f"memory_step_{global_step}.npz",
         device=torch.device("cpu"),

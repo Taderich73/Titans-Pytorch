@@ -57,11 +57,11 @@ import importlib.util
 import logging
 import math
 import os
-import random
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -70,8 +70,8 @@ import torch.nn.functional as F
 from torch.utils.data import IterableDataset
 from tqdm import tqdm
 
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
-from titans.memory_dump import load_memory_states, save_memory_states
 from titans.lora import (
     count_lora_parameters,
     merge_lora_weights,
@@ -79,6 +79,7 @@ from titans.lora import (
     set_lora_enabled,
     wrap_lora_layers,
 )
+from titans.memory_dump import load_memory_states, save_memory_states
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
 # single-file runners (e.g. HuggingFace Jobs) can reach them via the
@@ -94,6 +95,7 @@ from titans.scripts import (
     maybe_compile,
     setup_checkpoint_dir,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -121,10 +123,7 @@ HAS_WANDB = importlib.util.find_spec("wandb") is not None
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MODEL_CLASSES, create_model, and build_titans_config are imported from
@@ -323,9 +322,9 @@ def compute_token_log_probs(
     # Shift: logits[:, :-1] predicts input_ids[:, 1:]
     log_probs = F.log_softmax(logits[:, :-1], dim=-1)  # (B, T-1, V)
     targets = input_ids[:, 1:].clamp(min=0, max=vocab_size - 1)  # (B, T-1)
-    token_log_probs = log_probs.gather(
-        dim=-1, index=targets.unsqueeze(-1)
-    ).squeeze(-1)  # (B, T-1)
+    token_log_probs = log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(
+        -1
+    )  # (B, T-1)
     return token_log_probs, states
 
 
@@ -643,7 +642,7 @@ def generate_rollouts(
 
 def decode_tokens(
     token_ids: torch.Tensor,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     prompt_len: int,
 ) -> list[str]:
     """Decode completion tokens (post-prompt) to strings.
@@ -670,7 +669,7 @@ def decode_tokens(
 def verify_batch(
     generated_ids: torch.Tensor,
     answers: list[str],
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     verifier: Callable[[str, str], float],
     prompt_len: int,
     num_samples: int,
@@ -806,13 +805,13 @@ class RLVRConfig:
     use_conv: bool = False
 
     # --- RLVR-specific ---
-    loss_type: str = "grpo"       # "grpo" or "reinforce"
-    beta: float = 0.1             # KL penalty weight (GRPO)
-    clip_ratio: float = 0.2       # PPO-style clipping range (GRPO)
-    group_size: int = 4           # Samples per prompt (GRPO); set 1 for REINFORCE
-    max_new_tokens: int = 256     # Max tokens to generate per rollout
-    temperature: float = 0.7      # Sampling temperature
-    verifier: str = "exact_match" # Verifier name or "path/to/file.py:fn_name"
+    loss_type: str = "grpo"  # "grpo" or "reinforce"
+    beta: float = 0.1  # KL penalty weight (GRPO)
+    clip_ratio: float = 0.2  # PPO-style clipping range (GRPO)
+    group_size: int = 4  # Samples per prompt (GRPO); set 1 for REINFORCE
+    max_new_tokens: int = 256  # Max tokens to generate per rollout
+    temperature: float = 0.7  # Sampling temperature
+    verifier: str = "exact_match"  # Verifier name or "path/to/file.py:fn_name"
 
     # --- LoRA ---
     lora_rank: int = 8
@@ -861,12 +860,14 @@ class RLVRConfig:
 
     # --- Logging ---
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-rlvr"
     wandb_run_name: str | None = None
 
     # --- Misc ---
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 500
 
 
@@ -898,7 +899,7 @@ class LiveRLVRDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         prompt_field: str = "prompt",
         answer_field: str = "answer",
@@ -971,7 +972,7 @@ class OfflineRLVRDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         prompt_field: str = "prompt",
         rollout_field: str = "completions",
@@ -1039,9 +1040,7 @@ class OfflineRLVRDataset(IterableDataset):
                     full_ids = self.tokenizer.encode(
                         full_text, add_special_tokens=False
                     )[: self.max_len]
-                    rollout_ids_list.append(
-                        torch.tensor(full_ids, dtype=torch.long)
-                    )
+                    rollout_ids_list.append(torch.tensor(full_ids, dtype=torch.long))
                 except Exception as exc:
                     logger.debug(f"Skipping completion due to error: {exc}")
                     continue
@@ -1052,7 +1051,9 @@ class OfflineRLVRDataset(IterableDataset):
             yield {
                 "prompt_ids": torch.tensor(prompt_ids, dtype=torch.long),
                 "rollout_ids": rollout_ids_list,
-                "rewards": torch.tensor(rewards_list[: len(rollout_ids_list)], dtype=torch.float),
+                "rewards": torch.tensor(
+                    rewards_list[: len(rollout_ids_list)], dtype=torch.float
+                ),
             }
 
 
@@ -1072,7 +1073,9 @@ class SyntheticRLVRDataset(torch.utils.data.Dataset):
     ) -> None:
         rng = np.random.default_rng(seed)
         self.prompt_ids = rng.integers(4, vocab_size, (num_samples, seq_len // 4))
-        self.rollout_ids = rng.integers(4, vocab_size, (num_samples, group_size, seq_len))
+        self.rollout_ids = rng.integers(
+            4, vocab_size, (num_samples, group_size, seq_len)
+        )
         self.rewards = rng.random((num_samples, group_size)).astype(np.float32)
         self.group_size = group_size
         self.seq_len = seq_len
@@ -1124,9 +1127,7 @@ def rlvr_collate_fn(
         p = item["prompt_ids"]
         pad_len = prompt_max_len - p.shape[0]
         if pad_len > 0:
-            p = torch.cat(
-                [p, torch.full((pad_len,), pad_token_id, dtype=torch.long)]
-            )
+            p = torch.cat([p, torch.full((pad_len,), pad_token_id, dtype=torch.long)])
         padded_prompts.append(p)
     prompt_ids = torch.stack(padded_prompts)  # (B, prompt_len)
 
@@ -1135,11 +1136,7 @@ def rlvr_collate_fn(
 
     # Pad rollout ids
     max_group = max(len(item["rollout_ids"]) for item in batch)
-    rollout_max_len = max(
-        r.shape[0]
-        for item in batch
-        for r in item["rollout_ids"]
-    )
+    rollout_max_len = max(r.shape[0] for item in batch for r in item["rollout_ids"])
 
     padded_rollouts: list[torch.Tensor] = []
     padded_rewards: list[torch.Tensor] = []
@@ -1183,7 +1180,9 @@ def rlvr_collate_fn(
     }
 
 
-def live_collate_fn(batch: list[dict[str, Any]], pad_token_id: int = 0) -> dict[str, Any]:
+def live_collate_fn(
+    batch: list[dict[str, Any]], pad_token_id: int = 0
+) -> dict[str, Any]:
     """Pad and collate a batch of live RLVR examples (prompt + answer only).
 
     Args:
@@ -1201,9 +1200,7 @@ def live_collate_fn(batch: list[dict[str, Any]], pad_token_id: int = 0) -> dict[
         p = item["prompt_ids"]
         pad_len = max_len - p.shape[0]
         if pad_len > 0:
-            p = torch.cat(
-                [p, torch.full((pad_len,), pad_token_id, dtype=torch.long)]
-            )
+            p = torch.cat([p, torch.full((pad_len,), pad_token_id, dtype=torch.long)])
         padded.append(p)
         answers.append(item["answer"])
 
@@ -1259,6 +1256,11 @@ def train(config: RLVRConfig) -> None:
 
     is_grpo = config.loss_type == "grpo"
 
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
+
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
 
@@ -1271,10 +1273,6 @@ def train(config: RLVRConfig) -> None:
         logger.info(
             f"Gradient accumulation steps: {config.gradient_accumulation_steps}"
         )
-
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
 
     # ------------------------------------------------------------------
     # Tokenizer
@@ -1393,9 +1391,7 @@ def train(config: RLVRConfig) -> None:
                 logger.info(f"Offline RLVR dataset: {config.dataset}")
         else:
             if accelerator.is_main_process:
-                logger.info(
-                    "No offline dataset — using synthetic data for demo."
-                )
+                logger.info("No offline dataset — using synthetic data for demo.")
             train_dataset_obj = SyntheticRLVRDataset(
                 vocab_size=config.vocab_size,
                 seq_len=config.seq_len,
@@ -1404,7 +1400,8 @@ def train(config: RLVRConfig) -> None:
                 seed=config.seed,
             )
 
-        collate_fn = lambda b: rlvr_collate_fn(b, pad_token_id=pad_token_id)
+        def collate_fn(b):
+            return rlvr_collate_fn(b, pad_token_id=pad_token_id)
     else:
         # Live mode: generate rollouts on the fly
         if config.dataset is not None and HAS_DATASETS and tokenizer is not None:
@@ -1422,9 +1419,7 @@ def train(config: RLVRConfig) -> None:
                 logger.info(f"Live RLVR dataset: {config.dataset}")
         else:
             if accelerator.is_main_process:
-                logger.info(
-                    "No live dataset — using synthetic data for demo."
-                )
+                logger.info("No live dataset — using synthetic data for demo.")
             train_dataset_obj = SyntheticRLVRDataset(
                 vocab_size=config.vocab_size,
                 seq_len=config.seq_len,
@@ -1541,8 +1536,7 @@ def train(config: RLVRConfig) -> None:
         start_epoch = checkpoint.get("epoch", 0)
         if accelerator.is_main_process:
             logger.info(
-                f"Resumed from {resume_path} at step {global_step}, "
-                f"epoch {start_epoch}"
+                f"Resumed from {resume_path} at step {global_step}, epoch {start_epoch}"
             )
 
         if not config.reset_memory_per_batch:
@@ -1550,16 +1544,12 @@ def train(config: RLVRConfig) -> None:
             if not mem_path.exists():
                 mem_path = resume_path.parent / "memory_final.npz"
             try:
-                memory_states = load_memory_states(
-                    mem_path, device=accelerator.device
-                )
+                memory_states = load_memory_states(mem_path, device=accelerator.device)
                 if accelerator.is_main_process:
                     logger.info(f"Loaded memory states from {mem_path}")
             except Exception as exc:  # noqa: BLE001
                 if accelerator.is_main_process:
-                    logger.info(
-                        f"No memory states found ({exc}), starting fresh"
-                    )
+                    logger.info(f"No memory states found ({exc}), starting fresh")
 
     # ------------------------------------------------------------------
     # Training loop
@@ -1620,7 +1610,9 @@ def train(config: RLVRConfig) -> None:
                             answers,
                             tokenizer,
                             verifier_fn,
-                            prompt_len=int(prompt_len) if not isinstance(prompt_len, int) else prompt_len,
+                            prompt_len=int(prompt_len)
+                            if not isinstance(prompt_len, int)
+                            else prompt_len,
                             num_samples=config.group_size,
                         )
                     else:
@@ -1659,7 +1651,7 @@ def train(config: RLVRConfig) -> None:
                 else:
                     prompt_ids = batch["prompt_ids"]
                     rollout_ids = batch["rollout_ids"]  # (B, G, T)
-                    rewards = batch["rewards"].float()   # (B, G)
+                    rewards = batch["rewards"].float()  # (B, G)
                     prompt_len = batch.get("prompt_len", prompt_ids.shape[1])
 
                     # Compute reference log-probs (LoRA disabled)
@@ -1700,7 +1692,7 @@ def train(config: RLVRConfig) -> None:
                 else:
                     # REINFORCE: collapse group dimension by mean
                     flat_logps = policy_logps.mean(dim=-1)  # (B,)
-                    flat_rewards = rewards.mean(dim=-1)      # (B,)
+                    flat_rewards = rewards.mean(dim=-1)  # (B,)
                     loss, ema_baseline = reinforce_loss(
                         flat_logps, flat_rewards, ema_baseline
                     )
@@ -1708,9 +1700,7 @@ def train(config: RLVRConfig) -> None:
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(
-                        model.parameters(), config.grad_clip
-                    )
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
                     num_optimizer_steps += 1
                     global_step += 1
 
@@ -1780,8 +1770,7 @@ def train(config: RLVRConfig) -> None:
                     logger.info(f"Saved checkpoint: step {global_step}")
 
                     adapter_path = (
-                        checkpoint_dir
-                        / f"adapters_step_{global_step}.safetensors"
+                        checkpoint_dir / f"adapters_step_{global_step}.safetensors"
                     )
                     meta = {
                         "lora_rank": config.lora_rank,
@@ -1793,8 +1782,7 @@ def train(config: RLVRConfig) -> None:
                         save_adapters(unwrapped, adapter_path, meta)
                     except ImportError:
                         logger.warning(
-                            "safetensors not installed — skipping "
-                            "adapter-only save."
+                            "safetensors not installed — skipping adapter-only save."
                         )
 
                     if (
@@ -1802,14 +1790,9 @@ def train(config: RLVRConfig) -> None:
                         and memory_states is not None
                         and any(s is not None for s in memory_states)
                     ):
-                        mem_path = (
-                            checkpoint_dir
-                            / f"memory_step_{global_step}.npz"
-                        )
+                        mem_path = checkpoint_dir / f"memory_step_{global_step}.npz"
                         save_memory_states(memory_states, mem_path)
-                        logger.info(
-                            f"Saved memory states: step {global_step}"
-                        )
+                        logger.info(f"Saved memory states: step {global_step}")
 
         # End-of-epoch summary
         if accelerator.is_main_process:
@@ -1964,9 +1947,7 @@ def parse_args() -> RLVRConfig:
 
     # LoRA
     lora_g = parser.add_argument_group("LoRA")
-    lora_g.add_argument(
-        "--lora-rank", type=int, default=8, help="LoRA rank r"
-    )
+    lora_g.add_argument("--lora-rank", type=int, default=8, help="LoRA rank r")
     lora_g.add_argument(
         "--lora-alpha", type=float, default=16.0, help="LoRA alpha (scale=alpha/rank)"
     )
@@ -2145,11 +2126,13 @@ def parse_args() -> RLVRConfig:
         state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

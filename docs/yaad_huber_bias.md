@@ -52,3 +52,7 @@ Composes with all other feature flags (`use_tnt`, `use_attn_res`, `use_mca`, `ad
 - Datasets with highly variable token importance (e.g., noisy web text where some tokens carry little signal).
 - Training configurations where memory updates show instability or gradient spikes.
 - As a drop-in replacement for L2 with minimal hyperparameter tuning -- the data-dependent delta self-adapts.
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

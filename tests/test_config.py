@@ -118,7 +118,8 @@ class TestAutoCheckpointConfig:
         assert config2.auto_checkpoint is True
 
     def test_checkpoint_config_in_dict(self):
-        from titans.checkpoint_types import MemoryCheckpointConfig
+        from titans.checkpointing.types import MemoryCheckpointConfig
+
         config = TitansConfig(
             auto_checkpoint=True,
             checkpoint_config=MemoryCheckpointConfig(sigma_threshold=3.0),
@@ -140,28 +141,35 @@ class TestMemoryInnerSteps:
 
     def test_default_is_one(self):
         from titans.config import TitansConfig
+
         config = TitansConfig()
         assert config.num_memory_inner_steps == 1
 
     def test_explicit_value(self):
         from titans.config import TitansConfig
+
         config = TitansConfig(num_memory_inner_steps=8)
         assert config.num_memory_inner_steps == 8
 
     def test_rejects_zero(self):
-        from titans.config import TitansConfig
         import pytest
+
+        from titans.config import TitansConfig
+
         with pytest.raises(ValueError, match="num_memory_inner_steps"):
             TitansConfig(num_memory_inner_steps=0)
 
     def test_rejects_negative(self):
-        from titans.config import TitansConfig
         import pytest
+
+        from titans.config import TitansConfig
+
         with pytest.raises(ValueError, match="num_memory_inner_steps"):
             TitansConfig(num_memory_inner_steps=-2)
 
     def test_to_dict_roundtrip(self):
         from titans.config import TitansConfig
+
         c1 = TitansConfig(num_memory_inner_steps=4)
         d = c1.to_dict()
         assert d["num_memory_inner_steps"] == 4
@@ -171,6 +179,7 @@ class TestMemoryInnerSteps:
     def test_hf_config_roundtrip(self):
         from titans.config import TitansConfig
         from titans.hf.configuration import TitansMACConfig
+
         titans_cfg = TitansConfig(num_memory_inner_steps=8)
         hf_cfg = TitansMACConfig.from_titans_config(titans_cfg)
         assert hf_cfg.num_memory_inner_steps == 8

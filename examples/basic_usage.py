@@ -105,8 +105,10 @@ def example_streaming() -> None:
         for i in range(num_chunks):
             chunk = torch.randint(0, config.vocab_size, (1, config.chunk_size))
             logits, states = model(chunk, states=states)
-            print(f"  Chunk {i + 1}: processed {config.chunk_size} tokens, "
-                  f"memory weight norm = {states[0].weights[0].norm():.4f}")
+            print(
+                f"  Chunk {i + 1}: processed {config.chunk_size} tokens, "
+                f"memory weight norm = {states[0].weights[0].norm():.4f}"
+            )
 
     print(f"Total tokens processed: {num_chunks * config.chunk_size}")
     print("Memory state threads across all chunks.")
@@ -146,6 +148,7 @@ def example_training_step() -> None:
     optimizer.zero_grad()
 
     import math
+
     print(f"  Loss: {loss.item():.4f}")
     print(f"  Perplexity: {math.exp(loss.item()):.2f}")
 

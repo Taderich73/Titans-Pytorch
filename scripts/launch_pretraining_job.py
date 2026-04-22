@@ -60,12 +60,15 @@ def main():
     # --- Job control ---
     job = parser.add_argument_group("Job control")
     job.add_argument(
-        "--flavor", type=str, default="a10g-large",
+        "--flavor",
+        type=str,
+        default="a10g-large",
         help="Hardware flavor (e.g. a10g-large, a10g-small, a100-large)",
     )
     job.add_argument("--timeout", type=str, default="4h", help="Job timeout")
     job.add_argument(
-        "--test", action="store_true",
+        "--test",
+        action="store_true",
         help="Quick test run: 100 steps, smaller model, cheaper hardware",
     )
 
@@ -73,20 +76,34 @@ def main():
     model = parser.add_argument_group("Model architecture")
     model.add_argument("--dim", type=int, default=None, help="Override DIM")
     model.add_argument("--num-heads", type=int, default=None, help="Override NUM_HEADS")
-    model.add_argument("--num-layers", type=int, default=None, help="Override NUM_LAYERS")
-    model.add_argument("--vocab-size", type=int, default=None, help="Override VOCAB_SIZE")
-    model.add_argument("--chunk-size", type=int, default=None, help="Override CHUNK_SIZE")
-    model.add_argument("--window-size", type=int, default=None, help="Override WINDOW_SIZE")
     model.add_argument(
-        "--num-memory-layers", type=int, default=None,
+        "--num-layers", type=int, default=None, help="Override NUM_LAYERS"
+    )
+    model.add_argument(
+        "--vocab-size", type=int, default=None, help="Override VOCAB_SIZE"
+    )
+    model.add_argument(
+        "--chunk-size", type=int, default=None, help="Override CHUNK_SIZE"
+    )
+    model.add_argument(
+        "--window-size", type=int, default=None, help="Override WINDOW_SIZE"
+    )
+    model.add_argument(
+        "--num-memory-layers",
+        type=int,
+        default=None,
         help="Override NUM_MEMORY_LAYERS",
     )
     model.add_argument(
-        "--num-persistent-tokens", type=int, default=None,
+        "--num-persistent-tokens",
+        type=int,
+        default=None,
         help="Override NUM_PERSISTENT_TOKENS",
     )
     model.add_argument(
-        "--rope-proportion", type=float, default=None,
+        "--rope-proportion",
+        type=float,
+        default=None,
         help="Override ROPE_PROPORTION (0.0-1.0)",
     )
 
@@ -94,63 +111,104 @@ def main():
     data = parser.add_argument_group("Data")
     data.add_argument("--dataset", type=str, default=None, help="Override DATASET_NAME")
     data.add_argument(
-        "--dataset-subset", type=str, default=None, help="Override DATASET_SUBSET",
+        "--dataset-subset",
+        type=str,
+        default=None,
+        help="Override DATASET_SUBSET",
     )
-    data.add_argument("--tokenizer", type=str, default=None, help="Override TOKENIZER_NAME")
+    data.add_argument(
+        "--tokenizer", type=str, default=None, help="Override TOKENIZER_NAME"
+    )
     data.add_argument("--seq-len", type=int, default=None, help="Override SEQ_LEN")
 
     # --- Training ---
     train = parser.add_argument_group("Training")
-    train.add_argument("--batch-size", type=int, default=None, help="Override BATCH_SIZE")
     train.add_argument(
-        "--gradient-accumulation-steps", type=int, default=None,
+        "--batch-size", type=int, default=None, help="Override BATCH_SIZE"
+    )
+    train.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=None,
         help="Override GRADIENT_ACCUMULATION_STEPS",
     )
     train.add_argument("--lr", type=float, default=None, help="Override LR")
-    train.add_argument("--weight-decay", type=float, default=None, help="Override WEIGHT_DECAY")
-    train.add_argument("--grad-clip", type=float, default=None, help="Override GRAD_CLIP")
-    train.add_argument("--warmup-ratio", type=float, default=None, help="Override WARMUP_RATIO")
+    train.add_argument(
+        "--weight-decay", type=float, default=None, help="Override WEIGHT_DECAY"
+    )
+    train.add_argument(
+        "--grad-clip", type=float, default=None, help="Override GRAD_CLIP"
+    )
+    train.add_argument(
+        "--warmup-ratio", type=float, default=None, help="Override WARMUP_RATIO"
+    )
     train.add_argument("--max-steps", type=int, default=None, help="Override MAX_STEPS")
     train.add_argument("--log-every", type=int, default=None, help="Override LOG_EVERY")
-    train.add_argument("--save-every", type=int, default=None, help="Override SAVE_EVERY")
     train.add_argument(
-        "--save-format", type=str, default=None, choices=["pt", "safetensors"],
+        "--save-every", type=int, default=None, help="Override SAVE_EVERY"
+    )
+    train.add_argument(
+        "--save-format",
+        type=str,
+        default=None,
+        choices=["pt", "safetensors"],
         help="Override SAVE_FORMAT",
     )
     train.add_argument(
-        "--mixed-precision", type=str, default=None, choices=["no", "fp16", "bf16"],
+        "--mixed-precision",
+        type=str,
+        default=None,
+        choices=["no", "fp16", "bf16"],
         help="Override MIXED_PRECISION",
     )
     train.add_argument(
-        "--reset-global-state", type=str, default=None,
+        "--reset-global-state",
+        type=str,
+        default=None,
         choices=["true", "false"],
         help="Override RESET_GLOBAL_STATE_PER_BATCH (default: true)",
     )
     train.add_argument(
-        "--state-carry-warmup", type=int, default=None,
+        "--state-carry-warmup",
+        type=int,
+        default=None,
         help="Override STATE_CARRY_WARMUP_STEPS (default: 500)",
     )
 
     # --- Model features ---
     feat = parser.add_argument_group("Model features")
     feat.add_argument(
-        "--use-tnt", type=str, default=None, choices=["true", "false"],
+        "--use-tnt",
+        type=str,
+        default=None,
+        choices=["true", "false"],
         help="Enable/disable TNT (Test-time Neural Turing). Default: true in pretrain.py",
     )
     feat.add_argument(
-        "--use-attn-res", type=str, default=None, choices=["true", "false"],
+        "--use-attn-res",
+        type=str,
+        default=None,
+        choices=["true", "false"],
         help="Enable/disable attention residual. Default: true in pretrain.py",
     )
     feat.add_argument(
-        "--use-mca", type=str, default=None, choices=["true", "false"],
+        "--use-mca",
+        type=str,
+        default=None,
+        choices=["true", "false"],
         help="Enable/disable MCA (Multi-scale Contextual Attention). Default: true in pretrain.py",
     )
     feat.add_argument(
-        "--adaptive-window", type=str, default=None, choices=["true", "false"],
+        "--adaptive-window",
+        type=str,
+        default=None,
+        choices=["true", "false"],
         help="Enable/disable adaptive windowing. Default: true in pretrain.py",
     )
     feat.add_argument(
-        "--memory-objective", type=str, default=None,
+        "--memory-objective",
+        type=str,
+        default=None,
         choices=["huber", "l2", "l1"],
         help="Memory objective loss function. Default: huber in pretrain.py",
     )
@@ -159,11 +217,15 @@ def main():
     hub = parser.add_argument_group("Hub / checkpointing")
     hub.add_argument("--hub-repo", type=str, default=None, help="Override HUB_REPO")
     hub.add_argument(
-        "--no-push", action="store_true",
+        "--no-push",
+        action="store_true",
         help="Disable pushing checkpoints to Hub",
     )
     hub.add_argument(
-        "--resume", type=str, default=None, metavar="PATH",
+        "--resume",
+        type=str,
+        default=None,
+        metavar="PATH",
         help="Resume from a Hub checkpoint, e.g. 'checkpoints/final.pt'",
     )
 
@@ -230,7 +292,9 @@ def main():
     # change when origin/main moves — meaning successive runs may silently
     # reuse a stale install. Substituting in a SHA forces uv to recognize a
     # new dependency hash and reinstall on the first run that uses it.
-    sha_pattern = r'"titans @ git\+https://github\.com/Taderich73/OpenTitans\.git(?:@[^"]+)?"'
+    sha_pattern = (
+        r'"titans @ git\+https://github\.com/Taderich73/OpenTitans\.git(?:@[^"]+)?"'
+    )
     sha_replacement = (
         f'"titans @ git+https://github.com/Taderich73/OpenTitans.git@{args.titans_sha}"'
     )
@@ -335,7 +399,11 @@ def main():
         ("CHUNK_SIZE", "--chunk-size", args.chunk_size),
         ("WINDOW_SIZE", "--window-size", args.window_size),
         ("NUM_MEMORY_LAYERS", "--num-memory-layers", args.num_memory_layers),
-        ("NUM_PERSISTENT_TOKENS", "--num-persistent-tokens", args.num_persistent_tokens),
+        (
+            "NUM_PERSISTENT_TOKENS",
+            "--num-persistent-tokens",
+            args.num_persistent_tokens,
+        ),
         ("ROPE_PROPORTION", "--rope-proportion", args.rope_proportion),
         # Data
         ("DATASET_NAME", "--dataset", args.dataset),
@@ -396,11 +464,15 @@ def main():
         for candidate in ["huber", "l2", "l1"]:
             old = f'memory_objective="{candidate}"'
             if old in script:
-                script = script.replace(old, f'memory_objective="{args.memory_objective}"')
+                script = script.replace(
+                    old, f'memory_objective="{args.memory_objective}"'
+                )
                 print(f"  --memory-objective: {args.memory_objective}")
                 break
         else:
-            print("  WARNING: --memory-objective: could not find memory_objective= in script")
+            print(
+                "  WARNING: --memory-objective: could not find memory_objective= in script"
+            )
 
     if args.reset_global_state is not None:
         val = args.reset_global_state.lower() == "true"
@@ -408,7 +480,9 @@ def main():
         print(f"  --reset-global-state: {val}")
 
     if args.state_carry_warmup is not None:
-        script = _apply_override(script, "STATE_CARRY_WARMUP_STEPS", args.state_carry_warmup)
+        script = _apply_override(
+            script, "STATE_CARRY_WARMUP_STEPS", args.state_carry_warmup
+        )
         print(f"  --state-carry-warmup: {args.state_carry_warmup}")
 
     # Apply --no-push flag
@@ -466,13 +540,15 @@ def main():
             "modified upstream or the constant was renamed. Aborting."
         )
 
-    print(f"\nSubmitting job to HF Jobs...")
+    print("\nSubmitting job to HF Jobs...")
     print(f"  Hardware: {flavor}")
     print(f"  Timeout: {timeout}")
 
     # Write modified script to a temp file — run_uv_job expects a file path,
-    # not inline content (it tries to stat the string as a path)
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+    # not inline content (it tries to stat the string as a path). The file is
+    # explicitly closed below and unlinked after the job is submitted, so a
+    # ``with`` block would cross the submission call site.
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)  # noqa: SIM115
     tmp.write(script)
     tmp.close()
 
@@ -485,13 +561,13 @@ def main():
 
     Path(tmp.name).unlink(missing_ok=True)
 
-    print(f"\nJob submitted!")
+    print("\nJob submitted!")
     print(f"  Job ID: {job.id}")
     print(f"  Status: {job.status.stage}")
     print(f"  URL: https://huggingface.co/jobs/{job.id}")
     print(
         f"\nMonitor with:\n"
-        f"  uv run python -c \"from huggingface_hub import HfApi; "
+        f'  uv run python -c "from huggingface_hub import HfApi; '
         f"[print(l) for l in HfApi().fetch_job_logs(job_id='{job.id}')]\""
     )
 

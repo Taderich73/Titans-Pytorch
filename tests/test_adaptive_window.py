@@ -9,9 +9,14 @@ class TestAdaptiveWindowPredictor:
         from titans.config import TitansConfig
 
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            window_size=32, adaptive_window=True,
-            adaptive_window_min=8, adaptive_window_max=32,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            window_size=32,
+            adaptive_window=True,
+            adaptive_window_min=8,
+            adaptive_window_max=32,
         )
         predictor = AdaptiveWindowPredictor(config).to(device)
         x = torch.randn(2, 16, 64, device=device)
@@ -24,9 +29,14 @@ class TestAdaptiveWindowPredictor:
         from titans.config import TitansConfig
 
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            window_size=32, adaptive_window=True,
-            adaptive_window_min=8, adaptive_window_max=32,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            window_size=32,
+            adaptive_window=True,
+            adaptive_window_min=8,
+            adaptive_window_max=32,
         )
         predictor = AdaptiveWindowPredictor(config).to(device)
         x = torch.randn(2, 16, 64, device=device)
@@ -40,9 +50,14 @@ class TestAdaptiveWindowPredictor:
         from titans.config import TitansConfig
 
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            window_size=32, adaptive_window=True,
-            adaptive_window_min=8, adaptive_window_max=32,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            window_size=32,
+            adaptive_window=True,
+            adaptive_window_min=8,
+            adaptive_window_max=32,
         )
         predictor = AdaptiveWindowPredictor(config).to(device)
         x = torch.randn(2, 16, 64, device=device)
@@ -55,8 +70,12 @@ class TestAdaptiveWindowPredictor:
         from titans.config import TitansConfig
 
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            window_size=32, adaptive_window=True,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            window_size=32,
+            adaptive_window=True,
         )
         predictor = AdaptiveWindowPredictor(config).to(device)
         x = torch.randn(2, 16, 64, device=device, requires_grad=True)
@@ -86,10 +105,17 @@ class TestAdaptiveWindowIntegration:
         from titans.models import TitansMAG
 
         config = TitansConfig(
-            dim=64, num_heads=4, num_layers=2, vocab_size=256,
-            chunk_size=32, window_size=32, max_seq_len=256,
-            num_memory_layers=2, num_persistent_tokens=4,
-            adaptive_window=True, adaptive_window_min=8,
+            dim=64,
+            num_heads=4,
+            num_layers=2,
+            vocab_size=256,
+            chunk_size=32,
+            window_size=32,
+            max_seq_len=256,
+            num_memory_layers=2,
+            num_persistent_tokens=4,
+            adaptive_window=True,
+            adaptive_window_min=8,
         )
         model = TitansMAG(config).to(device)
         x = torch.randint(0, config.vocab_size, (2, 16), device=device)

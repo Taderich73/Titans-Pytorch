@@ -49,7 +49,6 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,6 +59,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
+
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.lora import (
     count_lora_parameters,
@@ -84,6 +85,7 @@ from titans.scripts import (
     setup_checkpoint_dir,
     tokenize_chat,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -111,10 +113,7 @@ HAS_WANDB = importlib.util.find_spec("wandb") is not None
 # Logging
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ChatML constants (IM_START, IM_END), format_chatml, build_loss_mask,
@@ -124,7 +123,7 @@ logger = logging.getLogger(__name__)
 
 def tokenize_plain(
     text: str,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     max_len: int,
 ) -> dict[str, list[int]]:
     """Tokenize a plain string (non-chat) with an all-ones loss mask.
@@ -283,9 +282,7 @@ def compute_log_probs(
         logits = logits.float()  # fp32 for numerical stability
         log_probs = F.log_softmax(logits, dim=-1)
         lbl_clamped = lbl_c.clamp(min=0, max=vocab_size - 1)
-        token_lp = log_probs.gather(
-            dim=-1, index=lbl_clamped.unsqueeze(-1)
-        ).squeeze(-1)
+        token_lp = log_probs.gather(dim=-1, index=lbl_clamped.unsqueeze(-1)).squeeze(-1)
         msk_f = msk_c.float()
         sum_logps = sum_logps + (token_lp * msk_f).sum(dim=-1)
         lengths = lengths + msk_f.sum(dim=-1)
@@ -355,9 +352,9 @@ class DPOConfig:
     use_conv: bool = False
 
     # --- DPO-specific ---
-    loss_type: str = "dpo"          # "dpo" or "simpo"
-    beta: float = 0.1               # KL penalty (DPO) or reward scale (SimPO)
-    gamma: float = 0.5              # Target reward margin (SimPO only)
+    loss_type: str = "dpo"  # "dpo" or "simpo"
+    beta: float = 0.1  # KL penalty (DPO) or reward scale (SimPO)
+    gamma: float = 0.5  # Target reward margin (SimPO only)
 
     # --- LoRA ---
     use_lora: bool = False
@@ -398,12 +395,14 @@ class DPOConfig:
 
     # --- Logging ---
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-dpo"
     wandb_run_name: str | None = None
 
     # --- Misc ---
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 2000
 
 
@@ -414,7 +413,7 @@ class DPOConfig:
 
 def _parse_field(
     value: Any,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     max_len: int,
 ) -> dict[str, list[int]]:
     """Tokenize a chosen/rejected field value.
@@ -455,7 +454,7 @@ class DPOStreamingDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         chosen_field: str = "chosen",
         rejected_field: str = "rejected",
@@ -504,9 +503,7 @@ class DPOStreamingDataset(IterableDataset):
                 continue
 
             yield {
-                "chosen_input_ids": torch.tensor(
-                    chosen["input_ids"], dtype=torch.long
-                ),
+                "chosen_input_ids": torch.tensor(chosen["input_ids"], dtype=torch.long),
                 "chosen_labels": torch.tensor(chosen["labels"], dtype=torch.long),
                 "chosen_loss_mask": torch.tensor(
                     chosen["loss_mask"], dtype=torch.float
@@ -514,9 +511,7 @@ class DPOStreamingDataset(IterableDataset):
                 "rejected_input_ids": torch.tensor(
                     rejected["input_ids"], dtype=torch.long
                 ),
-                "rejected_labels": torch.tensor(
-                    rejected["labels"], dtype=torch.long
-                ),
+                "rejected_labels": torch.tensor(rejected["labels"], dtype=torch.long),
                 "rejected_loss_mask": torch.tensor(
                     rejected["loss_mask"], dtype=torch.float
                 ),
@@ -556,14 +551,10 @@ class SyntheticDPODataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
-            "chosen_input_ids": torch.from_numpy(
-                self.chosen_input_ids[idx]
-            ).long(),
+            "chosen_input_ids": torch.from_numpy(self.chosen_input_ids[idx]).long(),
             "chosen_labels": torch.from_numpy(self.chosen_labels[idx]).long(),
             "chosen_loss_mask": torch.from_numpy(self.loss_mask[idx]),
-            "rejected_input_ids": torch.from_numpy(
-                self.rejected_input_ids[idx]
-            ).long(),
+            "rejected_input_ids": torch.from_numpy(self.rejected_input_ids[idx]).long(),
             "rejected_labels": torch.from_numpy(self.rejected_labels[idx]).long(),
             "rejected_loss_mask": torch.from_numpy(self.loss_mask[idx]),
         }
@@ -597,28 +588,26 @@ def dpo_collate_fn(
         r_pad = rejected_max - r_len
 
         chosen_ids.append(
-            torch.cat([item["chosen_input_ids"],
-                       torch.zeros(c_pad, dtype=torch.long)])
+            torch.cat([item["chosen_input_ids"], torch.zeros(c_pad, dtype=torch.long)])
         )
         chosen_lbls.append(
-            torch.cat([item["chosen_labels"],
-                       torch.zeros(c_pad, dtype=torch.long)])
+            torch.cat([item["chosen_labels"], torch.zeros(c_pad, dtype=torch.long)])
         )
         chosen_masks.append(
-            torch.cat([item["chosen_loss_mask"],
-                       torch.zeros(c_pad, dtype=torch.float)])
+            torch.cat([item["chosen_loss_mask"], torch.zeros(c_pad, dtype=torch.float)])
         )
         rejected_ids.append(
-            torch.cat([item["rejected_input_ids"],
-                       torch.zeros(r_pad, dtype=torch.long)])
+            torch.cat(
+                [item["rejected_input_ids"], torch.zeros(r_pad, dtype=torch.long)]
+            )
         )
         rejected_lbls.append(
-            torch.cat([item["rejected_labels"],
-                       torch.zeros(r_pad, dtype=torch.long)])
+            torch.cat([item["rejected_labels"], torch.zeros(r_pad, dtype=torch.long)])
         )
         rejected_masks.append(
-            torch.cat([item["rejected_loss_mask"],
-                       torch.zeros(r_pad, dtype=torch.float)])
+            torch.cat(
+                [item["rejected_loss_mask"], torch.zeros(r_pad, dtype=torch.float)]
+            )
         )
 
     return {
@@ -684,6 +673,11 @@ def train(config: DPOConfig) -> None:
     use_lora = config.use_lora
     is_simpo = config.loss_type == "simpo"
 
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
+
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
 
@@ -697,10 +691,6 @@ def train(config: DPOConfig) -> None:
             f"Gradient accumulation steps: {config.gradient_accumulation_steps}"
         )
         logger.info(f"LoRA enabled: {use_lora}")
-
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
 
     # ------------------------------------------------------------------
     # Tokenizer
@@ -918,8 +908,7 @@ def train(config: DPOConfig) -> None:
         start_epoch = checkpoint.get("epoch", 0)
         if accelerator.is_main_process:
             logger.info(
-                f"Resumed from {resume_path} at step {global_step}, "
-                f"epoch {start_epoch}"
+                f"Resumed from {resume_path} at step {global_step}, epoch {start_epoch}"
             )
 
     # ------------------------------------------------------------------
@@ -1015,9 +1004,7 @@ def train(config: DPOConfig) -> None:
                     if use_lora:
                         # LoRA-as-reference: disable LoRA, run base model only
                         with torch.no_grad():
-                            set_lora_enabled(
-                                accelerator.unwrap_model(model), False
-                            )
+                            set_lora_enabled(accelerator.unwrap_model(model), False)
                             ref_chosen_logps, _, _ = compute_log_probs(
                                 model,
                                 chosen_input_ids,
@@ -1067,9 +1054,7 @@ def train(config: DPOConfig) -> None:
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(
-                        model.parameters(), config.grad_clip
-                    )
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
                     num_optimizer_steps += 1
                     global_step += 1
 
@@ -1143,8 +1128,7 @@ def train(config: DPOConfig) -> None:
 
                     if use_lora:
                         adapter_path = (
-                            checkpoint_dir
-                            / f"adapters_step_{global_step}.safetensors"
+                            checkpoint_dir / f"adapters_step_{global_step}.safetensors"
                         )
                         meta = {
                             "lora_rank": config.lora_rank,
@@ -1408,11 +1392,13 @@ def parse_args() -> DPOConfig:
         init_weights=args.init_weights,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

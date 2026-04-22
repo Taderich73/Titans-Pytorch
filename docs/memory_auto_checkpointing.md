@@ -139,7 +139,7 @@ For programmatic use, pass a `MemoryCheckpointConfig` to fine-tune behavior:
 
 ```python
 from titans import TitansConfig
-from titans.checkpoint_types import MemoryCheckpointConfig
+from titans.checkpointing import MemoryCheckpointConfig
 
 config = TitansConfig(
     dim=512, num_heads=8, num_layers=12, vocab_size=32000,
@@ -167,8 +167,8 @@ All config fields are JSON-serializable primitives that round-trip through `Tita
 ```python
 import torch
 from titans import TitansConfig, TitansMAC
-from titans.checkpoint_types import MemoryCheckpointConfig
-from titans.memory_checkpointer import MemoryCheckpointer
+from titans.checkpointing import MemoryCheckpointConfig
+from titans.checkpointing import MemoryCheckpointer
 
 config = TitansConfig(
     dim=512, num_heads=8, num_layers=6, vocab_size=32000,
@@ -225,7 +225,7 @@ The ring buffer and any in-progress transition capture are lost on unclean exit.
 The detection system is designed for extensibility. `StatisticalNoveltyDetector` is the v1 implementation. A future learned detector (RNN/LSTM trained on signal log data) can plug in behind the same protocol:
 
 ```python
-from titans.novelty_detector import NoveltyDetector  # Protocol
+from titans.checkpointing.novelty_detector import NoveltyDetector  # Protocol
 
 class LearnedDetector:
     """Future: trained RNN that recognizes pre-grokking trajectories."""
@@ -261,3 +261,7 @@ from titans import (
     compute_momentum_norms,
 )
 ```
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

@@ -34,7 +34,13 @@ class TestSaveCheckpointPt:
         assert loaded["loss"] == 0.5
 
     def test_save_without_metadata(self, tmp_path: Path) -> None:
-        """Saving pt format without metadata stores only model key."""
+        """Saving pt format without metadata still stamps the schema version.
+
+        Post-P5 every checkpoint carries ``titans_schema_version`` so the
+        file is self-describing. Callers that didn't pass metadata gain
+        exactly that one extra key.
+        """
+        from titans import TITANS_SCHEMA_VERSION
         from titans.checkpoint import save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
@@ -45,7 +51,8 @@ class TestSaveCheckpointPt:
         pt_path = stem.with_suffix(".pt")
         assert written == [pt_path]
         loaded = torch.load(pt_path, map_location="cpu", weights_only=False)
-        assert set(loaded.keys()) == {"model"}
+        assert set(loaded.keys()) == {"model", "titans_schema_version"}
+        assert loaded["titans_schema_version"] == TITANS_SCHEMA_VERSION
         assert torch.equal(loaded["model"]["weight"], state_dict["weight"])
 
     def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
@@ -95,7 +102,14 @@ class TestSaveCheckpointSafetensors:
         assert meta["config"]["dim"] == 64
 
     def test_save_without_metadata(self, tmp_path: Path) -> None:
-        """Safetensors save without metadata writes only the weights file."""
+        """Safetensors save writes weights plus a schema-version sidecar.
+
+        Post-P5 the sidecar is always emitted because it carries at
+        least ``titans_schema_version``. Callers that didn't pass
+        metadata therefore gain a small ``.meta.pt`` file alongside the
+        weights. The sidecar's *only* key in that case is the version.
+        """
+        from titans import TITANS_SCHEMA_VERSION
         from titans.checkpoint import save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
@@ -105,9 +119,12 @@ class TestSaveCheckpointSafetensors:
 
         sf_path = stem.with_suffix(".safetensors")
         sidecar = stem.with_suffix(".meta.pt")
-        assert written == [sf_path]
+        assert written == [sf_path, sidecar]
         assert sf_path.exists()
-        assert not sidecar.exists()
+        assert sidecar.exists()
+        meta = torch.load(sidecar, map_location="cpu", weights_only=False)
+        assert set(meta.keys()) == {"titans_schema_version"}
+        assert meta["titans_schema_version"] == TITANS_SCHEMA_VERSION
 
     def test_invalid_format_raises(self, tmp_path: Path) -> None:
         """Unsupported format raises ValueError."""
@@ -145,9 +162,7 @@ class TestLoadCheckpoint:
         state_dict = {"weight": torch.randn(4, 4)}
         metadata = {"step": 75, "lr": 1e-4}
         stem = tmp_path / "ckpt"
-        save_checkpoint(
-            state_dict, stem, format="safetensors", metadata=metadata
-        )
+        save_checkpoint(state_dict, stem, format="safetensors", metadata=metadata)
 
         result = load_checkpoint(stem.with_suffix(".safetensors"))
 
@@ -156,23 +171,39 @@ class TestLoadCheckpoint:
         assert result["lr"] == 1e-4
 
     def test_load_safetensors_no_sidecar(self, tmp_path: Path) -> None:
-        """Load a .safetensors checkpoint without metadata sidecar."""
+        """Load a .safetensors checkpoint without metadata sidecar.
+
+        Post-P5 every save writes a sidecar carrying the schema version.
+        We still cover the no-sidecar case — it's what pre-0.7 files
+        look like on disk — by deleting the sidecar after the write.
+        ``load_checkpoint`` must surface this as a ``DeprecationWarning``
+        (unversioned checkpoint) while still returning the model.
+        """
+        import warnings
+
         from titans.checkpoint import load_checkpoint, save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
         stem = tmp_path / "ckpt"
         save_checkpoint(state_dict, stem, format="safetensors")
 
-        # Remove sidecar if it exists (it shouldn't, but be safe)
+        # Remove the sidecar to simulate a pre-0.7 unversioned checkpoint.
         sidecar = stem.with_suffix(".meta.pt")
         if sidecar.exists():
             sidecar.unlink()
 
-        result = load_checkpoint(stem.with_suffix(".safetensors"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = load_checkpoint(stem.with_suffix(".safetensors"))
 
         assert "model" in result
         assert torch.equal(result["model"]["weight"], state_dict["weight"])
         assert set(result.keys()) == {"model"}
+        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert any("unversioned" in str(w.message) for w in deps), (
+            "Expected a DeprecationWarning about an unversioned "
+            f"checkpoint; got: {[str(w.message) for w in caught]}"
+        )
 
     def test_extensionless_prefers_safetensors(self, tmp_path: Path) -> None:
         """Extensionless path loads .safetensors when both formats exist."""
@@ -188,9 +219,7 @@ class TestLoadCheckpoint:
         result = load_checkpoint(stem)
 
         # Should load safetensors (ones), not pt (zeros)
-        assert torch.equal(
-            result["model"]["weight"], torch.ones(2, 2)
-        )
+        assert torch.equal(result["model"]["weight"], torch.ones(2, 2))
 
     def test_extensionless_falls_back_to_pt(self, tmp_path: Path) -> None:
         """Extensionless path falls back to .pt when no .safetensors exists."""
@@ -228,9 +257,7 @@ class TestRoundTrip:
         metadata = {"step": 999, "config": {"dim": 8}}
         stem = tmp_path / "model"
 
-        written = save_checkpoint(
-            state_dict, stem, format=fmt, metadata=metadata
-        )
+        written = save_checkpoint(state_dict, stem, format=fmt, metadata=metadata)
         result = load_checkpoint(written[0])
 
         assert set(result["model"].keys()) == set(state_dict.keys())
@@ -285,6 +312,7 @@ def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
     file dangling. torch.save may receive either a Path/str or a file object
     depending on the PyTorch version, so the stub handles both shapes."""
     import torch
+
     from titans.checkpoint import save_checkpoint
 
     state = {"w": torch.ones(4, 4)}
@@ -308,8 +336,7 @@ def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
     # file at the final path is exactly the bug we're fixing. (Pre-fix code
     # wrote straight to pt_path, so it would contain GARBAGE-PARTIAL-BYTES.)
     assert not pt_path.exists(), (
-        f"Final path {pt_path} contains partial file — atomic write "
-        "invariant broken"
+        f"Final path {pt_path} contains partial file — atomic write invariant broken"
     )
     # Post-fix invariant 2: no .pt.tmp file should be left dangling.
     assert not tmp_pt.exists(), (
@@ -322,6 +349,7 @@ def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
     mid-save must leave the final .safetensors file absent and no
     .safetensors.tmp file dangling."""
     import safetensors.torch as st_torch
+
     from titans.checkpoint import save_checkpoint
 
     state = {"w": torch.ones(4, 4)}
@@ -342,8 +370,7 @@ def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
 
     # Post-fix invariant 1: the final .safetensors file MUST NOT exist.
     assert not sf_path.exists(), (
-        f"Final path {sf_path} contains partial file — atomic write "
-        "invariant broken"
+        f"Final path {sf_path} contains partial file — atomic write invariant broken"
     )
     # Post-fix invariant 2: no .safetensors.tmp file should be left dangling.
     assert not tmp_sf.exists(), (
@@ -355,25 +382,32 @@ def test_atomic_write_tmp_filenames_are_correct(tmp_path):
     """The tmp-file names used during atomic writes must not double-suffix —
     e.g. 'ckpt.meta.pt.tmp', not 'ckpt.meta.meta.pt.tmp'."""
     import torch
+
     from titans.checkpoint import save_checkpoint
 
     # Capture the paths torch.save and save_file see during a successful save.
     seen_paths: list[str] = []
 
     original_torch_save = torch.save
+
     def spy_torch_save(obj, f, *args, **kwargs):
         seen_paths.append(str(f))
         return original_torch_save(obj, f, *args, **kwargs)
 
     from safetensors import torch as st
+
     original_save_file = st.save_file
+
     def spy_save_file(tensors, filename, *args, **kwargs):
         seen_paths.append(str(filename))
         return original_save_file(tensors, filename, *args, **kwargs)
 
     import unittest.mock as mock
-    with mock.patch.object(torch, "save", spy_torch_save), \
-         mock.patch.object(st, "save_file", spy_save_file):
+
+    with (
+        mock.patch.object(torch, "save", spy_torch_save),
+        mock.patch.object(st, "save_file", spy_save_file),
+    ):
         save_checkpoint({"w": torch.ones(2, 2)}, tmp_path / "ckpt", format="pt")
         save_checkpoint(
             {"w": torch.ones(2, 2)},

@@ -92,7 +92,7 @@ def _import_lora_module():
     scripts_dir = pathlib.Path(__file__).resolve().parent.parent / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
-    import lora  # noqa: WPS433
+    import lora
 
     return lora
 
@@ -110,10 +110,14 @@ def test_lora_parse_args_exposes_reset_flag(monkeypatch) -> None:
     """--no-reset-memory-per-batch toggles the flag False."""
     lora = _import_lora_module()
 
-    monkeypatch.setattr(sys, "argv", [
-        "lora.py",
-        "--no-reset-memory-per-batch",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "lora.py",
+            "--no-reset-memory-per-batch",
+        ],
+    )
     cfg = lora.parse_args()
     assert cfg.reset_memory_per_batch is False
 
@@ -190,25 +194,21 @@ def test_lora_chunked_step_grads_reach_lora_params(seq_len_mult: int) -> None:
     for ids_c, lbl_c, msk_c in zip(id_chunks, lbl_chunks, msk_chunks):
         logits, states, _ = model(ids_c, states=states)
         logits_flat = logits.reshape(-1, 32)
-        per_token = F.cross_entropy(
-            logits_flat, lbl_c.reshape(-1), reduction="none"
-        )
+        per_token = F.cross_entropy(logits_flat, lbl_c.reshape(-1), reduction="none")
         num_c = (per_token * msk_c.reshape(-1).float()).sum()
         tok_c = msk_c.reshape(-1).float().sum()
         accum = accum + num_c / tok_c.clamp(min=1.0)
         if states is not None:
-            states = [
-                s.detach() if s is not None else None for s in states
-            ]
+            states = [s.detach() if s is not None else None for s in states]
 
     loss = accum / max(len(id_chunks), 1)
     loss.backward()
 
     lora_params = [p for n, p in model.named_parameters() if "lora_" in n]
     assert lora_params, "Expected LoRA adapter params"
-    assert any(
-        p.grad is not None and p.grad.abs().sum() > 0 for p in lora_params
-    ), "LoRA adapters received no gradient"
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in lora_params), (
+        "LoRA adapters received no gradient"
+    )
 
 
 def test_lora_reset_semantics_true_discards_states() -> None:

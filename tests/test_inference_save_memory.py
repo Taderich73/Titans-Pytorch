@@ -1,6 +1,7 @@
 """Regression: `inference.py --save-memory foo.npz` silently did nothing when
 the model returned no final states. Users saw no error, no log — just a
 missing file. Require an explicit warning/error."""
+
 from __future__ import annotations
 
 import importlib.util

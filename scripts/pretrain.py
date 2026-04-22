@@ -44,6 +44,7 @@ from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
 
 from titans import TitansConfig
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
 
@@ -64,13 +65,14 @@ from titans.scripts import (
     maybe_compile,
     setup_checkpoint_dir,
 )
+from titans.utils import seed_everything
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
-print(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}", flush=True)
+logger.info(f"PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name()}", flush=True)
+    logger.info(f"GPU: {torch.cuda.get_device_name()}")
 
 
 # ---------------------------------------------------------------------------
@@ -108,12 +110,11 @@ def _log_mem(label: str) -> None:
     if not PROFILE_MEMORY:
         return
     alloc, max_alloc, reserved = _mem_snapshot()
-    print(
+    logger.info(
         f"[mem] {label:32s}  "
         f"alloc={alloc:6.2f}GB  "
         f"max_alloc={max_alloc:6.2f}GB  "
-        f"reserved={reserved:6.2f}GB",
-        flush=True,
+        f"reserved={reserved:6.2f}GB"
     )
 
 
@@ -156,7 +157,11 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
     per-block trace is opt-in even under --profile-memory because it's
     noisy), or when CUDA is unavailable.
     """
-    if not PROFILE_MEMORY or not PROFILE_MEMORY_PER_BLOCK or not torch.cuda.is_available():
+    if (
+        not PROFILE_MEMORY
+        or not PROFILE_MEMORY_PER_BLOCK
+        or not torch.cuda.is_available()
+    ):
         return
 
     blocks = getattr(model, "blocks", None)
@@ -180,6 +185,7 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
     # inside. This is the source of truth for how many passes have run.
     def _bump_pass_counter(_module, _inputs, _output):
         counter["pass_idx"] += 1
+
     model.register_forward_hook(_bump_pass_counter)
 
     for i, block in enumerate(blocks):
@@ -194,21 +200,20 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
                 if not _under_limit():
                     return original(*args, **kwargs)
                 before_alloc, _ = _snapshot()
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward start: "
-                    f"alloc={before_alloc:6.2f}GB",
-                    flush=True,
+                    f"alloc={before_alloc:6.2f}GB"
                 )
                 result = original(*args, **kwargs)
                 after_alloc, max_alloc = _snapshot()
                 delta = after_alloc - before_alloc
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] core_forward done:  "
                     f"alloc={after_alloc:6.2f}GB  delta={delta:+6.3f}GB  "
-                    f"max={max_alloc:6.2f}GB",
-                    flush=True,
+                    f"max={max_alloc:6.2f}GB"
                 )
                 return result
+
             return wrapped
 
         block.core_forward = make_core_forward_wrapper(block_idx, original_core_forward)
@@ -224,14 +229,15 @@ def _instrument_blocks_for_memory(model: torch.nn.Module) -> None:
                 if not _under_limit():
                     return
                 alloc, max_alloc = _snapshot()
-                print(
+                logger.debug(
                     f"[mem]   block[{idx:02d}/{n_blocks - 1}] memory done:        "
-                    f"alloc={alloc:6.2f}GB  max={max_alloc:6.2f}GB",
-                    flush=True,
+                    f"alloc={alloc:6.2f}GB  max={max_alloc:6.2f}GB"
                 )
+
             return hook
 
         memory_module.register_forward_hook(make_memory_hook(block_idx))
+
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these for your run
@@ -282,11 +288,18 @@ CHECKPOINT_DIR = "checkpoints"
 #   RESUME_FROM = None                           (train from scratch)
 RESUME_FROM = None
 
-RESET_GLOBAL_STATE_PER_BATCH = True  # set False to let global state carry across batches
-STATE_CARRY_WARMUP_STEPS = 500  # reset for this many steps, then carry (ignored if reset=True)
+RESET_GLOBAL_STATE_PER_BATCH = (
+    True  # set False to let global state carry across batches
+)
+STATE_CARRY_WARMUP_STEPS = (
+    500  # reset for this many steps, then carry (ignored if reset=True)
+)
 
 # Seed
 SEED = 42
+# Flip to True to also enable torch.use_deterministic_algorithms(True) and
+# set CUBLAS_WORKSPACE_CONFIG=:4096:8. See docs/reproducibility.md.
+DETERMINISTIC = False
 
 # Diagnostics — toggled on by --profile-memory in the launcher. When True the
 # training loop logs torch.cuda.max_memory_allocated() at key points (model
@@ -351,10 +364,20 @@ class StreamingTextDataset(IterableDataset):
 
 
 class SyntheticDataset(Dataset):
-    """Fallback for quick testing."""
+    """Fallback for quick testing.
+
+    Note: this dataset does not seed ``numpy.random`` itself — the global
+    numpy RNG is seeded once, centrally, by :func:`titans.utils.seed_everything`
+    at the start of ``train()``. Constructing this dataset twice in the same
+    process will therefore draw different samples, which is the correct
+    behaviour for a single-seed training run.
+    """
 
     def __init__(self, vocab_size, seq_len, num_samples=10000, seed=42):
-        np.random.seed(seed)
+        # ``seed`` is accepted for API compatibility with callers that used
+        # to pass one, but the dataset draws from the global numpy RNG which
+        # is seeded by seed_everything() at train() start.
+        del seed  # unused; seeding is centralized
         self.data = np.random.randint(0, vocab_size, (num_samples, seq_len + 1))
 
     def __len__(self):
@@ -393,6 +416,12 @@ def train():
     if not token and PUSH_CHECKPOINTS:
         logger.warning("HF_TOKEN not found — checkpoints will NOT be pushed to Hub")
 
+    # Seed RNGs before anything that might touch CUDA or allocate tensors
+    # (Accelerator construction below can initialize CUDA). Seeding early
+    # also ensures CUBLAS_WORKSPACE_CONFIG is set before any cuBLAS call
+    # when DETERMINISTIC=True.
+    seed_everything(SEED, deterministic=DETERMINISTIC)
+
     bundle = init_accelerator_and_logging(_build_accel_cfg())
     accelerator = bundle.accelerator
 
@@ -403,8 +432,6 @@ def train():
             f"Model: dim={DIM}, heads={NUM_HEADS}, layers={NUM_LAYERS}, "
             f"memory_layers={NUM_MEMORY_LAYERS}"
         )
-
-    torch.manual_seed(SEED)
 
     # Model
     config = TitansConfig(
@@ -565,13 +592,17 @@ def train():
                 )
                 # Place sidecar next to checkpoint so load_checkpoint finds it
                 from pathlib import Path as _P
+
                 expected = _P(ckpt_local).with_suffix(".meta.pt")
                 if not expected.exists():
                     import shutil
+
                     shutil.copy2(sidecar_local, expected)
                 logger.info(f"Downloaded metadata sidecar: {sidecar_filename}")
             except Exception as e:
-                logger.warning(f"No metadata sidecar found ({e}), step/optimizer/scheduler will reset")
+                logger.warning(
+                    f"No metadata sidecar found ({e}), step/optimizer/scheduler will reset"
+                )
 
         checkpoint = load_checkpoint(ckpt_local, weights_only=False)
 
@@ -588,6 +619,7 @@ def train():
         # Fallback: parse step from filename when sidecar is missing
         if global_step == 0 and "step_" in RESUME_FROM:
             import re
+
             m = re.search(r"step_(\d+)", RESUME_FROM)
             if m:
                 global_step = int(m.group(1))
@@ -599,7 +631,9 @@ def train():
         logger.info(f"Resumed at step {global_step}, training to {MAX_STEPS}")
 
         # Also try to load memory states — strip any extension to get the stem
-        resume_stem = RESUME_FROM.rsplit(".", 1)[0]  # works for both .pt and .safetensors
+        resume_stem = RESUME_FROM.rsplit(".", 1)[
+            0
+        ]  # works for both .pt and .safetensors
         mem_filename = resume_stem.replace("step_", "memory_step_") + ".npz"
         if "final" in RESUME_FROM:
             mem_filename = "checkpoints/memory_final.npz"
@@ -621,7 +655,12 @@ def train():
         del checkpoint
 
     model.train()
-    pbar = tqdm(total=MAX_STEPS, initial=global_step, desc="Training", disable=not accelerator.is_main_process)
+    pbar = tqdm(
+        total=MAX_STEPS,
+        initial=global_step,
+        desc="Training",
+        disable=not accelerator.is_main_process,
+    )
 
     for batch in dataloader:
         if global_step >= MAX_STEPS:
@@ -657,8 +696,7 @@ def train():
                     # Truncated BPTT: detach state at chunk boundary
                     if memory_states is not None:
                         memory_states = [
-                            s.detach() if s is not None else None
-                            for s in memory_states
+                            s.detach() if s is not None else None for s in memory_states
                         ]
 
                 if accelerator.sync_gradients:
@@ -670,11 +708,11 @@ def train():
                 if _profile_this_step:
                     _log_mem(f"step {global_step:03d}: after optimizer step")
         except torch.cuda.OutOfMemoryError as oom:
-            print(f"\n[mem] CUDA OOM at step {global_step}", flush=True)
-            print(f"[mem] {oom}", flush=True)
+            logger.error(f"[mem] CUDA OOM at step {global_step}")
+            logger.error(f"[mem] {oom}")
             if torch.cuda.is_available():
                 summary = torch.cuda.memory_summary(abbreviated=True)
-                print(f"[mem] memory_summary:\n{summary}", flush=True)
+                logger.error(f"[mem] memory_summary:\n{summary}")
             raise
 
         # Capture delta/weight norms BEFORE optional global state reset
@@ -685,8 +723,14 @@ def train():
                 state0 = memory_states[0]
                 # TNT path: state is TNTMemoryState with .global_state.weights
                 g_state = getattr(state0, "global_state", None)
-                if g_state is not None and hasattr(g_state, "weights") and len(g_state.weights) > 0:
-                    _pre_reset_g_norm = g_state.weights[0].detach().float().norm().item()
+                if (
+                    g_state is not None
+                    and hasattr(g_state, "weights")
+                    and len(g_state.weights) > 0
+                ):
+                    _pre_reset_g_norm = (
+                        g_state.weights[0].detach().float().norm().item()
+                    )
                 # Non-TNT path: state is MemoryState with .weights directly
                 elif hasattr(state0, "weights") and len(state0.weights) > 0:
                     _pre_reset_g_norm = state0.weights[0].detach().float().norm().item()
@@ -697,7 +741,8 @@ def train():
                 # TNT: block.memory.global_memory.memory has .layers
                 inner = getattr(
                     getattr(block0_mem_module, "global_memory", None),
-                    "memory", None,
+                    "memory",
+                    None,
                 )
                 # Non-TNT: block.memory.memory has .layers
                 if inner is None:
@@ -710,7 +755,9 @@ def train():
         # Optional per-batch global memory state reset.
         # When RESET_GLOBAL_STATE_PER_BATCH is False, still reset during warmup
         # so gates learn reasonable values before state begins carrying.
-        reset_this_batch = RESET_GLOBAL_STATE_PER_BATCH or global_step < STATE_CARRY_WARMUP_STEPS
+        reset_this_batch = (
+            RESET_GLOBAL_STATE_PER_BATCH or global_step < STATE_CARRY_WARMUP_STEPS
+        )
         if reset_this_batch and memory_states is not None:
             unwrapped_for_reset = accelerator.unwrap_model(model)
             reset_batch_size = batch["input_ids"].shape[0]
@@ -886,6 +933,6 @@ if __name__ == "__main__":
     try:
         train()
     except Exception as e:
-        print(f"\nFATAL ERROR: {e}", flush=True)
+        logger.error(f"FATAL ERROR: {e}")
         traceback.print_exc()
         sys.exit(1)

@@ -143,3 +143,7 @@ Legend: **[Faithful]** matches a specific equation in the cited paper. **[Deviat
 ### Auto-checkpointing
 
 - `auto_checkpoint`, `novelty_z_threshold`, `novelty_window`, `cooldown_chunks`, `checkpoint_ring_size`, `capture_after_chunks`, `signal_log_compression` — **[Novel]** the entire auto-checkpointing pipeline is project-specific.
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

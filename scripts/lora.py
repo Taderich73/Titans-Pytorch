@@ -46,7 +46,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 from tqdm import tqdm
 
+from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
+from titans.lora import (
+    count_lora_parameters,
+    merge_lora_weights,
+    save_adapters,
+    wrap_lora_layers,
+)
 from titans.memory_dump import save_memory_states
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
@@ -65,12 +72,7 @@ from titans.scripts import (
     setup_checkpoint_dir,
 )
 from titans.scripts import tokenize_chat as _tokenize_chat_canonical
-from titans.lora import (
-    count_lora_parameters,
-    merge_lora_weights,
-    save_adapters,
-    wrap_lora_layers,
-)
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional imports
@@ -94,6 +96,7 @@ except ImportError:
 HAS_DATASETS = importlib.util.find_spec("datasets") is not None
 HAS_WANDB = importlib.util.find_spec("wandb") is not None
 
+setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -200,12 +203,14 @@ class LoRATrainingConfig:
 
     # Logging
     log_every: int = 10
+    log_level: str = "INFO"
     wandb: bool = False
     wandb_project: str = "titans-lora"
     wandb_run_name: str | None = None
 
     # Misc
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 1000
 
     # Populated at runtime
@@ -377,8 +382,7 @@ class HFChatStreamingDataset(IterableDataset):  # type: ignore[type-arg]
     ) -> None:
         if not HAS_DATASETS:
             raise ImportError(
-                "datasets library is required. "
-                "Install with: pip install datasets"
+                "datasets library is required. Install with: pip install datasets"
             )
         from datasets import load_dataset
 
@@ -404,21 +408,15 @@ class HFChatStreamingDataset(IterableDataset):  # type: ignore[type-arg]
             if not messages or not isinstance(messages, list):
                 continue
             try:
-                tokenized = tokenize_chat(
-                    messages, self.tokenizer, self.max_seq_len
-                )
+                tokenized = tokenize_chat(messages, self.tokenizer, self.max_seq_len)
             except Exception as exc:
-                logger.debug(
-                    f"Skipping HF example due to tokenization error: {exc}"
-                )
+                logger.debug(f"Skipping HF example due to tokenization error: {exc}")
                 continue
 
             input_ids = tokenized["input_ids"]
             labels = tokenized["labels"]
             loss_mask = (
-                [1] * len(labels)
-                if self.train_on_all
-                else build_loss_mask(labels)
+                [1] * len(labels) if self.train_on_all else build_loss_mask(labels)
             )
 
             if sum(loss_mask) == 0 or len(input_ids) < 2:
@@ -530,9 +528,7 @@ def build_dataset(
     """
     if config.data_path is not None:
         tokenizer = _load_tokenizer(config)
-        return JSONLChatDataset(
-            Path(config.data_path), tokenizer, config.max_seq_len
-        )
+        return JSONLChatDataset(Path(config.data_path), tokenizer, config.max_seq_len)
 
     if config.dataset is not None:
         tokenizer = _load_tokenizer(config)
@@ -609,9 +605,9 @@ def build_eval_dataset(
 
 
 def evaluate(
-    model: nn.Module,
+    model: torch.nn.Module,
     dataloader: DataLoader,
-    accelerator: "Accelerator",
+    accelerator: Accelerator,
     vocab_size: int,
     max_batches: int = 50,
 ) -> float:
@@ -645,25 +641,17 @@ def evaluate(
             if i >= max_batches:
                 break
 
-            logits, memory_states, _ = model(
-                batch["input_ids"], states=memory_states
-            )
+            logits, memory_states, _ = model(batch["input_ids"], states=memory_states)
             logits_flat = logits.view(-1, vocab_size)
             labels_flat = batch["labels"].view(-1)
             mask_flat = batch["loss_mask"].view(-1).float()
 
-            per_token = F.cross_entropy(
-                logits_flat, labels_flat, reduction="none"
-            )
+            per_token = F.cross_entropy(logits_flat, labels_flat, reduction="none")
             batch_loss = (per_token * mask_flat).sum()
             batch_tokens = mask_flat.sum()
 
-            batch_loss = accelerator.gather(
-                batch_loss.unsqueeze(0)
-            ).sum().item()
-            batch_tokens = accelerator.gather(
-                batch_tokens.unsqueeze(0)
-            ).sum().item()
+            batch_loss = accelerator.gather(batch_loss.unsqueeze(0)).sum().item()
+            batch_tokens = accelerator.gather(batch_tokens.unsqueeze(0)).sum().item()
 
             total_loss += batch_loss
             total_tokens += batch_tokens
@@ -695,9 +683,13 @@ def train(config: LoRATrainingConfig) -> None:
     """
     if not HAS_ACCELERATE:
         raise ImportError(
-            "accelerate is required for training. "
-            "Install with: pip install accelerate"
+            "accelerate is required for training. Install with: pip install accelerate"
         )
+
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
 
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
@@ -707,8 +699,6 @@ def train(config: LoRATrainingConfig) -> None:
         logger.info(f"Device: {accelerator.device}")
         logger.info(f"Mixed precision: {config.mixed_precision}")
 
-    torch.manual_seed(config.seed)
-
     # --- 1. Build base model ---
     titans_config = build_titans_config(config)
     model = create_model(config.model_type, titans_config)
@@ -717,9 +707,7 @@ def train(config: LoRATrainingConfig) -> None:
     if config.init_weights is not None:
         weights_path = Path(config.init_weights)
         if not weights_path.exists():
-            raise FileNotFoundError(
-                f"init_weights file not found: {weights_path}"
-            )
+            raise FileNotFoundError(f"init_weights file not found: {weights_path}")
         state_dict = torch.load(str(weights_path), map_location="cpu")
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if accelerator.is_main_process:
@@ -803,9 +791,7 @@ def train(config: LoRATrainingConfig) -> None:
                 f"eval_batches={config.eval_batches})."
             )
     elif accelerator.is_main_process:
-        logger.info(
-            "No --eval-data-path configured — skipping periodic evaluation."
-        )
+        logger.info("No --eval-data-path configured — skipping periodic evaluation.")
 
     # --- 6. LR scheduler ---
     total_steps = (
@@ -824,10 +810,8 @@ def train(config: LoRATrainingConfig) -> None:
 
     # --- 7. Accelerate preparation ---
     if eval_dataloader is not None:
-        model, optimizer, dataloader, eval_dataloader, scheduler = (
-            accelerator.prepare(
-                model, optimizer, dataloader, eval_dataloader, scheduler
-            )
+        model, optimizer, dataloader, eval_dataloader, scheduler = accelerator.prepare(
+            model, optimizer, dataloader, eval_dataloader, scheduler
         )
     else:
         model, optimizer, dataloader, scheduler = accelerator.prepare(
@@ -923,15 +907,9 @@ def train(config: LoRATrainingConfig) -> None:
                 msk_chunks = batch["loss_mask"].split(chunk_size, dim=1)
                 num_chunks = len(lbl_chunks)
 
-                total_loss_num = torch.tensor(
-                    0.0, device=batch["input_ids"].device
-                )
-                total_tokens = torch.tensor(
-                    0.0, device=batch["input_ids"].device
-                )
-                backward_accum = torch.tensor(
-                    0.0, device=batch["input_ids"].device
-                )
+                total_loss_num = torch.tensor(0.0, device=batch["input_ids"].device)
+                total_tokens = torch.tensor(0.0, device=batch["input_ids"].device)
+                backward_accum = torch.tensor(0.0, device=batch["input_ids"].device)
 
                 chunk_iter = chunked_forward(
                     model,
@@ -958,8 +936,8 @@ def train(config: LoRATrainingConfig) -> None:
 
                     total_loss_num = total_loss_num + chunk_num.detach()
                     total_tokens = total_tokens + chunk_tok.detach()
-                    backward_accum = (
-                        backward_accum + chunk_num / chunk_tok.clamp(min=1.0)
+                    backward_accum = backward_accum + chunk_num / chunk_tok.clamp(
+                        min=1.0
                     )
 
                 loss = total_loss_num / total_tokens.clamp(min=1.0)
@@ -967,9 +945,7 @@ def train(config: LoRATrainingConfig) -> None:
                 accelerator.backward(backward_loss)
 
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(
-                        model.parameters(), config.grad_clip
-                    )
+                    accelerator.clip_grad_norm_(model.parameters(), config.grad_clip)
                     global_step += 1
 
                 optimizer.step()
@@ -1015,22 +991,14 @@ def train(config: LoRATrainingConfig) -> None:
                 # train mode but the training-loop states above are still
                 # what we propagate forward.
                 if accelerator.is_main_process:
-                    logger.info(
-                        f"Step {global_step} — val loss: {val_loss:.4f}"
-                    )
+                    logger.info(f"Step {global_step} — val loss: {val_loss:.4f}")
                     if config.wandb and HAS_WANDB:
-                        accelerator.log(
-                            {"eval/loss": val_loss}, step=global_step
-                        )
+                        accelerator.log({"eval/loss": val_loss}, step=global_step)
 
-            if (
-                global_step % config.save_every == 0
-                and accelerator.is_main_process
-            ):
+            if global_step % config.save_every == 0 and accelerator.is_main_process:
                 unwrapped = accelerator.unwrap_model(model)
                 adapter_path = (
-                    checkpoint_dir
-                    / f"adapters_step_{global_step}.safetensors"
+                    checkpoint_dir / f"adapters_step_{global_step}.safetensors"
                 )
                 meta = {
                     "lora_rank": config.lora_rank,
@@ -1040,23 +1008,15 @@ def train(config: LoRATrainingConfig) -> None:
                 }
                 try:
                     save_adapters(unwrapped, adapter_path, meta)
-                    logger.info(
-                        f"Checkpoint: saved adapters at step "
-                        f"{global_step}"
-                    )
+                    logger.info(f"Checkpoint: saved adapters at step {global_step}")
                 except ImportError:
-                    ckpt_stem = (
-                        checkpoint_dir / f"step_{global_step}"
-                    )
+                    ckpt_stem = checkpoint_dir / f"step_{global_step}"
                     save_checkpoint(
                         unwrapped.state_dict(),
                         ckpt_stem,
                         format=config.save_format,
                     )
-                    logger.info(
-                        f"Checkpoint: saved full model at step "
-                        f"{global_step}"
-                    )
+                    logger.info(f"Checkpoint: saved full model at step {global_step}")
 
                 # Full checkpoint for resume support
                 ckpt_stem = checkpoint_dir / f"step_{global_step}"
@@ -1072,9 +1032,7 @@ def train(config: LoRATrainingConfig) -> None:
                         "epoch": epoch,
                     },
                 )
-                logger.info(
-                    f"Checkpoint: saved full model at step {global_step}"
-                )
+                logger.info(f"Checkpoint: saved full model at step {global_step}")
 
                 # Memory states
                 if (
@@ -1175,53 +1133,75 @@ def parse_args() -> LoRATrainingConfig:
 
     # LoRA-specific flags
     lora_g = parser.add_argument_group("LoRA")
-    lora_g.add_argument("--lora-rank", type=int, default=8,
-                       help="LoRA rank r")
-    lora_g.add_argument("--lora-alpha", type=float, default=16.0,
-                       help="LoRA alpha (scale = alpha / rank)")
-    lora_g.add_argument("--lora-dropout", type=float, default=0.05,
-                       help="Dropout on LoRA input path")
+    lora_g.add_argument("--lora-rank", type=int, default=8, help="LoRA rank r")
     lora_g.add_argument(
-        "--lora-targets", type=str, default="attn",
+        "--lora-alpha",
+        type=float,
+        default=16.0,
+        help="LoRA alpha (scale = alpha / rank)",
+    )
+    lora_g.add_argument(
+        "--lora-dropout", type=float, default=0.05, help="Dropout on LoRA input path"
+    )
+    lora_g.add_argument(
+        "--lora-targets",
+        type=str,
+        default="attn",
         help="Comma-separated target groups: attn, ffn, memory, all",
     )
     lora_g.add_argument(
-        "--merge-and-save", type=str, default=None, metavar="PATH",
+        "--merge-and-save",
+        type=str,
+        default=None,
+        metavar="PATH",
         help="After training, merge LoRA into base weights and save to PATH",
     )
 
     # Data flags (LoRA-specific: JSONL data_path plus tokenizer/seq-len)
     data_g = parser.add_argument_group("LoRA data")
     data_g.add_argument(
-        "--data-path", type=str, default=None,
+        "--data-path",
+        type=str,
+        default=None,
         help="Path to JSONL file with 'messages' field per line",
     )
     data_g.add_argument(
-        "--eval-data-path", type=str, default=None,
+        "--eval-data-path",
+        type=str,
+        default=None,
         help="Optional JSONL eval file (same schema as --data-path). "
-             "If unset, periodic eval is skipped.",
+        "If unset, periodic eval is skipped.",
     )
     data_g.add_argument(
-        "--dataset", type=str, default=None,
+        "--dataset",
+        type=str,
+        default=None,
         help="HuggingFace dataset repo id to stream for training.",
     )
     data_g.add_argument("--dataset-subset", type=str, default=None)
     data_g.add_argument(
-        "--eval-dataset", type=str, default=None,
+        "--eval-dataset",
+        type=str,
+        default=None,
         help="Optional HF dataset repo for eval. Defaults to --dataset when "
-             "--eval-data-path is unset and --dataset is set.",
+        "--eval-data-path is unset and --dataset is set.",
     )
     data_g.add_argument("--eval-dataset-subset", type=str, default=None)
     data_g.add_argument(
-        "--eval-split", type=str, default="test",
+        "--eval-split",
+        type=str,
+        default="test",
         help="Split to stream from the eval HF dataset (default: test).",
     )
     data_g.add_argument(
-        "--messages-field", type=str, default="messages",
+        "--messages-field",
+        type=str,
+        default="messages",
         help="Field name containing the messages list in HF examples.",
     )
     data_g.add_argument(
-        "--train-on-all", action="store_true",
+        "--train-on-all",
+        action="store_true",
         help="Compute loss on all tokens instead of assistant-only.",
     )
     data_g.add_argument("--tokenizer", type=str, default="gpt2")
@@ -1245,7 +1225,9 @@ def parse_args() -> LoRATrainingConfig:
     parser.add_argument("--synthetic-samples", type=int, default=1000)
     parser.add_argument("--eval-every", type=int, default=500)
     parser.add_argument(
-        "--eval-batches", type=int, default=50,
+        "--eval-batches",
+        type=int,
+        default=50,
         help="Max batches per eval pass (caps wall-time when eval set is large).",
     )
 
@@ -1335,11 +1317,13 @@ def parse_args() -> LoRATrainingConfig:
         resume=args.resume,
         # Logging
         log_every=args.log_every,
+        log_level=args.log_level,
         wandb=args.wandb,
         wandb_project=args.wandb_project,
         wandb_run_name=args.wandb_run_name,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

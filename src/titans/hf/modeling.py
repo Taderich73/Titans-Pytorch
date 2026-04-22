@@ -78,7 +78,9 @@ class TitansMACForCausalLM(PreTrainedModel):
             CausalLMOutputWithPast with logits, optional loss, and
             memory states as ``past_key_values``.
         """
-        logits, new_states, _gate_snapshots = self.model(input_ids, states=memory_states)
+        logits, new_states, _gate_snapshots = self.model(
+            input_ids, states=memory_states
+        )
 
         loss = None
         if labels is not None:
@@ -138,9 +140,7 @@ class TitansMACForCausalLM(PreTrainedModel):
                 states = [s.detach() if s is not None else None for s in states]
 
         committed_states = (
-            [s.detach() if s is not None else None for s in states]
-            if states
-            else None
+            [s.detach() if s is not None else None for s in states] if states else None
         )
         buffer_start = generated.shape[1]
 
@@ -148,26 +148,19 @@ class TitansMACForCausalLM(PreTrainedModel):
             next_logits = logits[:, -1, :] / temperature
 
             if top_k > 0:
-                v, _ = torch.topk(
-                    next_logits, min(top_k, next_logits.size(-1))
-                )
+                v, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
                 next_logits[next_logits < v[:, [-1]]] = float("-inf")
 
             if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(
-                    next_logits, descending=True
-                )
+                sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
                 cumulative_probs = torch.cumsum(
                     F.softmax(sorted_logits, dim=-1), dim=-1
                 )
                 remove_mask = (
-                    cumulative_probs - F.softmax(sorted_logits, dim=-1)
-                    >= top_p
+                    cumulative_probs - F.softmax(sorted_logits, dim=-1) >= top_p
                 )
                 sorted_logits[remove_mask] = float("-inf")
-                next_logits = sorted_logits.scatter(
-                    1, sorted_indices, sorted_logits
-                )
+                next_logits = sorted_logits.scatter(1, sorted_indices, sorted_logits)
 
             if do_sample:
                 probs = torch.softmax(next_logits, dim=-1)
@@ -182,13 +175,9 @@ class TitansMACForCausalLM(PreTrainedModel):
 
             if buffer_len >= chunk_size:
                 chunk = buffer[:, :chunk_size]
-                logits, states, _ = self.model(
-                    chunk, states=committed_states
-                )
+                logits, states, _ = self.model(chunk, states=committed_states)
                 if states is not None:
-                    states = [
-                        s.detach() if s is not None else None for s in states
-                    ]
+                    states = [s.detach() if s is not None else None for s in states]
                 committed_states = (
                     [s.detach() if s is not None else None for s in states]
                     if states is not None
@@ -198,21 +187,12 @@ class TitansMACForCausalLM(PreTrainedModel):
 
                 if buffer_len > chunk_size:
                     remainder = buffer[:, chunk_size:]
-                    logits, states, _ = self.model(
-                        remainder, states=committed_states
-                    )
+                    logits, states, _ = self.model(remainder, states=committed_states)
                     if states is not None:
-                        states = [
-                            s.detach() if s is not None else None
-                            for s in states
-                        ]
+                        states = [s.detach() if s is not None else None for s in states]
             else:
-                logits, states, _ = self.model(
-                    buffer, states=committed_states
-                )
+                logits, states, _ = self.model(buffer, states=committed_states)
                 if states is not None:
-                    states = [
-                        s.detach() if s is not None else None for s in states
-                    ]
+                    states = [s.detach() if s is not None else None for s in states]
 
         return generated

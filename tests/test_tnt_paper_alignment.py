@@ -136,8 +136,7 @@ class TestQKProjectionEfficient:
 
         expected = carry + torch.einsum("bcd,bce->de", k, k) / B
         assert torch.allclose(new_carry, expected, atol=1e-5), (
-            f"carry recurrence mismatch: "
-            f"{(new_carry - expected).abs().max().item()}"
+            f"carry recurrence mismatch: {(new_carry - expected).abs().max().item()}"
         )
 
 
@@ -165,8 +164,9 @@ class TestHierarchicalPerPositionProjection:
         the same projection — here we assert outputs differ at t=0 vs t=C-1.
         """
         torch.manual_seed(3)
-        config = _tnt_config(dim=32, chunk_size=8, shard_length=64,
-                             local_chunk_sizes=[8])
+        config = _tnt_config(
+            dim=32, chunk_size=8, shard_length=64, local_chunk_sizes=[8]
+        )
         assert config.tnt_qk_projection == "per_position"
         hm = HierarchicalMemory(config).to(device)
         x = torch.randn(2, 8, config.dim, device=device)
@@ -179,8 +179,7 @@ class TestHierarchicalPerPositionProjection:
     def test_chunk_mean_opt_in_runs_and_carries(self, device):
         """Opting into chunk_mean must not crash and must produce outputs
         of the correct shape with a (dim, dim) carry stored in state."""
-        config = _tnt_config(tnt_qk_projection="chunk_mean",
-                             local_chunk_sizes=[8])
+        config = _tnt_config(tnt_qk_projection="chunk_mean", local_chunk_sizes=[8])
         hm = HierarchicalMemory(config).to(device)
         x = torch.randn(2, 8, config.dim, device=device)
         out, state, _ = hm(x)
@@ -200,8 +199,9 @@ class TestHierarchicalPerPositionProjection:
         delta at t=0 must be strictly smaller than at t=C-1 when future
         tokens are perturbed."""
         torch.manual_seed(7)
-        cfg_pp = _tnt_config(dim=16, chunk_size=8, shard_length=64,
-                             local_chunk_sizes=[8])
+        cfg_pp = _tnt_config(
+            dim=16, chunk_size=8, shard_length=64, local_chunk_sizes=[8]
+        )
         hm = HierarchicalMemory(cfg_pp).to(device)
         x = torch.randn(1, 8, cfg_pp.dim, device=device)
         x_perturbed = x.clone()
@@ -229,8 +229,9 @@ class TestPerTokenResetCadence:
         """With shard_length=4 and chunk_size=6, a reset must fire at
         local position 4 within the chunk (global step counter crosses a
         multiple of shard_length mid-chunk)."""
-        config = _tnt_config(chunk_size=6, shard_length=4,
-                             local_chunk_sizes=[6], dim=16)
+        config = _tnt_config(
+            chunk_size=6, shard_length=4, local_chunk_sizes=[6], dim=16
+        )
         hm = HierarchicalMemory(config).to(device)
         x = torch.randn(1, 6, config.dim, device=device)
 
@@ -254,12 +255,15 @@ class TestPerTokenResetCadence:
     def test_fast_path_single_segment(self, device):
         """When S_L >= seq_len and we start at counter=0, there is
         exactly one segment — no Python-level splitting."""
-        config = _tnt_config(chunk_size=8, shard_length=2048,
-                             local_chunk_sizes=[8], dim=16)
+        config = _tnt_config(
+            chunk_size=8, shard_length=2048, local_chunk_sizes=[8], dim=16
+        )
         local = LocalMemory(config, chunk_size=8, shard_length=2048).to(device)
 
         segments = local._reset_segments(
-            start_counter=0, seq_len=8, shard_length=2048,
+            start_counter=0,
+            seq_len=8,
+            shard_length=2048,
         )
         assert segments == [(0, 8, False)], (
             f"fast path should emit a single segment, got {segments}"
@@ -277,7 +281,9 @@ class TestPerTokenResetCadence:
         config = _tnt_config(dim=16)
         local = LocalMemory(config, chunk_size=7, shard_length=3).to(device)
         segments = local._reset_segments(
-            start_counter=2, seq_len=7, shard_length=3,
+            start_counter=2,
+            seq_len=7,
+            shard_length=3,
         )
         # Expected: [(0, 1, False), (1, 4, True), (4, 7, True)]
         #  - first segment covers local [0, 1), no reset at start
@@ -362,12 +368,12 @@ class TestPredictionErrorWiring:
     """Task 8: MemoryCheckpointer plumbs prediction_errors into SignalFrame."""
 
     def test_on_chunk_commit_accepts_prediction_errors(self, tmp_path, device):
-        from titans.checkpoint_types import (
+        from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
+        from titans.checkpointing.types import (
             GateSnapshot,
             MemoryCheckpointConfig,
         )
         from titans.memory import MemoryState
-        from titans.memory_checkpointer import MemoryCheckpointer
 
         cfg = MemoryCheckpointConfig(
             checkpoint_dir=str(tmp_path),
@@ -427,12 +433,12 @@ class TestPredictionErrorWiring:
     def test_on_chunk_commit_defaults_pred_errors_to_none(self, tmp_path, device):
         """Legacy callers that omit prediction_errors still get zero-filled
         primary signal (falls back to cascade)."""
-        from titans.checkpoint_types import (
+        from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
+        from titans.checkpointing.types import (
             GateSnapshot,
             MemoryCheckpointConfig,
         )
         from titans.memory import MemoryState
-        from titans.memory_checkpointer import MemoryCheckpointer
 
         cfg = MemoryCheckpointConfig(
             checkpoint_dir=str(tmp_path),
@@ -509,16 +515,12 @@ class TestEndToEnd:
         loss = out.pow(2).sum()
         loss.backward()
 
-        grads_by_local = [
-            [p.grad for p in lm._w_init] for lm in hm.local_memories
-        ]
-        assert all(
-            all(g is not None for g in grads) for grads in grads_by_local
-        ), "Some _w_init parameter received no gradient."
+        grads_by_local = [[p.grad for p in lm._w_init] for lm in hm.local_memories]
+        assert all(all(g is not None for g in grads) for grads in grads_by_local), (
+            "Some _w_init parameter received no gradient."
+        )
         grad_norm_total = sum(
-            g.abs().sum().item()
-            for grads in grads_by_local
-            for g in grads
+            g.abs().sum().item() for grads in grads_by_local for g in grads
         )
         assert grad_norm_total > 0.0, (
             "All _w_init gradients were zero — learnable init is not "
@@ -556,7 +558,9 @@ class TestEndToEnd:
         errors: list[float] = []
         for _ in range(3):
             out, state, _gate, pred_err = nltm(
-                x, state=state, return_signal_frame=True,
+                x,
+                state=state,
+                return_signal_frame=True,
             )
             errors.append(pred_err.item())
 
@@ -592,12 +596,8 @@ class TestEndToEnd:
         x_perturbed[:, -1, :] = torch.randn(1, config.dim, device=device)
         out_perturbed, _, _ = hm(x_perturbed)
 
-        delta_first = (
-            (out_base[:, 0] - out_perturbed[:, 0]).abs().mean().item()
-        )
-        delta_last = (
-            (out_base[:, -1] - out_perturbed[:, -1]).abs().mean().item()
-        )
+        delta_first = (out_base[:, 0] - out_perturbed[:, 0]).abs().mean().item()
+        delta_last = (out_base[:, -1] - out_perturbed[:, -1]).abs().mean().item()
         assert delta_last > delta_first, (
             f"Last-position delta must exceed first-position delta when "
             f"x[t=C-1] is perturbed. Got delta_first={delta_first}, "
@@ -632,7 +632,9 @@ class TestEndToEnd:
         assert state.local_step_counters[0] == 0
 
         segments = hm.local_memories[0]._reset_segments(
-            start_counter=0, seq_len=512, shard_length=256,
+            start_counter=0,
+            seq_len=512,
+            shard_length=256,
         )
         reset_flags = [r for _, _, r in segments]
         assert reset_flags.count(True) == 1, (
