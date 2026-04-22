@@ -322,11 +322,11 @@ def test_sliding_window_flash_parity_matches_bool_window() -> None:
 
 
 def test_rope_apply_single_tensor_matches_forward() -> None:
-    """`apply(x, offset)` must equal the first output of `forward(x, x, offset)`."""
+    """`apply_rotary(x, offset)` must equal the first output of `forward(x, x, offset)`."""
     torch.manual_seed(0)
     rope = RotaryPositionEmbedding(dim=16, max_seq_len=64)
     x = torch.randn(2, 4, 32, 16)
-    out_single = rope.apply(x, seq_offset=3)
+    out_single = rope.apply_rotary(x, seq_offset=3)
     out_pair, _ = rope(x, x, seq_offset=3)
     assert torch.allclose(out_single, out_pair, rtol=1e-6, atol=1e-6)
 
@@ -334,4 +334,4 @@ def test_rope_apply_single_tensor_matches_forward() -> None:
 def test_rope_apply_noop_when_rotate_dim_zero() -> None:
     rope = RotaryPositionEmbedding(dim=16, max_seq_len=64, rope_proportion=0.0)
     x = torch.randn(1, 2, 8, 16)
-    assert torch.equal(rope.apply(x, seq_offset=0), x)
+    assert torch.equal(rope.apply_rotary(x, seq_offset=0), x)

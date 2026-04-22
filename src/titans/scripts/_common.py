@@ -34,7 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Iterable, Iterator
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -121,7 +121,9 @@ def maybe_compile(
         _log.info("torch.compile requested but device=%s; skipping.", device_type)
         return model
     _log.info("Wrapping model with torch.compile(mode='default').")
-    return torch.compile(model, mode="default")
+    # torch.compile returns an OptimizedModule (runtime subclass of nn.Module)
+    # whose stub types as a callable; cast to the declared return type.
+    return cast(nn.Module, torch.compile(model, mode="default"))
 
 
 def make_optimizer(
@@ -176,7 +178,7 @@ def make_dataloader(
     shuffle: bool = False,
     drop_last: bool = True,
     streaming: bool = False,
-    collate_fn=None,
+    collate_fn: Any = None,
 ) -> DataLoader:
     """Construct a DataLoader with sensible throughput defaults.
 
@@ -311,7 +313,7 @@ def loss_mask_to_zero_one(labels: list[int]) -> list[int]:
 
 def tokenize_chat(
     messages: list[dict],
-    tokenizer,  # transformers.PreTrainedTokenizerBase when installed
+    tokenizer: Any,  # transformers.PreTrainedTokenizerBase when installed
     max_len: int,
     train_on_all: bool = False,
 ) -> dict[str, list[int]]:

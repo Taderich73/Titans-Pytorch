@@ -162,7 +162,10 @@ def save_memory_states(states: list[MemoryState | TNTMemoryState], path: Path) -
             _save_memory_state(arrays, f"layer_{i}", state)
 
     path = Path(path)
-    np.savez(path, **arrays)
+    # numpy's savez stub types the first kw-slot as ``allow_pickle: bool`` which
+    # clashes with the ``**arrays`` spread (each value is an ndarray); suppress
+    # since the call is the documented public API for saving many named arrays.
+    np.savez(path, **arrays)  # type: ignore[arg-type]
 
 
 def load_memory_states(

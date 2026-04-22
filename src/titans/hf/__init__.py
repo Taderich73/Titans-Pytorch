@@ -35,7 +35,7 @@ _VARIANT_REGISTRY = [
 from transformers import AutoConfig, AutoModelForCausalLM
 
 
-def _safe_register(model_type: str, config_cls, model_cls) -> None:
+def _safe_register(model_type: str, config_cls: type, model_cls: type) -> None:
     """Register with AutoConfig / AutoModelForCausalLM; idempotent on re-import.
 
     Uses ``exist_ok=True`` (supported by transformers >= 5.0) to tolerate

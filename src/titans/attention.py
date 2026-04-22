@@ -63,6 +63,10 @@ class RotaryPositionEmbedding(nn.Module):
     preserving them for semantic content (p-RoPE, as used in Gemma 4).
     """
 
+    inv_freq: torch.Tensor
+    cos_cached: torch.Tensor
+    sin_cached: torch.Tensor
+
     def __init__(
         self,
         dim: int,
@@ -115,10 +119,12 @@ class RotaryPositionEmbedding(nn.Module):
         k_rotated = self._apply_rotary(k, cos, sin)
         return q_rotated, k_rotated
 
-    def apply(self, x: torch.Tensor, seq_offset: int = 0) -> torch.Tensor:
+    def apply_rotary(self, x: torch.Tensor, seq_offset: int = 0) -> torch.Tensor:
         """Apply rotary embeddings to a single tensor.
 
         Avoids doubling work when the caller only needs one of (q, k).
+        Named ``apply_rotary`` rather than ``apply`` to avoid shadowing
+        :meth:`torch.nn.Module.apply`.
         """
         if self.rotate_dim == 0:
             return x
@@ -238,8 +244,8 @@ class SlidingWindowAttention(nn.Module):
         v = _rearrange_to_heads(v, self.num_heads)
 
         if self.rope is not None:
-            q = self.rope.apply(q, seq_offset=prefix_len + seq_offset)
-            k = self.rope.apply(k, seq_offset=seq_offset)
+            q = self.rope.apply_rotary(q, seq_offset=prefix_len + seq_offset)
+            k = self.rope.apply_rotary(k, seq_offset=seq_offset)
 
         mode = self._select_sdpa_mode(seq_len, prefix_len, adaptive_mask)
         if mode == "is_causal":

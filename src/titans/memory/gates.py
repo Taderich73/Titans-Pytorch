@@ -24,6 +24,7 @@ stateless, reusable helpers they rely on.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -75,6 +76,9 @@ def apply_huber_clip(
 class MemoryMLP(nn.Module):
     """MLP that stores information in its weights."""
 
+    layers: nn.ModuleList
+    activation: Callable[[torch.Tensor], torch.Tensor]
+
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         self.config = config
@@ -95,12 +99,13 @@ class MemoryMLP(nn.Module):
         self.layers = nn.ModuleList(layers)
         self._init_weights(config.init_std)
 
-        self._layer_shapes = [tuple(layer.weight.shape) for layer in self.layers]
-        self._ref_dtype = self.layers[0].weight.dtype
+        self._layer_shapes = [tuple(layer.weight.shape) for layer in layers]
+        self._ref_dtype = layers[0].weight.dtype
 
     def _init_weights(self, std: float) -> None:
         for layer in self.layers:
-            nn.init.normal_(layer.weight, std=std)
+            linear = cast(nn.Linear, layer)
+            nn.init.normal_(linear.weight, std=std)
 
     def forward_with_weights(
         self, x: torch.Tensor, weights: list[torch.Tensor]
@@ -113,7 +118,7 @@ class MemoryMLP(nn.Module):
         return h
 
     def get_weights(self) -> list[torch.Tensor]:
-        return [layer.weight.data.clone() for layer in self.layers]
+        return [cast(nn.Linear, layer).weight.data.clone() for layer in self.layers]
 
     def zero_weights_like(self, device: torch.device) -> list[torch.Tensor]:
         """Return zero-initialized tensors matching each layer's weight shape."""
@@ -124,4 +129,4 @@ class MemoryMLP(nn.Module):
 
     def get_base_weights(self) -> list[torch.Tensor]:
         """Return live weight parameter references (with autograd graph)."""
-        return [layer.weight for layer in self.layers]
+        return [cast(nn.Linear, layer).weight for layer in self.layers]

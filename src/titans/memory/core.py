@@ -27,6 +27,8 @@ Novel extensions (not in any reference paper):
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,6 +37,9 @@ from titans.config import TitansConfig
 
 from .gates import _DEGENERATE_THRESHOLD, _L2_NORM_EPS, MemoryMLP
 from .state import MemoryState
+
+if TYPE_CHECKING:
+    from titans.quantize_state import QuantizedMemoryState
 
 
 class NeuralLongTermMemory(nn.Module):
@@ -289,7 +294,10 @@ class NeuralLongTermMemory(nn.Module):
             # Deltas start at zero — allocate directly without cloning params
             weights = self.memory.zero_weights_like(device)
         else:
-            weights = [layer.weight.detach().clone() for layer in self.memory.layers]
+            weights = [
+                cast(nn.Linear, layer).weight.detach().clone()
+                for layer in self.memory.layers
+            ]
         momentum = self.memory.zero_weights_like(device)
         return MemoryState(weights=weights, momentum=momentum)
 
@@ -405,7 +413,9 @@ class NeuralLongTermMemory(nn.Module):
                 theta=[theta.detach()],
                 eta=[eta.detach()],
                 delta=(
-                    [delta_val.detach()] if self.memory_objective == "huber" else None
+                    [delta_val.detach()]
+                    if self.memory_objective == "huber" and delta_val is not None
+                    else None
                 ),
                 input_activation_norm=float(x_mean.detach().float().norm().item()),
                 chunk_index=0,  # Set by caller
@@ -555,14 +565,14 @@ class NeuralLongTermMemory(nn.Module):
                 self.config.detach_memory_state_in_forward
                 or self.config.quantize_memory_state
             )
-            returned_state: MemoryState = (
+            returned_state: MemoryState | QuantizedMemoryState = (
                 new_state.detach() if must_detach else new_state
             )
             if self.config.quantize_memory_state:
                 from titans.quantize_state import quantize_memory_state
 
                 returned_state = quantize_memory_state(
-                    returned_state,
+                    cast(MemoryState, returned_state),
                     weight_bits=self.config.memory_state_weight_bits,
                     momentum_bits=self.config.memory_state_momentum_bits,
                 )

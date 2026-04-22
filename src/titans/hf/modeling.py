@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,8 +42,11 @@ class TitansMACForCausalLM(PreTrainedModel):
         """Return the input embedding layer."""
         return self.model.embed
 
-    def set_input_embeddings(self, value: nn.Embedding) -> None:
+    def set_input_embeddings(self, value: nn.Module) -> None:
         """Set the input embedding layer."""
+        assert isinstance(value, nn.Embedding), (
+            "TitansMAC.set_input_embeddings expects nn.Embedding"
+        )
         self.model.embed = value
 
     def get_output_embeddings(self) -> nn.Linear:
@@ -52,8 +57,18 @@ class TitansMACForCausalLM(PreTrainedModel):
         """Set the output projection (language model head)."""
         self.model.head = value
 
-    def tie_weights(self, **kwargs) -> None:
-        """Tie input embedding and output head weights (called by post_init and from_pretrained)."""
+    def tie_weights(
+        self,
+        missing_keys: set[str] | None = None,
+        recompute_mapping: bool = True,
+    ) -> None:
+        """Tie input embedding and output head weights.
+
+        Signature matches ``transformers.PreTrainedModel.tie_weights``; we
+        ignore both parameters because the single weight-tie here is
+        unconditional and does not consult the HF mapping machinery.
+        """
+        del missing_keys, recompute_mapping
         self.model.head.weight = self.model.embed.weight
 
     def forward(
@@ -62,7 +77,7 @@ class TitansMACForCausalLM(PreTrainedModel):
         labels: torch.LongTensor | None = None,
         memory_states: list | None = None,
         attention_mask: torch.Tensor | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> CausalLMOutputWithPast:
         """Single-chunk forward pass.
 
@@ -82,13 +97,18 @@ class TitansMACForCausalLM(PreTrainedModel):
             input_ids, states=memory_states
         )
 
-        loss = None
+        loss: torch.FloatTensor | None = None
         if labels is not None:
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            loss = F.cross_entropy(
-                shift_logits.view(-1, self.vocab_size),
-                shift_labels.view(-1),
+            # F.cross_entropy returns a generic float Tensor; HF's output
+            # dataclass types it as FloatTensor.
+            loss = cast(
+                torch.FloatTensor,
+                F.cross_entropy(
+                    shift_logits.view(-1, self.vocab_size),
+                    shift_labels.view(-1),
+                ),
             )
 
         return CausalLMOutputWithPast(
@@ -107,7 +127,7 @@ class TitansMACForCausalLM(PreTrainedModel):
         top_p: float = 1.0,
         memory_states: list | None = None,
         do_sample: bool = True,
-        **kwargs,
+        **kwargs: Any,
     ) -> torch.LongTensor:
         """Titans-specific chunked generation with memory state management.
 
@@ -168,7 +188,12 @@ class TitansMACForCausalLM(PreTrainedModel):
             else:
                 next_token = next_logits.argmax(dim=-1, keepdim=True)
 
-            generated = torch.cat([generated, next_token], dim=1)
+            # torch.cat widens to Tensor; the concatenation of two LongTensors
+            # is still a LongTensor at runtime, so the cast preserves the
+            # declared type without changing behaviour.
+            generated = cast(
+                torch.LongTensor, torch.cat([generated, next_token], dim=1)
+            )
 
             buffer = generated[:, buffer_start:]
             buffer_len = buffer.shape[1]

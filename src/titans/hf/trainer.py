@@ -6,6 +6,8 @@ and returns memory states as ``past_key_values``.
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from transformers import Trainer
 
@@ -27,6 +29,9 @@ class TitansChunkMixin:
     reset_memory_per_batch: bool
     state_carry_warmup_steps: int
     _memory_states: list | None
+    # Provided by the concrete ``Trainer`` base class at MRO-resolution time;
+    # the mixin reads ``state.global_step`` to gate the warmup reset window.
+    state: Any
 
     def _init_titans_memory(
         self,
@@ -45,7 +50,14 @@ class TitansChunkMixin:
         self.state_carry_warmup_steps = state_carry_warmup_steps
         self._memory_states = None
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+    def compute_loss(
+        self,
+        model: Any,
+        inputs: dict[str, torch.Tensor | Any],
+        return_outputs: bool = False,
+        num_items_in_batch: torch.Tensor | int | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor | tuple[torch.Tensor, Any]:
         """Per-chunk forward with truncated BPTT.
 
         Splits input_ids and labels into chunk_size pieces, runs forward
@@ -122,10 +134,10 @@ class TitansTrainer(TitansChunkMixin, Trainer):
 
     def __init__(
         self,
-        *args,
+        *args: Any,
         reset_memory_per_batch: bool = True,
         state_carry_warmup_steps: int = 500,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._init_titans_memory(reset_memory_per_batch, state_carry_warmup_steps)
