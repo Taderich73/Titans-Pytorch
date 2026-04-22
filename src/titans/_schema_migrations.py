@@ -21,7 +21,8 @@ their respective modules; only the walker is shared.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # Module-private: both registries key on ``(from_version, to_version)``.
 _MigrationMap = dict[tuple[int, int], Callable[[dict[str, Any]], dict[str, Any]]]

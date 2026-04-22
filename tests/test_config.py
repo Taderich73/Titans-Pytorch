@@ -152,15 +152,17 @@ class TestMemoryInnerSteps:
         assert config.num_memory_inner_steps == 8
 
     def test_rejects_zero(self):
-        from titans.config import TitansConfig
         import pytest
+
+        from titans.config import TitansConfig
 
         with pytest.raises(ValueError, match="num_memory_inner_steps"):
             TitansConfig(num_memory_inner_steps=0)
 
     def test_rejects_negative(self):
-        from titans.config import TitansConfig
         import pytest
+
+        from titans.config import TitansConfig
 
         with pytest.raises(ValueError, match="num_memory_inner_steps"):
             TitansConfig(num_memory_inner_steps=-2)

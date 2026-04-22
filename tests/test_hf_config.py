@@ -188,8 +188,10 @@ def test_safe_register_propagates_unrelated_valueerror():
     ``exist_ok=True`` at the upstream level and has no try/except of its own,
     so unrelated errors must propagate untouched.
     """
-    import pytest
     from unittest.mock import patch
+
+    import pytest
+
     from titans.hf import _safe_register
     from titans.hf.configuration import TitansMACConfig
     from titans.hf.modeling import TitansMACForCausalLM
@@ -266,6 +268,7 @@ def test_titans_hf_double_import_is_idempotent():
     module reload is tolerated at the upstream level.
     """
     import importlib
+
     import titans.hf
 
     importlib.reload(titans.hf)

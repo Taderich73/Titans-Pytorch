@@ -33,7 +33,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from datasets import load_dataset
@@ -71,7 +70,7 @@ def pretokenize(
     output_dir: str,
     tokenizer_name: str = "gpt2",
     seq_len: int = 2048,
-    subset: Optional[str] = None,
+    subset: str | None = None,
     split: str = "train",
     max_tokens: int = -1,
     shard_size: int = 100_000,

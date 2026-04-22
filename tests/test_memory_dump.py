@@ -54,8 +54,9 @@ def test_load_memory_states_preserves_qk_projections_by_default(tmp_path):
     for training resume callers that used the default.
     """
     import torch
+
     from titans.memory import MemoryState, TNTMemoryState
-    from titans.memory_dump import save_memory_states, load_memory_states
+    from titans.memory_dump import load_memory_states, save_memory_states
 
     qk = torch.randn(3, 4)
     counter = 7

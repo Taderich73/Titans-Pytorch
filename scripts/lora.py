@@ -607,7 +607,7 @@ def build_eval_dataset(
 def evaluate(
     model: nn.Module,
     dataloader: DataLoader,
-    accelerator: "Accelerator",
+    accelerator: Accelerator,
     vocab_size: int,
     max_batches: int = 50,
 ) -> float:

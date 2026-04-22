@@ -21,12 +21,10 @@ the TurboQuant paper) are not implemented in this baseline.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 
 from titans.memory import MemoryState
-
 
 # ---------------------------------------------------------------------------
 # Low-level packing helpers
@@ -260,7 +258,7 @@ class QuantizedMemoryState:
 def quantize_memory_state(
     state: MemoryState,
     weight_bits: int = 8,
-    momentum_bits: Optional[int] = None,
+    momentum_bits: int | None = None,
 ) -> QuantizedMemoryState:
     """Quantize a ``MemoryState`` into a ``QuantizedMemoryState``.
 

@@ -31,7 +31,6 @@ import argparse
 import os
 import sys
 import warnings
-from pathlib import Path
 
 # Ensure the sibling scripts/ directory is importable, then surface the
 # shared helpers from the unified script so legacy ``from convert_to_hf

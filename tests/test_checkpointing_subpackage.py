@@ -46,7 +46,7 @@ def test_importing_titans_does_not_load_checkpointing() -> None:
     ]
     assert not offenders, (
         "import titans must not eagerly load the auto-checkpointing stack, "
-        f"but these lines appeared in the importtime trace:\n" + "\n".join(offenders)
+        "but these lines appeared in the importtime trace:\n" + "\n".join(offenders)
     )
 
 

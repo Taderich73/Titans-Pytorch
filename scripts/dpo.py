@@ -59,6 +59,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
+
 from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.lora import (
@@ -68,7 +69,6 @@ from titans.lora import (
     set_lora_enabled,
     wrap_lora_layers,
 )
-from titans.utils import seed_everything
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
 # single-file runners (e.g. HuggingFace Jobs) can reach them via the
@@ -85,6 +85,7 @@ from titans.scripts import (
     setup_checkpoint_dir,
     tokenize_chat,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -122,7 +123,7 @@ logger = logging.getLogger(__name__)
 
 def tokenize_plain(
     text: str,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     max_len: int,
 ) -> dict[str, list[int]]:
     """Tokenize a plain string (non-chat) with an all-ones loss mask.
@@ -412,7 +413,7 @@ class DPOConfig:
 
 def _parse_field(
     value: Any,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     max_len: int,
 ) -> dict[str, list[int]]:
     """Tokenize a chosen/rejected field value.
@@ -453,7 +454,7 @@ class DPOStreamingDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         chosen_field: str = "chosen",
         rejected_field: str = "rejected",

@@ -11,16 +11,15 @@ from pathlib import Path
 
 import torch
 
+from titans.checkpointing.memory_checkpointer import (
+    CheckpointerState,
+    MemoryCheckpointer,
+)
 from titans.checkpointing.types import (
     GateSnapshot,
     MemoryCheckpointConfig,
     MemoryState,
 )
-from titans.checkpointing.memory_checkpointer import (
-    CheckpointerState,
-    MemoryCheckpointer,
-)
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -417,9 +416,9 @@ def test_metadata_signal_source_preserves_full_name(tmp_path):
     """Regression: signal_source was being truncated to the last underscore
     segment, turning 'weight_delta' into 'delta'. Fix uses the decision object
     directly."""
-    from titans.checkpointing.types import CheckpointEntry, MemoryCheckpointConfig
     from titans.checkpointing.memory_checkpointer import MemoryCheckpointer
     from titans.checkpointing.novelty_detector import TriggerDecision
+    from titans.checkpointing.types import CheckpointEntry, MemoryCheckpointConfig
     from titans.memory import MemoryState
 
     cfg = MemoryCheckpointConfig(

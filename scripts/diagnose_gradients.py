@@ -28,7 +28,6 @@ import torch.nn.functional as F
 from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL
 from titans.memory import MemoryState
 
-
 # ---------------------------------------------------------------------------
 # Parameter classification
 # ---------------------------------------------------------------------------

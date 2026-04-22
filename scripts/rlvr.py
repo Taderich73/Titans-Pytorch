@@ -58,9 +58,10 @@ import logging
 import math
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -79,7 +80,6 @@ from titans.lora import (
     wrap_lora_layers,
 )
 from titans.memory_dump import load_memory_states, save_memory_states
-from titans.utils import seed_everything
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
 # single-file runners (e.g. HuggingFace Jobs) can reach them via the
@@ -95,6 +95,7 @@ from titans.scripts import (
     maybe_compile,
     setup_checkpoint_dir,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -641,7 +642,7 @@ def generate_rollouts(
 
 def decode_tokens(
     token_ids: torch.Tensor,
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     prompt_len: int,
 ) -> list[str]:
     """Decode completion tokens (post-prompt) to strings.
@@ -668,7 +669,7 @@ def decode_tokens(
 def verify_batch(
     generated_ids: torch.Tensor,
     answers: list[str],
-    tokenizer: "PreTrainedTokenizerBase",
+    tokenizer: PreTrainedTokenizerBase,
     verifier: Callable[[str, str], float],
     prompt_len: int,
     num_samples: int,
@@ -898,7 +899,7 @@ class LiveRLVRDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         prompt_field: str = "prompt",
         answer_field: str = "answer",
@@ -971,7 +972,7 @@ class OfflineRLVRDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         prompt_field: str = "prompt",
         rollout_field: str = "completions",

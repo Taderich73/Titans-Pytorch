@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 import torch
 
-
 pytest.importorskip("transformers")
 
 from transformers.modeling_outputs import CausalLMOutputWithPast

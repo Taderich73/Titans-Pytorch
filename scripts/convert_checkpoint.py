@@ -25,7 +25,6 @@ import argparse
 import os
 import sys
 import warnings
-from pathlib import Path
 
 
 def _parse_legacy_args(argv: list[str]) -> argparse.Namespace:

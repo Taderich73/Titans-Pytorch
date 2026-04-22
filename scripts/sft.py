@@ -234,7 +234,7 @@ class SFTStreamingDataset(IterableDataset):
         self,
         dataset_name: str,
         subset: str | None,
-        tokenizer: "PreTrainedTokenizerBase",
+        tokenizer: PreTrainedTokenizerBase,
         max_len: int,
         messages_field: str = "messages",
         train_on_all: bool = False,
@@ -331,7 +331,7 @@ class SyntheticSFTDataset(Dataset):
 def evaluate(
     model: torch.nn.Module,
     dataloader: DataLoader,
-    accelerator: "Accelerator",
+    accelerator: Accelerator,
     vocab_size: int,
     max_batches: int = 50,
 ) -> float:

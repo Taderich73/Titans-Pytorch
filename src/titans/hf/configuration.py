@@ -5,7 +5,8 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import warnings
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from transformers import PretrainedConfig
 

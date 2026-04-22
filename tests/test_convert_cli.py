@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import torch
 
 from titans.checkpoint import save_checkpoint
 from titans.config import TitansConfig

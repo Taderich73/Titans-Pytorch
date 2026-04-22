@@ -629,8 +629,9 @@ def test_memory_module_no_module_state_stash(num_memory_layers):
     on the module after forward, regardless of which consumer path ran.
     """
     import torch
-    from titans.memory import NeuralLongTermMemory
+
     from titans.config import TitansConfig
+    from titans.memory import NeuralLongTermMemory
 
     cfg = TitansConfig(
         dim=16,
@@ -658,6 +659,7 @@ class TestVProjectionActivation:
         Post-fix: v = x @ W_V.T with no activation -> norms can exceed 1.
         """
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 
@@ -677,6 +679,7 @@ class TestVProjectionActivation:
     def test_v_is_unchanged_between_proj_and_loss(self):
         """Walk the forward path manually; verify v is not activated."""
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 

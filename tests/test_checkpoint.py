@@ -312,6 +312,7 @@ def test_save_checkpoint_is_atomic_on_crash(tmp_path, monkeypatch):
     file dangling. torch.save may receive either a Path/str or a file object
     depending on the PyTorch version, so the stub handles both shapes."""
     import torch
+
     from titans.checkpoint import save_checkpoint
 
     state = {"w": torch.ones(4, 4)}
@@ -348,6 +349,7 @@ def test_save_checkpoint_safetensors_is_atomic_on_crash(tmp_path, monkeypatch):
     mid-save must leave the final .safetensors file absent and no
     .safetensors.tmp file dangling."""
     import safetensors.torch as st_torch
+
     from titans.checkpoint import save_checkpoint
 
     state = {"w": torch.ones(4, 4)}
@@ -380,6 +382,7 @@ def test_atomic_write_tmp_filenames_are_correct(tmp_path):
     """The tmp-file names used during atomic writes must not double-suffix —
     e.g. 'ckpt.meta.pt.tmp', not 'ckpt.meta.meta.pt.tmp'."""
     import torch
+
     from titans.checkpoint import save_checkpoint
 
     # Capture the paths torch.save and save_file see during a successful save.

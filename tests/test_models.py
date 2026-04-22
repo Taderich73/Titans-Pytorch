@@ -659,6 +659,7 @@ class TestMACRetrieveOrdering:
         retrieve_after_update=True (default).  The two outputs must differ
         whenever the update is non-trivial."""
         import torch
+
         from titans.config import TitansConfig
         from titans.memory import NeuralLongTermMemory
 
@@ -702,6 +703,7 @@ class TestMACRetrieveOrdering:
         memory module (paper Eq. 24).  Verified by checking that mem_out
         matches an explicit pre-update retrieve(y_t, state)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -748,6 +750,7 @@ class TestMACRetrieveOrdering:
         non-default incoming state is supplied (the pre-update retrieval path
         must not assume identity weights)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -775,6 +778,7 @@ class TestMACPerPositionQuery:
     def test_retrieved_shape_is_per_position(self):
         """mem_out consumed by the gate has shape (B, seq_len, D), not (B, 1, D)."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -808,6 +812,7 @@ class TestMACPerPositionQuery:
     def test_different_positions_retrieve_differently(self):
         """Two positions with different content produce different retrieved tokens."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 
@@ -844,6 +849,7 @@ class TestMACPerPositionQuery:
     def test_legacy_constant_query_mode(self):
         """With mac_per_position_memory_query=False, fall back to learned constant."""
         import torch
+
         from titans.config import TitansConfig
         from titans.models import MACBlock
 

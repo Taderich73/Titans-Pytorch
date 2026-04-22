@@ -5,12 +5,10 @@
 
 from __future__ import annotations
 
-
 import pytest
 import torch
 
 from titans.memory import MemoryState, TNTMemoryState
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -285,8 +283,8 @@ class TestComputeNorms:
     def test_multi_layer_norms_length(self, device: torch.device) -> None:
         """Returns one norm per layer."""
         from titans.checkpointing.signals import (
-            compute_weight_norms,
             compute_momentum_norms,
+            compute_weight_norms,
         )
 
         n_layers = 4
@@ -324,8 +322,8 @@ class TestComputeNorms:
     def test_norms_are_non_negative(self, device: torch.device) -> None:
         """Frobenius norms are always non-negative."""
         from titans.checkpointing.signals import (
-            compute_weight_norms,
             compute_momentum_norms,
+            compute_weight_norms,
         )
 
         state = _make_memory_state(3, 8, device)
@@ -335,8 +333,8 @@ class TestComputeNorms:
     def test_return_type_is_list_of_float(self, device: torch.device) -> None:
         """Return values are lists of Python floats."""
         from titans.checkpointing.signals import (
-            compute_weight_norms,
             compute_momentum_norms,
+            compute_weight_norms,
         )
 
         state = _make_memory_state(2, 4, device)
@@ -537,6 +535,7 @@ class TestBuildSignalFrame:
     def test_frame_to_dict_is_serializable(self, device: torch.device) -> None:
         """Frame produced by build_signal_frame() survives JSON round-trip."""
         import json
+
         from titans.checkpointing.signals import build_signal_frame
 
         state = _make_memory_state(2, 4, device)
@@ -553,8 +552,9 @@ def test_signal_frame_no_duplicate_tnt_weight_norms():
     """Regression: global_signal_norms was populated with exactly the same
     values as weight_norms on the TNT path. Either remove the duplicate field
     or populate with distinct semantics. We choose removal."""
-    from titans.checkpointing.types import SignalFrame
     import dataclasses
+
+    from titans.checkpointing.types import SignalFrame
 
     field_names = {f.name for f in dataclasses.fields(SignalFrame)}
     assert "global_signal_norms" not in field_names, (
@@ -566,8 +566,9 @@ def test_signal_frame_no_duplicate_tnt_weight_norms():
 def test_signal_frame_no_local_reset_flags_field():
     """local_reset_flags was hard-coded to [False] * N, making the consumer
     branch in memory_checkpointer unreachable. Remove the field."""
-    from titans.checkpointing.types import SignalFrame
     import dataclasses
+
+    from titans.checkpointing.types import SignalFrame
 
     field_names = {f.name for f in dataclasses.fields(SignalFrame)}
     assert "local_reset_flags" not in field_names, (

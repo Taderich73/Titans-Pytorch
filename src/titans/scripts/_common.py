@@ -426,7 +426,13 @@ def tokenize_chat(
 # Model factory
 # ---------------------------------------------------------------------------
 
-from titans import TitansConfig, TitansLMM, TitansMAC, TitansMAG, TitansMAL  # noqa: E402
+from titans import (  # noqa: E402
+    TitansConfig,
+    TitansLMM,
+    TitansMAC,
+    TitansMAG,
+    TitansMAL,
+)
 
 MODEL_CLASSES: dict[str, type[nn.Module]] = {
     "mac": TitansMAC,

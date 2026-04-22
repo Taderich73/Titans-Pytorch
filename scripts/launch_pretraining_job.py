@@ -540,7 +540,7 @@ def main():
             "modified upstream or the constant was renamed. Aborting."
         )
 
-    print(f"\nSubmitting job to HF Jobs...")
+    print("\nSubmitting job to HF Jobs...")
     print(f"  Hardware: {flavor}")
     print(f"  Timeout: {timeout}")
 
@@ -559,7 +559,7 @@ def main():
 
     Path(tmp.name).unlink(missing_ok=True)
 
-    print(f"\nJob submitted!")
+    print("\nJob submitted!")
     print(f"  Job ID: {job.id}")
     print(f"  Status: {job.status.stage}")
     print(f"  URL: https://huggingface.co/jobs/{job.id}")
