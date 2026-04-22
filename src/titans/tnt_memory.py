@@ -17,6 +17,8 @@ Implements the TNT paper's hierarchical memory:
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 import torch.nn as nn
 
@@ -27,6 +29,8 @@ from titans.qk_projection import QKProjection
 
 class GlobalMemory(nn.Module):
     """Global memory module for TNT (Eq. 5)."""
+
+    memory: NeuralLongTermMemory
 
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
@@ -53,6 +57,9 @@ class GlobalMemory(nn.Module):
 class LocalMemory(nn.Module):
     """Local memory module for TNT with periodic state reset (Eq. 6)."""
 
+    memory: NeuralLongTermMemory
+    qk_proj: QKProjection | None
+
     def __init__(
         self, config: TitansConfig, chunk_size: int, shard_length: int
     ) -> None:
@@ -66,7 +73,9 @@ class LocalMemory(nn.Module):
         # Learnable initial state W_init
         self._w_init = nn.ParameterList(
             [
-                nn.Parameter(torch.randn_like(layer.weight) * config.init_std)
+                nn.Parameter(
+                    torch.randn_like(cast(nn.Linear, layer).weight) * config.init_std
+                )
                 for layer in self.memory.memory.layers
             ]
         )
@@ -309,6 +318,8 @@ class HierarchicalMemory(nn.Module):
     Retrieval: o_t = f(V, q_t) + Σ f(W^(i), M_t^(i) · q_t)
     """
 
+    global_memory: GlobalMemory
+
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         self.config = config
@@ -326,9 +337,16 @@ class HierarchicalMemory(nn.Module):
         self.proj_out = nn.Linear(config.dim, config.dim, bias=False)
         nn.init.normal_(self.proj_out.weight, std=config.init_std)
 
+    def _iter_locals(self) -> list[LocalMemory]:
+        """Typed view over ``self.local_memories`` (ModuleList iteration
+        widens to ``Module``, which defeats attribute lookups). Keeps the
+        nn.Module registration intact while giving mypy a concrete type.
+        """
+        return [cast(LocalMemory, lm) for lm in self.local_memories]
+
     def init_state(self, batch_size: int) -> TNTMemoryState:
         global_state = self.global_memory.init_state(batch_size)
-        local_states = [lm.init_state(batch_size) for lm in self.local_memories]
+        local_states = [lm.init_state(batch_size) for lm in self._iter_locals()]
         qk_projections = [
             torch.zeros(
                 self.config.dim, self.config.dim, device=next(self.parameters()).device
@@ -379,7 +397,7 @@ class HierarchicalMemory(nn.Module):
 
         use_per_position = self.config.tnt_qk_projection == "per_position"
 
-        for i, local_mem in enumerate(self.local_memories):
+        for i, local_mem in enumerate(self._iter_locals()):
             start_counter = state.local_step_counters[i]
 
             # Decide whether any reset at the chunk's *start* zeroes the
@@ -400,9 +418,10 @@ class HierarchicalMemory(nn.Module):
             else:
                 qk_carry = state.qk_projections[i]
 
-            has_qk = local_mem.qk_proj is not None
+            qk_proj = local_mem.qk_proj
+            has_qk = qk_proj is not None
 
-            if has_qk and use_per_position:
+            if has_qk and qk_proj is not None and use_per_position:
                 # Paper Eq. 7: per-position projection inside the chunk.
                 # Pull (k, q) out of NLTM; project queries causally; then
                 # re-retrieve local memory with the projected queries.
@@ -420,7 +439,7 @@ class HierarchicalMemory(nn.Module):
                     return_keys=True,
                     return_q=True,
                 )
-                projected_q, new_carry = local_mem.qk_proj(
+                projected_q, new_carry = qk_proj(
                     normed_q,
                     normed_keys,
                     qk_carry,
@@ -437,7 +456,7 @@ class HierarchicalMemory(nn.Module):
                 )
                 local_out = local_mem.memory.proj_out(retrieved)
                 new_qk_projections.append(new_carry)
-            elif has_qk:
+            elif has_qk and qk_proj is not None:
                 # Legacy chunk-mean path: single carry applied uniformly.
                 (
                     local_out,
@@ -451,7 +470,7 @@ class HierarchicalMemory(nn.Module):
                     lr_scale=local_lr_scale,
                     return_keys=True,
                 )
-                new_carry = local_mem.qk_proj.update_carry(normed_keys, qk_carry)
+                new_carry = qk_proj.update_carry(normed_keys, qk_carry)
                 new_qk_projections.append(new_carry)
             else:
                 local_out, new_local_state, end_counter = local_mem.forward_with_resets(
@@ -499,7 +518,7 @@ class HierarchicalMemory(nn.Module):
         global_out = self.global_memory.retrieve(queries, state.global_state)
 
         output = global_out
-        for i, local_mem in enumerate(self.local_memories):
+        for i, local_mem in enumerate(self._iter_locals()):
             if local_mem.qk_proj is not None:
                 proj_matrix = state.qk_projections[i]
                 projected_q = queries @ proj_matrix.T

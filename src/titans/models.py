@@ -19,6 +19,7 @@ memory_checkpointer.py — see docs/ for per-feature callouts.
 from __future__ import annotations
 
 import warnings
+from typing import TYPE_CHECKING, cast
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,12 @@ from titans.attention import SegmentedAttention, SlidingWindowAttention
 from titans.config import TitansConfig
 from titans.memory import MemoryState, NeuralLongTermMemory, TNTMemoryState
 from titans.persistent import PersistentMemory
+
+if TYPE_CHECKING:
+    from titans.adaptive_window import AdaptiveWindowPredictor
+    from titans.attn_res import AttnResMemoryGate, BlockAttnRes
+    from titans.mca import MemoryCrossAttention
+    from titans.tnt_memory import HierarchicalMemory
 
 
 class RMSNorm(nn.Module):
@@ -64,11 +71,15 @@ class FeedForward(nn.Module):
         return self.down_proj(hidden)
 
 
-def _mca_forward(block: nn.Module, h: torch.Tensor, mem_state) -> torch.Tensor:
+def _mca_forward(
+    block: BaseTitansBlock,
+    h: torch.Tensor,
+    mem_state: MemoryState | TNTMemoryState,
+) -> torch.Tensor:
     """MCA sub-layer: cross-attend to NeuralLTM weight rows."""
     weights = (
         mem_state.global_state.weights
-        if hasattr(mem_state, "global_state")
+        if isinstance(mem_state, TNTMemoryState)
         else mem_state.weights
     )
     if not weights:
@@ -128,7 +139,7 @@ def _build_attnres_schedule(
 def process_chunk(
     blocks: nn.ModuleList,
     chunk: torch.Tensor,
-    states: list[MemoryState | TNTMemoryState],
+    states: list[MemoryState | TNTMemoryState | None],
     config: TitansConfig,
     _step_count: int = 0,
     attnres_schedule: tuple[tuple[str, int, bool], ...] | None = None,
@@ -159,7 +170,8 @@ def process_chunk(
     if not config.use_attn_res:
         # Standard residual path
         x = chunk
-        for i, block in enumerate(blocks):
+        for i, raw_block in enumerate(blocks):
+            block = cast(BaseTitansBlock, raw_block)
             core_out, new_state, gate_snapshot = block.core_forward(x, state=states[i])
             x = x + core_out
 
@@ -194,7 +206,7 @@ def process_chunk(
     block_states: list[MemoryState | TNTMemoryState | None] = [None] * len(blocks)
 
     for op, block_idx, flush in attnres_schedule:
-        block = blocks[block_idx]
+        block = cast(BaseTitansBlock, blocks[block_idx])
 
         if op == "core":
             h, attn_weights = block.attn_res_core(completed_blocks, partial_block)
@@ -208,7 +220,9 @@ def process_chunk(
             step_out = core_out
         elif op == "mca":
             h_mca, _ = block.attn_res_mca(completed_blocks, partial_block)
-            step_out = block.mca_forward(h_mca, block_states[block_idx])
+            mca_state = block_states[block_idx]
+            assert mca_state is not None, "MCA sub-layer dispatched before core_forward"
+            step_out = block.mca_forward(h_mca, mca_state)
         else:  # "ffn"
             h, _ = block.attn_res_ffn(completed_blocks, partial_block)
             step_out = block.ffn_forward(h)
@@ -231,14 +245,27 @@ class BaseTitansBlock(nn.Module):
     implement ``core_forward``. LMMBlock does NOT inherit from this class.
     """
 
+    memory: NeuralLongTermMemory | HierarchicalMemory
+    persistent: PersistentMemory
+    ffn: FeedForward
+    norm1: RMSNorm
+    norm2: RMSNorm
+    dropout: nn.Dropout | None
+    has_mca: bool
+    mca: MemoryCrossAttention
+    attn_res_core: BlockAttnRes
+    attn_res_ffn: BlockAttnRes
+    attn_res_mca: BlockAttnRes
+    attn_res_gate: AttnResMemoryGate
+
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__()
         self.config = config
 
         if config.use_tnt:
-            from titans.tnt_memory import HierarchicalMemory
+            from titans.tnt_memory import HierarchicalMemory as HMem
 
-            self.memory = HierarchicalMemory(config)
+            self.memory = HMem(config)
         else:
             self.memory = NeuralLongTermMemory(config)
 
@@ -273,8 +300,19 @@ class BaseTitansBlock(nn.Module):
             )
             self.attn_res_gate = AttnResMemoryGate()
 
-    def mca_forward(self, h: torch.Tensor, mem_state) -> torch.Tensor:
+    def mca_forward(
+        self, h: torch.Tensor, mem_state: MemoryState | TNTMemoryState
+    ) -> torch.Tensor:
         return _mca_forward(self, h, mem_state)
+
+    def core_forward(
+        self,
+        h: torch.Tensor,
+        state: MemoryState | TNTMemoryState | None = None,
+        memory_gate: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState, object]:
+        """Variant-specific core path. Subclasses (MAC/MAG/MAL) implement."""
+        raise NotImplementedError
 
     def ffn_forward(self, h: torch.Tensor) -> torch.Tensor:
         normed = self.norm2(h)
@@ -286,8 +324,8 @@ class BaseTitansBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        state: MemoryState | None = None,
-    ) -> tuple[torch.Tensor, MemoryState]:
+        state: MemoryState | TNTMemoryState | None = None,
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState]:
         core_out, new_state, _gate_snapshot = self.core_forward(x, state=state)
         x = x + core_out
         ffn_out = self.ffn_forward(x)
@@ -302,14 +340,17 @@ class _SlidingWindowBlock(BaseTitansBlock):
     it inherits directly from ``BaseTitansBlock``.
     """
 
+    attention: SlidingWindowAttention
+    window_predictor: AdaptiveWindowPredictor
+
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__(config, layer_idx)
         self.attention = SlidingWindowAttention(config)
         self._last_falloff_centers: torch.Tensor | None = None
         if config.adaptive_window:
-            from titans.adaptive_window import AdaptiveWindowPredictor
+            from titans.adaptive_window import AdaptiveWindowPredictor as AWP
 
-            self.window_predictor = AdaptiveWindowPredictor(config)
+            self.window_predictor = AWP(config)
 
     def _predict_adaptive_mask(self, normed: torch.Tensor) -> torch.Tensor | None:
         if hasattr(self, "window_predictor"):
@@ -335,9 +376,9 @@ class _SlidingWindowBlock(BaseTitansBlock):
         self,
         normed: torch.Tensor,
         persistent: torch.Tensor | None,
-        state: MemoryState | None,
+        state: MemoryState | TNTMemoryState | None,
         memory_gate: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState, object]:
         """Run ``memory([persistent || normed])`` and slice off the prefix.
 
         Shared by MAG (Eq. 27) and MAL (Eq. 31).
@@ -360,6 +401,11 @@ class _SlidingWindowBlock(BaseTitansBlock):
 class MACBlock(BaseTitansBlock):
     """Memory as Context Block."""
 
+    memory_query_proj: nn.Linear
+    memory_query: nn.Parameter
+    attention: SegmentedAttention
+    norm_mem: RMSNorm
+
     def __init__(self, config: TitansConfig, layer_idx: int = -1) -> None:
         super().__init__(config, layer_idx)
         if config.mac_per_position_memory_query:
@@ -377,9 +423,9 @@ class MACBlock(BaseTitansBlock):
     def core_forward(
         self,
         h: torch.Tensor,
-        state: MemoryState | None = None,
+        state: MemoryState | TNTMemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState, object]:
         batch_size = h.shape[0]
 
         if state is None:
@@ -393,7 +439,9 @@ class MACBlock(BaseTitansBlock):
         else:
             # Legacy: single learned query broadcast across batch and positions.
             query = self.memory_query.expand(batch_size, -1, -1)
-        memory_retrieved = self.memory.retrieve(query, state)
+        # self.memory and state are paired by construction (use_tnt picks both);
+        # mypy can't correlate the two unions so we tell it to trust the caller.
+        memory_retrieved = self.memory.retrieve(query, state)  # type: ignore[arg-type]
         memory_tokens = self.norm_mem(memory_retrieved)
 
         persistent = self.persistent(batch_size)
@@ -437,9 +485,9 @@ class MAGBlock(_SlidingWindowBlock):
     def core_forward(
         self,
         h: torch.Tensor,
-        state: MemoryState | None = None,
+        state: MemoryState | TNTMemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState, object]:
         batch_size = h.shape[0]
         if state is None:
             state = self.memory.init_state(batch_size)
@@ -480,9 +528,9 @@ class MALBlock(_SlidingWindowBlock):
     def core_forward(
         self,
         h: torch.Tensor,
-        state: MemoryState | None = None,
+        state: MemoryState | TNTMemoryState | None = None,
         memory_gate: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, MemoryState, object]:
+    ) -> tuple[torch.Tensor, MemoryState | TNTMemoryState, object]:
         batch_size = h.shape[0]
         if state is None:
             state = self.memory.init_state(batch_size)
@@ -558,7 +606,7 @@ class _TitansModel(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        states: list[MemoryState | TNTMemoryState] | None = None,
+        states: list[MemoryState | TNTMemoryState | None] | None = None,
     ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
         """Process a single chunk. Returns (logits, new_states, gate_snapshots).
 
@@ -691,8 +739,8 @@ class TitansLMM(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        states: list[MemoryState] | None = None,
-    ) -> tuple[torch.Tensor, list[MemoryState], list]:
+        states: list[MemoryState | None] | None = None,
+    ) -> tuple[torch.Tensor, list[MemoryState | TNTMemoryState], list]:
         if states is None:
             states = [None] * len(self.blocks)
 

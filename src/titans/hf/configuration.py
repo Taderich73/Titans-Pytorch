@@ -109,7 +109,7 @@ class TitansMACConfig(PretrainedConfig):
         mac_per_position_memory_query: bool = True,
         num_memory_inner_steps: int = 1,
         titans_schema_version: int | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         # Set architectures before super().__init__ so save_pretrained includes it.
         kwargs.setdefault("architectures", ["TitansMACForCausalLM"])
@@ -261,7 +261,7 @@ class TitansMACConfig(PretrainedConfig):
 
     @classmethod
     def from_titans_config(
-        cls, titans_config: TitansConfig, **kwargs
+        cls, titans_config: TitansConfig, **kwargs: Any
     ) -> TitansMACConfig:
         """Create from an existing native TitansConfig.
 

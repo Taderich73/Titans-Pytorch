@@ -289,7 +289,8 @@ class TitansConfig:
             "auto_checkpoint": self.auto_checkpoint,
             "checkpoint_config": (
                 self.checkpoint_config.to_dict()
-                if hasattr(self.checkpoint_config, "to_dict")
+                if self.checkpoint_config is not None
+                and hasattr(self.checkpoint_config, "to_dict")
                 else self.checkpoint_config
             ),
             "mac_per_position_memory_query": self.mac_per_position_memory_query,
@@ -311,8 +312,8 @@ class TitansConfig:
         return cls(**known)
 
     @classmethod
-    def tnt_stage1(cls, **kwargs) -> TitansConfig:
-        defaults = dict(
+    def tnt_stage1(cls, **kwargs: object) -> TitansConfig:
+        defaults: dict[str, object] = dict(
             use_tnt=True,
             global_chunk_size=2048,
             local_chunk_sizes=[8, 16],
@@ -320,7 +321,7 @@ class TitansConfig:
             tnt_stage=1,
         )
         defaults.update(kwargs)
-        return cls(**defaults)
+        return cls(**defaults)  # type: ignore[arg-type]
 
     @classmethod
     def tnt_stage2(cls, stage1_config: TitansConfig) -> TitansConfig:

@@ -18,6 +18,8 @@ class PersistentMemory(nn.Module):
     task-specific knowledge. They remain fixed during inference.
     """
 
+    tokens: nn.Parameter | None
+
     def __init__(self, config: TitansConfig) -> None:
         super().__init__()
         self.num_tokens = config.num_persistent_tokens

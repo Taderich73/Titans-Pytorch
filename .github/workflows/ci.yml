@@ -43,12 +43,7 @@ jobs:
           uv run ruff format --check .
 
       - name: Type-check with mypy
-        # Non-blocking: the codebase carries pre-existing type-hint debt
-        # (~43 errors) that predates CI enforcement. The step still runs so
-        # regressions surface in the logs, but does not gate merge. Graduate
-        # to blocking once the debt is paid down.
         run: uv run mypy src/titans
-        continue-on-error: true
 
       - name: Run pytest
         run: uv run pytest tests/ -x --tb=short

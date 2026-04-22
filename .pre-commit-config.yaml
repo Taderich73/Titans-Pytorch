@@ -1,0 +1,45 @@
+# Pre-commit: https://pre-commit.com
+#
+# One-time setup (after cloning):
+#   uv sync --all-extras --group dev
+#   uv run pre-commit install
+# ``--all-extras`` is required so the pre-push pytest hook can exercise the
+# optional HF / safetensors code paths (matching CI's sync). Plain
+# ``uv sync --group dev`` drops those extras and pytest will fail to import.
+# ``pre-commit install`` installs both pre-commit and pre-push hooks (see
+# default_install_hook_types below).
+#
+# Gating strategy:
+#   * pre-commit (every commit): ruff + mypy — fast, ~2s combined.
+#   * pre-push (every push):     pytest      — 60s, too slow for every commit
+#                                              but still catches issues before
+#                                              they hit CI.
+# Move pytest to the commit stage by changing its ``stages`` key to
+# ``[pre-commit]``.
+
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (src/titans)
+        entry: uv run mypy src/titans
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      - id: pytest
+        name: pytest (fast suite)
+        entry: uv run pytest tests/ -x --tb=short -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        types: [python]

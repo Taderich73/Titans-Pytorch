@@ -251,7 +251,7 @@ def build_signal_frame(
 
     # TNT-specific per-local-memory weight norms — also computed on-device.
     is_tnt = isinstance(new_state, TNTMemoryState)
-    if is_tnt:
+    if isinstance(new_state, TNTMemoryState):
         local_norm_tensors = [
             _stack_norms_gpu(local.weights) for local in new_state.local_states
         ]

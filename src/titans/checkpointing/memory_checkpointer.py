@@ -23,7 +23,7 @@ import shutil
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from titans.memory import MemoryState, TNTMemoryState
 from titans.memory_dump import save_memory_states
@@ -89,7 +89,9 @@ class _SignalLogWriter:
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._file_index: int = 0
         self._frame_count: int = 0
-        self._fh: gzip.GzipFile | None = None
+        # gzip.open(..., "wt") wraps the GzipFile in a TextIOWrapper, so the
+        # handle type is the generic ``IO[str]`` rather than ``GzipFile``.
+        self._fh: IO[str] | None = None
         self._open_new_file()
 
     def _open_new_file(self) -> None:
