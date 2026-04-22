@@ -38,6 +38,8 @@ EXPECTED_STABLE_API: frozenset[str] = frozenset(
         "load_memory_states",
         "save_checkpoint",
         "load_checkpoint",
+        # P5: checkpoint schema versioning constant.
+        "TITANS_SCHEMA_VERSION",
     }
 )
 
@@ -58,17 +60,18 @@ def _reload_titans() -> Any:
 class TestStableApi:
     """Freeze the curated surface exposed via ``titans.__all__``."""
 
-    def test_all_size_is_exactly_twelve(self) -> None:
-        """Task P3 budget: ``len(titans.__all__) == 12`` (doc contract).
+    def test_all_size_is_exactly_thirteen(self) -> None:
+        """Task P3+P5 budget: ``len(titans.__all__) == 13`` (doc contract).
 
-        ``docs/api.md`` documents the stable surface as frozen at 12. The
-        explicit ``EXPECTED_STABLE_API`` frozenset already enforces the
-        exact name set; this test pins the cardinality so accidental
-        additions fail loudly in isolation.
+        ``docs/api.md`` documents the stable surface as frozen at 13 —
+        12 from the original P3 curated set plus ``TITANS_SCHEMA_VERSION``
+        added by P5. The explicit ``EXPECTED_STABLE_API`` frozenset
+        already enforces the exact name set; this test pins the
+        cardinality so accidental additions fail loudly in isolation.
         """
-        assert len(titans.__all__) == 12, (
+        assert len(titans.__all__) == 13, (
             f"titans.__all__ has {len(titans.__all__)} names; the curated "
-            "surface is frozen at 12. Update docs/api.md AND "
+            "surface is frozen at 13. Update docs/api.md AND "
             "EXPECTED_STABLE_API in lockstep if this changes."
         )
 

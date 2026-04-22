@@ -13,7 +13,7 @@ without breaking users on every point release.
 
 ## Stable top-level exports
 
-`len(titans.__all__)` is frozen at **12** for 0.7.x. A test in
+`len(titans.__all__)` is frozen at **13** for 0.7.x. A test in
 `tests/test_public_api.py` enforces the exact set.
 
 ### Config
@@ -54,6 +54,12 @@ differences.
 | `load_memory_states` | Inverse of `save_memory_states`. |
 | `save_checkpoint` | Save model + memory + optimizer to a single checkpoint file. |
 | `load_checkpoint` | Inverse of `save_checkpoint`. |
+
+### Schema version
+
+| Symbol | Purpose |
+| --- | --- |
+| `TITANS_SCHEMA_VERSION` | Integer constant stamped into every checkpoint, memory dump, and HF config written by this release. Bumped on any persisted-state layout change. See [`../MIGRATIONS.md`](../MIGRATIONS.md). |
 
 ## Deprecated top-level imports (removed in 0.8)
 

@@ -19,6 +19,7 @@ import torch
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from titans import TITANS_SCHEMA_VERSION
 from titans.checkpoint import load_checkpoint
 from titans.config import TitansConfig
 from titans.hf.configuration import TitansMACConfig
@@ -111,6 +112,11 @@ def convert_checkpoint(
         "AutoConfig": f"titans.hf.configuration.{config_cls.__name__}",
         "AutoModelForCausalLM": f"titans.hf.modeling.{model_cls.__name__}",
     }
+    # Stamp the schema version explicitly so the emitted config.json
+    # carries it even when an older TitansConfig was read from disk (the
+    # kwarg default does this too, but being explicit keeps the
+    # convert-script contract obvious when the output is inspected).
+    hf_config.titans_schema_version = TITANS_SCHEMA_VERSION
 
     # 4. Remap state dict keys
     remapped = remap_state_dict_keys(ckpt["model"])

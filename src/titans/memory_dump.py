@@ -5,12 +5,32 @@
 
 Uses .npz format (NumPy) for cross-framework compatibility.
 Memory dumps saved by the MLX version can be loaded here and vice versa.
+
+Schema versioning (Task P5)
+---------------------------
+Starting with 0.7.0 every .npz written by :func:`save_memory_states`
+carries a top-level ``titans_schema_version`` entry. See
+``MIGRATIONS.md`` at the repo root for the change log.
+
+The load path dispatches on the version:
+
+* **missing** — unversioned (pre-0.7) file; we warn once with
+  :class:`DeprecationWarning` and best-effort load the legacy layout.
+* **equal** to :data:`titans.TITANS_SCHEMA_VERSION` — load normally.
+* **newer** than the code's current schema — raise
+  :class:`RuntimeError`; the user needs to upgrade ``titans``.
+* **older** with a migration entry in :data:`_MIGRATIONS` — migrate the
+  array dict in-memory, then load.
+* **older** without a migration — raise :class:`RuntimeError` with a
+  clear "no migration available" message.
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -24,6 +44,59 @@ logger = logging.getLogger(__name__)
 # warns when it sees them so silent inference corruption is impossible.
 _DEGENERATE_NORM_THRESHOLD: float = 1e-6
 
+# Top-level npz key used to carry the schema version. Kept module-private
+# because callers should never read it directly — use the version metadata
+# returned by the load path instead.
+_SCHEMA_VERSION_KEY: str = "titans_schema_version"
+
+
+# ---------------------------------------------------------------------------
+# Migration protocol (Task P5)
+# ---------------------------------------------------------------------------
+# ``_MIGRATIONS`` maps ``(from_version, to_version)`` -> a function that
+# takes a *mutable* dict of numpy arrays keyed by npz entry name and
+# returns a new dict in the ``to_version`` layout. The dispatcher in
+# :func:`_migrate_arrays_to_current` composes a chain of migrations when
+# the checkpoint is more than one version behind.
+#
+# For the very first versioned release (schema 1) there are no migrations
+# registered — unversioned files take a separate legacy codepath. When
+# schema 2 lands, register ``(1, 2)`` here AND add a row to
+# ``MIGRATIONS.md``.
+_MIGRATIONS: dict[tuple[int, int], Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]] = {}
+
+
+def _migrate_arrays_to_current(
+    arrays: dict[str, np.ndarray],
+    from_version: int,
+    current_version: int,
+) -> dict[str, np.ndarray]:
+    """Apply registered migrations to bring ``arrays`` up to ``current_version``.
+
+    Walks ``_MIGRATIONS`` one step at a time starting from
+    ``from_version``. Raises :class:`RuntimeError` if the chain cannot be
+    completed (i.e. a gap exists) so callers get a clear failure instead
+    of silently loading a partially-migrated payload.
+    """
+    v = from_version
+    out = arrays
+    while v < current_version:
+        # Prefer a direct jump if registered; otherwise step by one.
+        step = None
+        for target in range(current_version, v, -1):
+            if (v, target) in _MIGRATIONS:
+                step = target
+                break
+        if step is None:
+            raise RuntimeError(
+                f"checkpoint schema {from_version} is older than code "
+                f"schema {current_version}; no migration available "
+                f"(stuck at {v}). See MIGRATIONS.md."
+            )
+        out = _MIGRATIONS[(v, step)](out)
+        v = step
+    return out
+
 
 def _save_memory_state(arrays: dict, prefix: str, state: MemoryState) -> None:
     """Save a single MemoryState into the arrays dict."""
@@ -35,9 +108,16 @@ def _save_memory_state(arrays: dict, prefix: str, state: MemoryState) -> None:
 
 
 def _load_memory_state(
-    data: np.lib.npyio.NpzFile, prefix: str, device: torch.device
+    data: dict[str, np.ndarray] | np.lib.npyio.NpzFile,
+    prefix: str,
+    device: torch.device,
 ) -> MemoryState:
-    """Load a single MemoryState from the npz data."""
+    """Load a single MemoryState from the npz data.
+
+    Accepts either a raw :class:`numpy.lib.npyio.NpzFile` or a plain
+    ``dict`` keyed by npz entry names — the latter is what the version
+    migration path returns after rewriting keys in-memory.
+    """
     num_memory_layers = int(data[f"{prefix}_num_memory_layers"][0])
     weights: list[torch.Tensor] = []
     momentum: list[torch.Tensor] = []
@@ -52,9 +132,18 @@ def save_memory_states(
 ) -> None:
     """Serialize memory states to a single .npz file.
 
-    Handles both MemoryState and TNTMemoryState transparently.
+    Handles both :class:`MemoryState` and :class:`TNTMemoryState`
+    transparently. The resulting file carries a top-level
+    ``titans_schema_version`` scalar array set to
+    :data:`titans.TITANS_SCHEMA_VERSION` at write time. See the module
+    docstring for the migration protocol.
     """
+    # Local import to avoid a circular import at module load time
+    # (``titans/__init__.py`` imports ``memory_dump`` during package init).
+    from titans import TITANS_SCHEMA_VERSION
+
     arrays: dict[str, np.ndarray] = {}
+    arrays[_SCHEMA_VERSION_KEY] = np.array([TITANS_SCHEMA_VERSION], dtype=np.int64)
     arrays["num_layers"] = np.array([len(states)])
 
     for i, state in enumerate(states):
@@ -107,6 +196,10 @@ def load_memory_states(
     long-horizon decay-to-zero pathology in TNT global memory when state is
     threaded across many training batches without periodic reset.
     """
+    # Local import to avoid circular import: titans/__init__.py imports
+    # this module eagerly.
+    from titans import TITANS_SCHEMA_VERSION
+
     if device is None:
         device = torch.device("cpu")
 
@@ -116,7 +209,39 @@ def load_memory_states(
             raise FileNotFoundError(f"Memory state file not found: {path}")
         path = path.with_suffix(".npz")
 
-    data = np.load(str(path))
+    # Read the full npz into an in-memory dict so migrations (which may
+    # rewrite keys) can operate on it without going back to disk.
+    with np.load(str(path)) as npz:
+        data: dict[str, np.ndarray] = {k: npz[k] for k in npz.files}
+
+    # -------------------- Schema version dispatch (P5) --------------------
+    if _SCHEMA_VERSION_KEY in data:
+        file_version = int(data[_SCHEMA_VERSION_KEY][0])
+        if file_version > TITANS_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"checkpoint schema {file_version} > code schema "
+                f"{TITANS_SCHEMA_VERSION}; upgrade titans. See "
+                "MIGRATIONS.md for the per-version change log."
+            )
+        if file_version < TITANS_SCHEMA_VERSION:
+            # _migrate_arrays_to_current raises a clear RuntimeError when
+            # no migration path is registered.
+            data = _migrate_arrays_to_current(
+                data, from_version=file_version,
+                current_version=TITANS_SCHEMA_VERSION,
+            )
+    else:
+        # Pre-0.7 file written before schema versioning shipped. Warn
+        # once and fall through to the legacy best-effort code path.
+        warnings.warn(
+            (
+                f"Loading unversioned checkpoint {path!s}: assuming "
+                "pre-0.7 layout. Re-save with the current version of "
+                "titans to stop this warning. See MIGRATIONS.md."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     if "num_layers" not in data:
         raise ValueError("Invalid memory state file: missing 'num_layers' metadata")

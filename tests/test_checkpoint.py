@@ -34,7 +34,13 @@ class TestSaveCheckpointPt:
         assert loaded["loss"] == 0.5
 
     def test_save_without_metadata(self, tmp_path: Path) -> None:
-        """Saving pt format without metadata stores only model key."""
+        """Saving pt format without metadata still stamps the schema version.
+
+        Post-P5 every checkpoint carries ``titans_schema_version`` so the
+        file is self-describing. Callers that didn't pass metadata gain
+        exactly that one extra key.
+        """
+        from titans import TITANS_SCHEMA_VERSION
         from titans.checkpoint import save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
@@ -45,7 +51,8 @@ class TestSaveCheckpointPt:
         pt_path = stem.with_suffix(".pt")
         assert written == [pt_path]
         loaded = torch.load(pt_path, map_location="cpu", weights_only=False)
-        assert set(loaded.keys()) == {"model"}
+        assert set(loaded.keys()) == {"model", "titans_schema_version"}
+        assert loaded["titans_schema_version"] == TITANS_SCHEMA_VERSION
         assert torch.equal(loaded["model"]["weight"], state_dict["weight"])
 
     def test_save_creates_parent_dirs(self, tmp_path: Path) -> None:
@@ -95,7 +102,14 @@ class TestSaveCheckpointSafetensors:
         assert meta["config"]["dim"] == 64
 
     def test_save_without_metadata(self, tmp_path: Path) -> None:
-        """Safetensors save without metadata writes only the weights file."""
+        """Safetensors save writes weights plus a schema-version sidecar.
+
+        Post-P5 the sidecar is always emitted because it carries at
+        least ``titans_schema_version``. Callers that didn't pass
+        metadata therefore gain a small ``.meta.pt`` file alongside the
+        weights. The sidecar's *only* key in that case is the version.
+        """
+        from titans import TITANS_SCHEMA_VERSION
         from titans.checkpoint import save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
@@ -105,9 +119,12 @@ class TestSaveCheckpointSafetensors:
 
         sf_path = stem.with_suffix(".safetensors")
         sidecar = stem.with_suffix(".meta.pt")
-        assert written == [sf_path]
+        assert written == [sf_path, sidecar]
         assert sf_path.exists()
-        assert not sidecar.exists()
+        assert sidecar.exists()
+        meta = torch.load(sidecar, map_location="cpu", weights_only=False)
+        assert set(meta.keys()) == {"titans_schema_version"}
+        assert meta["titans_schema_version"] == TITANS_SCHEMA_VERSION
 
     def test_invalid_format_raises(self, tmp_path: Path) -> None:
         """Unsupported format raises ValueError."""
@@ -156,23 +173,39 @@ class TestLoadCheckpoint:
         assert result["lr"] == 1e-4
 
     def test_load_safetensors_no_sidecar(self, tmp_path: Path) -> None:
-        """Load a .safetensors checkpoint without metadata sidecar."""
+        """Load a .safetensors checkpoint without metadata sidecar.
+
+        Post-P5 every save writes a sidecar carrying the schema version.
+        We still cover the no-sidecar case — it's what pre-0.7 files
+        look like on disk — by deleting the sidecar after the write.
+        ``load_checkpoint`` must surface this as a ``DeprecationWarning``
+        (unversioned checkpoint) while still returning the model.
+        """
+        import warnings
+
         from titans.checkpoint import load_checkpoint, save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
         stem = tmp_path / "ckpt"
         save_checkpoint(state_dict, stem, format="safetensors")
 
-        # Remove sidecar if it exists (it shouldn't, but be safe)
+        # Remove the sidecar to simulate a pre-0.7 unversioned checkpoint.
         sidecar = stem.with_suffix(".meta.pt")
         if sidecar.exists():
             sidecar.unlink()
 
-        result = load_checkpoint(stem.with_suffix(".safetensors"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = load_checkpoint(stem.with_suffix(".safetensors"))
 
         assert "model" in result
         assert torch.equal(result["model"]["weight"], state_dict["weight"])
         assert set(result.keys()) == {"model"}
+        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert any("unversioned" in str(w.message) for w in deps), (
+            "Expected a DeprecationWarning about an unversioned "
+            f"checkpoint; got: {[str(w.message) for w in caught]}"
+        )
 
     def test_extensionless_prefers_safetensors(self, tmp_path: Path) -> None:
         """Extensionless path loads .safetensors when both formats exist."""

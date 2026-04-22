@@ -35,6 +35,23 @@ import warnings
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
+# --- Schema version (P5) --------------------------------------------------
+# Bump whenever ANY persisted state layout changes: MemoryState fields,
+# TNTMemoryState fields, HF config shape, saved-dict top-level keys, npz
+# key layout emitted by save_memory_states, etc. See MIGRATIONS.md at the
+# repo root for the per-version change log and migration protocol.
+#
+# Version 1 is the first versioned schema. Anything written before P5 —
+# .pt / .safetensors / .npz without the ``titans_schema_version`` key —
+# is considered "unversioned" and loads via a best-effort path that
+# assumes the pre-0.7 layout.
+TITANS_SCHEMA_VERSION: int = 1
+"""Current checkpoint schema version.
+
+Bump when any persisted state layout changes: ``MemoryState``,
+``TNTMemoryState``, HF config shape, saved-dict top-level keys, etc. See
+``MIGRATIONS.md`` at the repo root."""
+
 # --- Stable public API (eager imports) -----------------------------------
 # Keep this list tight. Every name here is a backward-compat contract.
 from titans.checkpoint import load_checkpoint, save_checkpoint
@@ -66,6 +83,8 @@ __all__ = [
     # Checkpoint
     "save_checkpoint",
     "load_checkpoint",
+    # Schema version
+    "TITANS_SCHEMA_VERSION",
 ]
 
 # --- Deprecated top-level re-exports (removed in 0.8) --------------------

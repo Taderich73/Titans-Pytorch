@@ -73,14 +73,19 @@ def main() -> None:
     logger.info(f"Loading {input_path} ...")
     ckpt = load_checkpoint(input_path, weights_only=False)
 
-    # Prepare metadata
+    # Prepare metadata. ``titans_schema_version`` is preserved when
+    # present on the input and stamped to the current version by
+    # ``save_checkpoint`` otherwise — see titans.checkpoint for details.
     metadata = None
     if not args.weights_only:
         metadata = {k: v for k, v in ckpt.items() if k != "model"}
         if metadata:
             logger.info(f"Metadata keys: {list(metadata.keys())}")
 
-    # Save in target format
+    # Save in target format. ``save_checkpoint`` always emits
+    # ``titans_schema_version`` (top-level for .pt, via the .meta.pt
+    # sidecar for safetensors) so the converted output is
+    # self-describing regardless of what was in the input.
     paths = save_checkpoint(
         ckpt["model"],
         output_stem,
