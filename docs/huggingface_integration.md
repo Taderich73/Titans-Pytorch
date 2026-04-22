@@ -265,3 +265,7 @@ The HF integration is designed so adding MAG, MAL, or LMM variants later is a co
 4. Add `--model-type mag` case to `convert_to_hf.py`
 
 The `TitansTrainer`, `TitansChunkMixin`, `generate()` logic, chat template, and conversion pipeline are all variant-agnostic and require no changes.
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

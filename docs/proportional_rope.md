@@ -56,3 +56,7 @@ model = TitansMAC(config)
 ## Key Class
 
 - `RotaryPositionEmbedding` -- handles proportional rotation via the `rope_proportion` parameter, computing `rotate_dim` at construction time
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

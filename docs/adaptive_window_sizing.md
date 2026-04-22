@@ -76,3 +76,7 @@ total_loss = lm_loss + config.adaptive_window_lambda * reg_loss
 
 - `AdaptiveWindowPredictor` -- per-layer module producing soft masks and falloff centers
 - `compute_window_regularization` -- computes the efficiency regularization term from collected falloff centers
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

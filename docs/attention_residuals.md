@@ -76,3 +76,7 @@ Works with any block type and composes independently with `use_tnt` and `use_mca
 
 - `BlockAttnRes` -- per-sub-layer module with the pseudo-query projection and softmax computation
 - `AttnResMemoryGate` -- extracts the embedding attention weight and scales the memory learning rate
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

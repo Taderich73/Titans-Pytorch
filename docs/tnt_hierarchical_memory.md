@@ -101,3 +101,7 @@ stage2 = TitansConfig.tnt_stage2(stage1)  # halves local chunk sizes
 - The global memory never resets -- it accumulates information across the entire sequence.
 - Q-K projections are per-local-memory and per-layer, stored in `TNTMemoryState.qk_projections`.
 - When saving/loading memory states, `TNTMemoryState` is serialized transparently by `save_memory_states` / `load_memory_states`. The `reset_for_inference` flag (default `True`) zeros local step counters on load to prevent silent resets.
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

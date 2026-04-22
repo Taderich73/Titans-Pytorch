@@ -62,3 +62,7 @@ When both `use_mca=True` and `use_attn_res=True`, MCA becomes a third sub-layer 
 ## Key Class
 
 - `MemoryCrossAttention` -- the cross-attention module with gated output
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)

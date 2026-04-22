@@ -96,3 +96,7 @@ For `TNTMemoryState` (type=1), additional keys:
 - `layer_{i}_local_init_{k}_*` -- local init tensors
 - `layer_{i}_qk_{k}` -- Q-K projection tensors
 - `layer_{i}_step_counters` -- local step counters
+
+---
+
+[Back to docs index](README.md) · [Back to project README](../README.md)
