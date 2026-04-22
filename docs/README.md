@@ -23,6 +23,7 @@ Runtime-facing knobs, long-running inference plumbing, and state I/O.
 - [Configuration Guide](configuration_guide.md) — parameter walk-through with Paper Origin Tags for every flag.
 - [Memory State Persistence](memory_persistence.md) — `save_memory_states` / `load_memory_states`, `MemoryDumpManager`, `.npz` file format.
 - [Memory Auto-Checkpointing](memory_auto_checkpointing.md) — novelty-triggered state capture, signal log, `MemoryCheckpointConfig`.
+- [Reproducibility](reproducibility.md) — what is bit-identical under `--seed` / `--deterministic`, what `seed_everything` seeds, and what it doesn't.
 
 ## Ecosystem
 

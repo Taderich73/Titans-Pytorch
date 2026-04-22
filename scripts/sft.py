@@ -38,7 +38,6 @@ import argparse
 import importlib.util
 import logging
 import os
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,6 +68,7 @@ from titans.scripts import (
     setup_checkpoint_dir,
     tokenize_chat,
 )
+from titans.utils import seed_everything
 
 # ---------------------------------------------------------------------------
 # Optional dependency guards
@@ -205,6 +205,7 @@ class SFTConfig:
 
     # --- Misc ---
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 5000
 
 
@@ -423,6 +424,11 @@ def train(config: SFTConfig) -> None:
             "accelerate is required. Install with: pip install accelerate"
         )
 
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
+
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
 
@@ -433,10 +439,6 @@ def train(config: SFTConfig) -> None:
         logger.info(
             f"Gradient accumulation steps: {config.gradient_accumulation_steps}"
         )
-
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
 
     # ------------------------------------------------------------------
     # Tokenizer
@@ -1044,6 +1046,7 @@ def parse_args() -> SFTConfig:
         state_carry_warmup_steps=args.state_carry_warmup_steps,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

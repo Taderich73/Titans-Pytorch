@@ -64,6 +64,7 @@ from titans.scripts import (
     maybe_compile,
     setup_checkpoint_dir,
 )
+from titans.utils import seed_everything
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -287,6 +288,9 @@ STATE_CARRY_WARMUP_STEPS = 500  # reset for this many steps, then carry (ignored
 
 # Seed
 SEED = 42
+# Flip to True to also enable torch.use_deterministic_algorithms(True) and
+# set CUBLAS_WORKSPACE_CONFIG=:4096:8. See docs/reproducibility.md.
+DETERMINISTIC = False
 
 # Diagnostics — toggled on by --profile-memory in the launcher. When True the
 # training loop logs torch.cuda.max_memory_allocated() at key points (model
@@ -351,10 +355,20 @@ class StreamingTextDataset(IterableDataset):
 
 
 class SyntheticDataset(Dataset):
-    """Fallback for quick testing."""
+    """Fallback for quick testing.
+
+    Note: this dataset does not seed ``numpy.random`` itself — the global
+    numpy RNG is seeded once, centrally, by :func:`titans.utils.seed_everything`
+    at the start of ``train()``. Constructing this dataset twice in the same
+    process will therefore draw different samples, which is the correct
+    behaviour for a single-seed training run.
+    """
 
     def __init__(self, vocab_size, seq_len, num_samples=10000, seed=42):
-        np.random.seed(seed)
+        # ``seed`` is accepted for API compatibility with callers that used
+        # to pass one, but the dataset draws from the global numpy RNG which
+        # is seeded by seed_everything() at train() start.
+        del seed  # unused; seeding is centralized
         self.data = np.random.randint(0, vocab_size, (num_samples, seq_len + 1))
 
     def __len__(self):
@@ -393,6 +407,12 @@ def train():
     if not token and PUSH_CHECKPOINTS:
         logger.warning("HF_TOKEN not found — checkpoints will NOT be pushed to Hub")
 
+    # Seed RNGs before anything that might touch CUDA or allocate tensors
+    # (Accelerator construction below can initialize CUDA). Seeding early
+    # also ensures CUBLAS_WORKSPACE_CONFIG is set before any cuBLAS call
+    # when DETERMINISTIC=True.
+    seed_everything(SEED, deterministic=DETERMINISTIC)
+
     bundle = init_accelerator_and_logging(_build_accel_cfg())
     accelerator = bundle.accelerator
 
@@ -403,8 +423,6 @@ def train():
             f"Model: dim={DIM}, heads={NUM_HEADS}, layers={NUM_LAYERS}, "
             f"memory_layers={NUM_MEMORY_LAYERS}"
         )
-
-    torch.manual_seed(SEED)
 
     # Model
     config = TitansConfig(

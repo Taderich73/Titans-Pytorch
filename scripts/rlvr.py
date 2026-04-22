@@ -57,7 +57,6 @@ import importlib.util
 import logging
 import math
 import os
-import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +78,7 @@ from titans.lora import (
     set_lora_enabled,
     wrap_lora_layers,
 )
+from titans.utils import seed_everything
 
 # Shared script-level helpers ship with the ``titans`` wheel so remote
 # single-file runners (e.g. HuggingFace Jobs) can reach them via the
@@ -867,6 +867,7 @@ class RLVRConfig:
 
     # --- Misc ---
     seed: int = 42
+    deterministic: bool = False
     synthetic_samples: int = 500
 
 
@@ -1259,6 +1260,11 @@ def train(config: RLVRConfig) -> None:
 
     is_grpo = config.loss_type == "grpo"
 
+    # Seed all RNGs before the Accelerator is constructed — Accelerator
+    # initialization can touch CUDA, and CUBLAS_WORKSPACE_CONFIG must be
+    # set before the first cuBLAS call when --deterministic is on.
+    seed_everything(config.seed, deterministic=config.deterministic)
+
     bundle = init_accelerator_and_logging(config)
     accelerator = bundle.accelerator
 
@@ -1271,10 +1277,6 @@ def train(config: RLVRConfig) -> None:
         logger.info(
             f"Gradient accumulation steps: {config.gradient_accumulation_steps}"
         )
-
-    torch.manual_seed(config.seed)
-    random.seed(config.seed)
-    np.random.seed(config.seed)
 
     # ------------------------------------------------------------------
     # Tokenizer
@@ -2150,6 +2152,7 @@ def parse_args() -> RLVRConfig:
         wandb_run_name=args.wandb_run_name,
         # Misc
         seed=args.seed,
+        deterministic=args.deterministic,
         synthetic_samples=args.synthetic_samples,
     )
 

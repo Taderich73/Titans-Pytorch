@@ -61,6 +61,15 @@ differences.
 | --- | --- |
 | `TITANS_SCHEMA_VERSION` | Integer constant stamped into every checkpoint, memory dump, and HF config written by this release. Bumped on any persisted-state layout change. See [`../MIGRATIONS.md`](../MIGRATIONS.md). |
 
+## Utilities
+
+Small cross-cutting helpers. Not re-exported at the top level to keep
+`titans.__all__` tight.
+
+| Import | Purpose |
+| --- | --- |
+| `from titans.utils import seed_everything` | Seed Python / NumPy / PyTorch RNGs from a single call. Opt into `torch.use_deterministic_algorithms(True)` + `CUBLAS_WORKSPACE_CONFIG=:4096:8` via `deterministic=True`. See [Reproducibility](reproducibility.md). |
+
 ## Deprecated top-level imports (removed in 0.8)
 
 Every name below used to live in `titans.__all__`. In 0.7.x each one is

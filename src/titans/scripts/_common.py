@@ -575,7 +575,7 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
         - "Checkpointing": --checkpoint-dir, --save-every, --save-format,
           --resume, --init-weights
         - "Logging": --log-every, --wandb, --wandb-project, --wandb-run-name
-        - "Misc": --seed
+        - "Misc": --seed, --deterministic
 
     Args:
         description: Passed through to ``ArgumentParser(description=...)``.
@@ -690,6 +690,19 @@ def base_argparse_parser(description: str) -> argparse.ArgumentParser:
 
     misc = parser.add_argument_group("Misc")
     misc.add_argument("--seed", type=int, default=42)
+    misc.add_argument(
+        "--deterministic",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable fully deterministic kernels via "
+            "torch.use_deterministic_algorithms(True) and "
+            "CUBLAS_WORKSPACE_CONFIG=:4096:8. CPU-only runs are already "
+            "deterministic; this flag is mostly a belt-and-suspenders "
+            "switch for CUDA at a moderate speed cost. See "
+            "docs/reproducibility.md for the full contract."
+        ),
+    )
 
     return parser
 
