@@ -25,12 +25,12 @@ uv run python -u scripts/launch_pretraining_job.py \
       --memory-objective huber \
       --dataset HuggingFaceFW/fineweb-edu \
       --dataset-subset sample-10BT \
-      --max-steps 50000 \
+      --max-steps 100000 \
       --save-every 2500 \
-      --titans-sha 7327468 \
+      --titans-sha f534903 \
       --reset-global-state false \
+      --resume checkpoints/step_50000.pt \
       --hub-repo FlatFootInternational/opentitans-mac-145m \
       --flavor a10g-large \
       --timeout 24h
 
-      #--resume checkpoints/step_50000.safetensors \
