@@ -1,5 +1,6 @@
 """Training observability: metrics writer + four independent feature modules."""
 
+from titans.observability.gate_hooks import GateHookRegistry
 from titans.observability.grad_norm import global_grad_norm
 from titans.observability.layer_stats import LayerStats, collect_layer_stats
 from titans.observability.metrics_writer import (
@@ -9,6 +10,7 @@ from titans.observability.metrics_writer import (
 )
 
 __all__ = [
+    "GateHookRegistry",
     "LayerStats",
     "MetricsWriter",
     "NullMetricsWriter",
