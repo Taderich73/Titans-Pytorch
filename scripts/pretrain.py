@@ -806,7 +806,6 @@ def train():
 
             # Initialize per-step observability accumulators.
             _pre_clip_grad_norm: float | None = None
-            _layer_stats = None
 
             try:
                 with accelerator.accumulate(model):
