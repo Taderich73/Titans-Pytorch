@@ -290,6 +290,132 @@ class TestMoveOptimizerStateToParams:
         assert seen == 0
 
 
+class TestInitializeMissingOptimizerState:
+    """Regression tests for ``initialize_missing_optimizer_state``.
+
+    The helper fixes a fused-Adam crash on resume when a checkpoint's
+    optimizer state_dict is missing entries for some live params. It
+    eagerly seeds zero-initialized Adam state so the first sync-gradient
+    step sees uniform state across the whole param list.
+    """
+
+    def test_helper_initializes_missing_state(self) -> None:
+        """Empty state slots get zero-filled exp_avg / exp_avg_sq / step."""
+        from titans.scripts import initialize_missing_optimizer_state
+
+        model = torch.nn.Linear(4, 4)
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        assert not any(opt.state[p] for g in opt.param_groups for p in g["params"])
+
+        initialized, seen = initialize_missing_optimizer_state(opt)
+
+        num_params = sum(1 for g in opt.param_groups for _ in g["params"])
+        assert initialized == num_params
+        assert seen == num_params
+
+        for group in opt.param_groups:
+            for p in group["params"]:
+                state = opt.state[p]
+                assert "exp_avg" in state
+                assert "exp_avg_sq" in state
+                assert "step" in state
+                assert state["exp_avg"].shape == p.shape
+                assert state["exp_avg_sq"].shape == p.shape
+                assert state["exp_avg"].dtype == p.dtype
+                assert state["exp_avg_sq"].dtype == p.dtype
+                assert state["exp_avg"].device == p.device
+                assert state["exp_avg_sq"].device == p.device
+                assert torch.all(state["exp_avg"] == 0)
+                assert torch.all(state["exp_avg_sq"] == 0)
+
+    def test_helper_noop_when_all_params_have_state(self) -> None:
+        """Params with full state are left untouched."""
+        from titans.scripts import initialize_missing_optimizer_state
+
+        model = torch.nn.Linear(4, 4)
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        # Populate via a backward + step.
+        out = model(torch.randn(1, 4)).sum()
+        out.backward()
+        opt.step()
+
+        pre_state = {
+            id(p): {
+                k: v.clone() if torch.is_tensor(v) else v
+                for k, v in opt.state[p].items()
+            }
+            for g in opt.param_groups
+            for p in g["params"]
+        }
+
+        initialized, seen = initialize_missing_optimizer_state(opt)
+        assert initialized == 0
+        num_params = sum(1 for g in opt.param_groups for _ in g["params"])
+        assert seen == num_params
+
+        # Existing state unchanged.
+        for group in opt.param_groups:
+            for p in group["params"]:
+                for k, v in pre_state[id(p)].items():
+                    live = opt.state[p][k]
+                    if torch.is_tensor(v):
+                        assert torch.equal(live, v), f"{k} was mutated"
+                    else:
+                        assert live == v, f"{k} was mutated"
+
+    def test_helper_only_fills_missing_params(self) -> None:
+        """Partial-state optimizer: only the empty slots get filled."""
+        from titans.scripts import initialize_missing_optimizer_state
+
+        # Two separate param tensors so we can leave one state-less.
+        p_with_state = torch.nn.Parameter(torch.randn(3, 3))
+        p_no_state = torch.nn.Parameter(torch.randn(3, 3))
+        opt = torch.optim.AdamW([p_with_state, p_no_state], lr=1e-3)
+
+        # Populate state only for p_with_state by stepping with grad on it.
+        loss = (p_with_state * p_with_state).sum()
+        loss.backward()
+        opt.step()
+
+        assert "exp_avg" in opt.state[p_with_state]
+        assert not opt.state[p_no_state]
+
+        pre_exp_avg = opt.state[p_with_state]["exp_avg"].clone()
+
+        initialized, seen = initialize_missing_optimizer_state(opt)
+        assert initialized == 1
+        assert seen == 2
+
+        # New state for the missing param, untouched for the other.
+        assert torch.all(opt.state[p_no_state]["exp_avg"] == 0)
+        assert torch.equal(opt.state[p_with_state]["exp_avg"], pre_exp_avg)
+
+    def test_helper_respects_fused_flag_for_step_placement(self) -> None:
+        """With fused=True, ``step`` is a device-0d tensor (matches _init_group)."""
+        from titans.scripts import initialize_missing_optimizer_state, make_optimizer
+
+        model = torch.nn.Linear(4, 4)
+        # _force_fused_flag skips the CUDA availability guard so we can
+        # exercise the fused branch on CI hardware without a GPU.
+        opt = make_optimizer(
+            model.parameters(),
+            lr=1e-3,
+            weight_decay=0.0,
+            device_type="cpu",
+            _force_fused_flag=True,
+        )
+
+        initialize_missing_optimizer_state(opt)
+
+        for group in opt.param_groups:
+            for p in group["params"]:
+                step = opt.state[p]["step"]
+                assert step.shape == ()
+                assert step.device == p.device
+
+
 def test_make_dataloader_multiworker_flags_cuda() -> None:
     """Multi-worker DataLoader enables pin_memory and persistent_workers on CUDA."""
     from torch.utils.data import TensorDataset

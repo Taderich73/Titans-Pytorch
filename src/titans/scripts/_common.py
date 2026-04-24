@@ -238,6 +238,83 @@ def move_optimizer_state_to_params(optimizer: torch.optim.Optimizer) -> tuple[in
     return migrated, seen
 
 
+def initialize_missing_optimizer_state(
+    optimizer: torch.optim.Optimizer,
+) -> tuple[int, int]:
+    """Eagerly populate Adam/AdamW state for any param missing exp_avg entries.
+
+    Why this exists:
+        ``optimizer.load_state_dict`` is a positional replay of the saved
+        state dict. If the saved checkpoint contains state for only a
+        subset of the current live params (e.g. a param that was frozen or
+        never received gradients during the run that produced the
+        checkpoint), those live params end up with an empty state slot
+        after load. On the first sync-gradient step the base Adam step
+        function synthesizes fresh ``exp_avg`` / ``exp_avg_sq`` inside
+        ``_init_group`` and then hands the full param list to
+        ``_fused_adam``. Mixing these freshly-synthesized state tensors
+        with the restored-state tensors inside a single fused kernel call
+        trips the kernel's identity check with::
+
+            RuntimeError: params, grads, exp_avgs, and exp_avg_sqs must
+            have same dtype, device, and layout
+
+        even though inspection shows uniform device / dtype / layout
+        across all four — the fused kernel is stricter than the eager
+        path about stride/memory-format alignment between freshly
+        allocated and checkpoint-loaded tensors.
+
+        This helper walks every param in the optimizer and, for any that
+        lacks ``exp_avg`` / ``exp_avg_sq``, creates them eagerly using
+        the same ``torch.zeros_like(p, memory_format=torch.preserve_format)``
+        recipe that ``torch.optim.adam._init_group`` would use on first
+        grad. After this runs, fused Adam sees uniform state across the
+        whole param list from step one onward.
+
+    The ``step`` counter is seeded to match the eager branch's choice of
+    device-tensor (when ``fused`` or ``capturable``) vs CPU scalar,
+    preserving the invariant the eager path relies on when
+    differentiating capturable/fused Adam from the baseline.
+
+    Args:
+        optimizer: A ``torch.optim.Optimizer`` (or the
+            ``accelerate.optimizer.AcceleratedOptimizer`` wrapper).
+            Assumed to be Adam-family — the synthesized state keys match
+            ``torch.optim.Adam`` and ``AdamW``.
+
+    Returns:
+        ``(initialized, seen)`` — count of params for which fresh state
+        was created, and total params visited. On a clean resume from a
+        compatible checkpoint ``initialized`` will be 0; any nonzero
+        value on resume indicates the loaded checkpoint was missing
+        state for some now-live params.
+    """
+    initialized = 0
+    seen = 0
+    for group in optimizer.param_groups:
+        fused = bool(group.get("fused", False))
+        capturable = bool(group.get("capturable", False))
+        for p in group["params"]:
+            seen += 1
+            state = optimizer.state[p]
+            if "exp_avg" in state and "exp_avg_sq" in state:
+                continue
+            # Match the eager-path _init_group recipe for Adam/AdamW.
+            # ``step`` lives on-device as a 0-d tensor when fused or
+            # capturable; otherwise it's a CPU scalar tensor. exp_avg
+            # and exp_avg_sq mirror the param exactly.
+            if fused or capturable:
+                state["step"] = torch.zeros((), dtype=torch.float32, device=p.device)
+            else:
+                state["step"] = torch.tensor(0.0, dtype=torch.float32)
+            state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+            state["exp_avg_sq"] = torch.zeros_like(
+                p, memory_format=torch.preserve_format
+            )
+            initialized += 1
+    return initialized, seen
+
+
 def make_dataloader(
     dataset: Dataset,
     *,

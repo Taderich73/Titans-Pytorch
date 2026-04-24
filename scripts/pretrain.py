@@ -72,6 +72,7 @@ from titans.scripts import (
     build_titans_config,  # noqa: F401 — re-exported for API parity
     create_model,
     init_accelerator_and_logging,
+    initialize_missing_optimizer_state,
     make_dataloader,
     make_optimizer,
     maybe_compile,
@@ -767,6 +768,22 @@ def train():
                 "state tensors after load_state_dict (device + dtype "
                 "coerced to match live params)"
             )
+            # Checkpoints produced by earlier code versions can omit
+            # optimizer state for params that were added (or first
+            # received gradients) after the checkpoint was saved. Those
+            # live params end up with an empty state slot, and fused
+            # Adam refuses to mix fresh exp_avg/exp_avg_sq tensors with
+            # restored-state tensors in a single kernel call. Eagerly
+            # seed zero-initialized state for any such params so the
+            # first sync-gradient step sees uniform state across the
+            # whole param list. See titans.scripts._common for the
+            # detailed rationale.
+            init_count, total = initialize_missing_optimizer_state(optimizer)
+            logger.info(
+                f"[observability] initialized {init_count}/{total} "
+                "optimizer state slots for params missing state after "
+                "load_state_dict"
+            )
         if "scheduler" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler"])
 
@@ -870,104 +887,6 @@ def train():
                                 accelerator.unwrap_model(model)
                             )
                         accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-
-                        # One-shot diagnostic: histogram the (device, dtype,
-                        # layout) combos across all params in the optimizer
-                        # on the first sync-gradient step. Fused Adam requires
-                        # every quartet (param, grad, exp_avg, exp_avg_sq) to
-                        # agree on those three; if any histogram has >1 combo
-                        # we have pinpointed the mismatched tensor-kind.
-                        # Params with grad=None are skipped — they are also
-                        # skipped by Adam's _init_group, so they cannot
-                        # contribute to the fused-Adam crash.
-                        if not getattr(train, "_titans_logged_first_sync", False):
-                            train._titans_logged_first_sync = True  # type: ignore[attr-defined]
-                            from collections import Counter
-
-                            def _key(t: torch.Tensor) -> tuple[str, str, str]:
-                                return (str(t.device), str(t.dtype), str(t.layout))
-
-                            p_stats: Counter[tuple[str, str, str]] = Counter()
-                            g_stats: Counter[tuple[str, str, str]] = Counter()
-                            ea_stats: Counter[tuple[str, str, str]] = Counter()
-                            es_stats: Counter[tuple[str, str, str]] = Counter()
-                            missing_ea = 0
-                            missing_es = 0
-                            # id(p) -> qualified name for reverse lookup
-                            # so we can identify rogue state-less params.
-                            _param_names: dict[int, str] = {
-                                id(p): name
-                                for name, p in accelerator.unwrap_model(
-                                    model
-                                ).named_parameters()
-                            }
-                            _no_state_params: list[tuple[str, tuple[int, ...]]] = []
-                            for group in optimizer.param_groups:
-                                for p in group["params"]:
-                                    if p.grad is None:
-                                        continue
-                                    p_stats[_key(p)] += 1
-                                    g_stats[_key(p.grad)] += 1
-                                    state = optimizer.state.get(p, {})
-                                    ea = state.get("exp_avg")
-                                    es = state.get("exp_avg_sq")
-                                    if ea is not None:
-                                        ea_stats[_key(ea)] += 1
-                                    else:
-                                        missing_ea += 1
-                                    if es is not None:
-                                        es_stats[_key(es)] += 1
-                                    else:
-                                        missing_es += 1
-                                    if ea is None or es is None:
-                                        _no_state_params.append(
-                                            (
-                                                _param_names.get(id(p), "<unmapped>"),
-                                                tuple(p.shape),
-                                            )
-                                        )
-
-                            logger.info(
-                                "[diag] fused-Adam histogram on first sync "
-                                "step (global_step=%d)",
-                                global_step,
-                            )
-                            for g_idx, group in enumerate(optimizer.param_groups):
-                                logger.info(
-                                    "[diag] group %d: fused=%s foreach=%s",
-                                    g_idx,
-                                    group.get("fused"),
-                                    group.get("foreach"),
-                                )
-                            logger.info("[diag] param hist:      %s", dict(p_stats))
-                            logger.info("[diag] grad hist:       %s", dict(g_stats))
-                            logger.info(
-                                "[diag] exp_avg hist:    %s (missing=%d)",
-                                dict(ea_stats),
-                                missing_ea,
-                            )
-                            logger.info(
-                                "[diag] exp_avg_sq hist: %s (missing=%d)",
-                                dict(es_stats),
-                                missing_es,
-                            )
-                            # Previous smoke run showed missing=2 for both
-                            # exp_avg and exp_avg_sq despite uniform dtype /
-                            # device / layout on the 359 present entries.
-                            # Naming those two params narrows the fix to the
-                            # module they live in.
-                            if _no_state_params:
-                                logger.info(
-                                    "[diag] %d params with grad but no "
-                                    "optimizer state:",
-                                    len(_no_state_params),
-                                )
-                                for _name, _shape in _no_state_params:
-                                    logger.info(
-                                        "[diag]   no-state: name=%s shape=%s",
-                                        _name,
-                                        _shape,
-                                    )
 
                     optimizer.step()
                     scheduler.step()
