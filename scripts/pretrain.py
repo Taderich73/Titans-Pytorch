@@ -957,23 +957,30 @@ def train():
                                     if ea is None or es is None:
                                         continue
                                     name = _names.get(id(p), "<unmapped>")
+                                    # is_non_overlapping_and_dense() is
+                                    # C++-only in PyTorch 2.7 (not exposed
+                                    # via Python). is_contiguous() is a
+                                    # close proxy: a C-contiguous tensor
+                                    # is always non-overlapping-and-dense.
+                                    # The converse isn't strictly true, but
+                                    # our model has no channels_last or
+                                    # exotic-stride tensors — prior diags
+                                    # and checkpoint inspection confirm
+                                    # every param/state tensor is
+                                    # contig=True.
                                     for tag, t in (
                                         ("p", p),
                                         ("grad", p.grad),
                                         ("exp_avg", ea),
                                         ("exp_avg_sq", es),
                                     ):
-                                        if not t.is_non_overlapping_and_dense():
+                                        if not t.is_contiguous():
                                             _nond_violations.append(
                                                 (name, tag, str(t.stride()))
                                             )
                                     # Per-position size + non-size-1-dim
                                     # stride check against p.
-                                    p_sizes = (
-                                        tuple(p.sizes())
-                                        if hasattr(p, "sizes")
-                                        else tuple(p.shape)
-                                    )
+                                    p_sizes = tuple(p.shape)
                                     p_strides = tuple(p.stride())
                                     for tag, t in (
                                         ("grad", p.grad),
