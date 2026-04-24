@@ -73,6 +73,7 @@ from titans.scripts import (
     create_model,
     init_accelerator_and_logging,
     initialize_missing_optimizer_state,
+    is_optimizer_state_compatible,
     make_dataloader,
     make_optimizer,
     maybe_compile,
@@ -751,33 +752,48 @@ def train():
         unwrapped.load_state_dict(checkpoint["model"])
 
         if "optimizer" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer"])
-            # Optimizer.load_state_dict does not coerce state tensors to
-            # the live params' device or dtype. load_checkpoint defaults
-            # to device="cpu", and the saved state may have been written
-            # under a different precision config, so without this
-            # migration fused Adam / AdamW would trip on the first
-            # sync-gradient step with "params, grads, exp_avgs, and
-            # exp_avg_sqs must have same dtype, device, and layout".
-            # See titans.scripts._common. The counts are logged so the
-            # resume run always emits proof this path executed -- when
-            # that log line is missing, the deployed code is stale.
-            migrated, seen = move_optimizer_state_to_params(optimizer)
-            logger.info(
-                f"[observability] migrated {migrated}/{seen} optimizer "
-                "state tensors after load_state_dict (device + dtype "
-                "coerced to match live params)"
+            # Shape-check the saved optimizer state against the live
+            # optimizer BEFORE loading. Torch's Optimizer.load_state_dict
+            # maps saved state to live params by POSITION. When a
+            # checkpoint is loaded against code whose named_parameters()
+            # ordering has drifted — e.g. a module refactor added or
+            # reordered submodules — saved state silently lands on the
+            # wrong param. Device/dtype/layout uniformity survives the
+            # misalignment (which is why prior PRs #6/#7/#11 appeared to
+            # succeed on those axes) but the fused-Adam fast-path check
+            # then rejects the shape mismatch between state and param
+            # with the misleading "params, grads, exp_avgs, and
+            # exp_avg_sqs must have same dtype, device, and layout"
+            # error. See titans.scripts._common.is_optimizer_state_compatible.
+            compatible, mismatches, checked = is_optimizer_state_compatible(
+                optimizer, checkpoint["optimizer"]
             )
-            # Checkpoints produced by earlier code versions can omit
-            # optimizer state for params that were added (or first
-            # received gradients) after the checkpoint was saved. Those
-            # live params end up with an empty state slot, and fused
-            # Adam refuses to mix fresh exp_avg/exp_avg_sq tensors with
-            # restored-state tensors in a single kernel call. Eagerly
-            # seed zero-initialized state for any such params so the
-            # first sync-gradient step sees uniform state across the
-            # whole param list. See titans.scripts._common for the
-            # detailed rationale.
+            if compatible:
+                optimizer.load_state_dict(checkpoint["optimizer"])
+                # Device/dtype coerce after load -- see
+                # titans.scripts._common.move_optimizer_state_to_params.
+                migrated, seen = move_optimizer_state_to_params(optimizer)
+                logger.info(
+                    f"[observability] migrated {migrated}/{seen} optimizer "
+                    "state tensors after load_state_dict (device + dtype "
+                    "coerced to match live params)"
+                )
+            else:
+                logger.warning(
+                    "[observability] optimizer state from %s has "
+                    "param-order drift vs current model: %d/%d state "
+                    "slots have shape mismatch. Skipping optimizer state "
+                    "restore to avoid fused-Adam crash; momentum "
+                    "estimates will re-calibrate over the first few "
+                    "hundred training steps.",
+                    RESUME_FROM,
+                    mismatches,
+                    checked,
+                )
+            # Whether we loaded or not, every live param needs Adam
+            # state before the first fused-Adam call or the kernel's
+            # precondition fails. See titans.scripts._common.
+            # initialize_missing_optimizer_state.
             init_count, total = initialize_missing_optimizer_state(optimizer)
             logger.info(
                 f"[observability] initialized {init_count}/{total} "

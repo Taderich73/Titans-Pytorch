@@ -315,6 +315,73 @@ def initialize_missing_optimizer_state(
     return initialized, seen
 
 
+def is_optimizer_state_compatible(
+    optimizer: torch.optim.Optimizer, state_dict: dict
+) -> tuple[bool, int, int]:
+    """Shape-check a saved optimizer state_dict against the live optimizer.
+
+    Why this exists:
+        ``torch.optim.Optimizer.load_state_dict`` maps saved state to live
+        params by POSITION within each param group. When a checkpoint is
+        loaded against code whose ``model.named_parameters()`` ordering
+        has drifted — e.g. a module refactor added/removed a submodule,
+        or reordered attribute assignments in ``__init__`` — saved state
+        silently lands on the wrong param. Device/dtype/layout all still
+        look uniform (see PR #8/#9 histograms), so the mismatch is only
+        caught when the fused-Adam fast-path check compares sizes and
+        strides across (params, grads, exp_avgs, exp_avg_sqs) at matching
+        positions and rejects every quartet whose state is the wrong
+        shape for its param.
+
+        Detect this upfront by comparing the shape of each saved state
+        tensor to the shape of its would-be target param. Any mismatch
+        means positional alignment is broken and the state_dict MUST
+        NOT be loaded — momentum estimates would be garbage anyway.
+
+    Args:
+        optimizer: The freshly-constructed live optimizer (post
+            ``accelerator.prepare``).
+        state_dict: The optimizer state_dict as returned by
+            ``checkpoint["optimizer"]``. Expected to be the standard
+            ``{"state": {...}, "param_groups": [...]}`` shape.
+
+    Returns:
+        ``(compatible, mismatches, checked)``.
+            * ``compatible``: True when every saved state tensor's shape
+              matches the live param at its positional slot.
+            * ``mismatches``: number of state slots with a shape mismatch.
+            * ``checked``: number of state slots compared (bounded by the
+              saved state coverage — params whose state was never saved
+              cannot be checked here).
+    """
+    mismatches = 0
+    checked = 0
+    saved_state = state_dict.get("state", {})
+    saved_groups = state_dict.get("param_groups", [])
+    live_groups = optimizer.param_groups
+
+    if len(saved_groups) != len(live_groups):
+        return False, 0, 0
+
+    for saved_group, live_group in zip(saved_groups, live_groups):
+        saved_param_ids = saved_group.get("params", [])
+        live_params = live_group["params"]
+        if len(saved_param_ids) != len(live_params):
+            return False, 0, 0
+        for saved_id, live_p in zip(saved_param_ids, live_params):
+            entry = saved_state.get(saved_id)
+            if not entry:
+                continue
+            ea = entry.get("exp_avg")
+            if ea is None or not torch.is_tensor(ea):
+                continue
+            checked += 1
+            if tuple(ea.shape) != tuple(live_p.shape):
+                mismatches += 1
+
+    return mismatches == 0, mismatches, checked
+
+
 def make_dataloader(
     dataset: Dataset,
     *,
