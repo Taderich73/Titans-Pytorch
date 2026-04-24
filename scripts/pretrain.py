@@ -527,6 +527,13 @@ def train():
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, token=token)
+        # Defeat the transformers "Token indices sequence length is longer
+        # than the specified maximum sequence length for this model (N > M)"
+        # warning. StreamingTextDataset does its own chunking against SEQ_LEN;
+        # the tokenizer's built-in max_length is irrelevant here and the
+        # warning is pure log spam. Fires on the first long document of any
+        # fresh process (Python warnings default to once-per-location).
+        tokenizer.model_max_length = int(1e9)
         train_partition = "train" if eval_cfg.every_n_steps > 0 else "all"
         dataset = StreamingTextDataset(
             DATASET_NAME,
