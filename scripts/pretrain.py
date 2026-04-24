@@ -340,8 +340,11 @@ PROFILE_MEMORY_STEPS = 5
 # ---------------------------------------------------------------------------
 # Observability
 # ---------------------------------------------------------------------------
-# JSONL metrics path. Empty string disables JSONL; tqdm postfix stays on.
-METRICS_JSONL = ""
+# JSONL metrics path. Parent dirs are auto-created. Empty string disables
+# JSONL; tqdm postfix stays on in that case. Default on so long runs
+# always produce a queryable post-hoc record of loss / eval / grad norm /
+# gate alpha / per-layer stats; override via --metrics-jsonl "" to disable.
+METRICS_JSONL = "logs/metrics.jsonl"
 # Per-feature toggles for the four observability modules.
 LOG_GRAD_NORM = True
 LOG_LAYER_STATS = True
@@ -749,12 +752,21 @@ def train():
         if "optimizer" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer"])
             # Optimizer.load_state_dict does not coerce state tensors to
-            # the live params' device. load_checkpoint defaults to
-            # device="cpu", so without this migration fused Adam / AdamW
-            # would trip on the first sync-gradient step with "params,
-            # grads, exp_avgs, and exp_avg_sqs must have same dtype,
-            # device, and layout". See titans.scripts._common.
-            move_optimizer_state_to_params(optimizer)
+            # the live params' device or dtype. load_checkpoint defaults
+            # to device="cpu", and the saved state may have been written
+            # under a different precision config, so without this
+            # migration fused Adam / AdamW would trip on the first
+            # sync-gradient step with "params, grads, exp_avgs, and
+            # exp_avg_sqs must have same dtype, device, and layout".
+            # See titans.scripts._common. The counts are logged so the
+            # resume run always emits proof this path executed -- when
+            # that log line is missing, the deployed code is stale.
+            migrated, seen = move_optimizer_state_to_params(optimizer)
+            logger.info(
+                f"[observability] migrated {migrated}/{seen} optimizer "
+                "state tensors after load_state_dict (device + dtype "
+                "coerced to match live params)"
+            )
         if "scheduler" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler"])
 

@@ -81,13 +81,32 @@ class MetricsWriter:
 
 
 class NullMetricsWriter:
-    """No-op writer returned on non-main ranks or when JSONL is disabled."""
+    """JSONL-disabled writer: skips JSONL but still updates tqdm.
+
+    Returned on non-main ranks (where log() must be a no-op to avoid
+    inter-rank file contention) and when JSONL is explicitly disabled by
+    passing an empty path (where the user wants to keep training quiet on
+    disk but still see curated tqdm postfix updates).
+
+    The ``log()`` and ``close()`` methods are true no-ops; ``tqdm_summary``
+    projects the curated subset of metrics onto the pbar postfix using the
+    same ``_TQDM_KEY_MAP`` as ``MetricsWriter`` so that disabling JSONL
+    never silently disables the terminal display -- matching the intent
+    documented in the package README and in the ``--metrics-jsonl`` help
+    text ("Empty string disables JSONL and keeps tqdm-only logging").
+    """
 
     def log(self, step: int, **metrics: Any) -> None:
         """No-op."""
 
     def tqdm_summary(self, pbar: Any, step: int, **metrics: Any) -> None:  # noqa: ARG002
-        """No-op."""
+        """Project the curated subset of metrics onto the tqdm postfix."""
+        postfix: dict[str, str] = {}
+        for key, short in _TQDM_KEY_MAP.items():
+            if key in metrics:
+                postfix[short] = _format_scalar(metrics[key])
+        if postfix:
+            pbar.set_postfix(**postfix)
 
     def close(self) -> None:
         """No-op."""

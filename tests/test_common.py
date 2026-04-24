@@ -140,15 +140,14 @@ class TestMoveOptimizerStateToParams:
         opt.step()
         return opt
 
-    def test_helper_is_noop_when_state_already_on_param_device(self) -> None:
-        """Same-device call must not raise and must leave state device intact."""
+    def test_helper_is_noop_when_state_already_matches_param(self) -> None:
+        """Same-device, same-dtype call must report zero migrations."""
         from titans.scripts import move_optimizer_state_to_params
 
         opt = self._optimizer_with_populated_state()
 
-        # Snapshot pre-call devices.
         before = [
-            (k, v.device)
+            (k, v.device, v.dtype)
             for group in opt.param_groups
             for p in group["params"]
             for k, v in opt.state[p].items()
@@ -156,40 +155,36 @@ class TestMoveOptimizerStateToParams:
         ]
         assert before, "precondition: optimizer state must carry tensors"
 
-        move_optimizer_state_to_params(opt)
+        migrated, seen = move_optimizer_state_to_params(opt)
 
         after = [
-            (k, v.device)
+            (k, v.device, v.dtype)
             for group in opt.param_groups
             for p in group["params"]
             for k, v in opt.state[p].items()
             if torch.is_tensor(v)
         ]
         assert before == after
+        assert migrated == 0
+        assert seen == len(before)
 
     def test_helper_migrates_state_onto_param_device(self) -> None:
         """Simulate the resume path: state tensors loaded on one device,
         params on another. The helper must place every state tensor onto
         the corresponding param's device.
 
-        We synthesise the mismatch without CUDA by moving state tensors to
-        a pinned-memory CPU copy and asserting identity after migration.
-        On runners where CUDA is available we additionally exercise the
-        true CPU -> CUDA path that triggers the production bug.
+        On runners where CUDA is available we exercise the true CPU ->
+        CUDA path that triggers the production bug. Otherwise this is a
+        synthetic same-device baseline that still verifies the helper
+        iterates the structure correctly.
         """
         from titans.scripts import move_optimizer_state_to_params
 
         opt = self._optimizer_with_populated_state()
 
-        # Move every state tensor to a distinct on-disk device. Without
-        # CUDA we simulate by creating fresh CPU tensors (so identity
-        # differs from the originals) and asserting the helper writes
-        # back tensors whose ``.device`` matches each param.
         target_device = (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
-        # If CUDA is available, move params themselves so the helper
-        # actually has to migrate state CPU -> CUDA.
         if target_device.type == "cuda":
             for group in opt.param_groups:
                 for p in group["params"]:
@@ -204,7 +199,7 @@ class TestMoveOptimizerStateToParams:
                         if torch.is_tensor(v):
                             opt.state[p][k] = v.cpu()
 
-        move_optimizer_state_to_params(opt)
+        migrated, seen = move_optimizer_state_to_params(opt)
 
         for group in opt.param_groups:
             for p in group["params"]:
@@ -213,6 +208,73 @@ class TestMoveOptimizerStateToParams:
                         assert v.device == p.device, (
                             f"state[{k}] still on {v.device}, param on {p.device}"
                         )
+        # On CUDA: all state tensors had to move; on CPU: none did.
+        if target_device.type == "cuda":
+            assert migrated == seen
+        else:
+            assert migrated == 0
+        assert seen >= 1
+
+    def test_helper_coerces_float_state_dtype_to_param_dtype(self) -> None:
+        """Float state tensors saved in a different dtype are coerced.
+
+        Covers the checkpoint scenario where a training run saved
+        optimizer state in one dtype (e.g. bf16) and the resume process
+        loads it into an optimizer whose params are another dtype
+        (e.g. fp32). Fused Adam requires an exact dtype match across the
+        ``(params, grads, exp_avgs, exp_avg_sqs)`` quartet, so the
+        helper must coerce float state to match the param.
+        """
+        from titans.scripts import move_optimizer_state_to_params
+
+        opt = self._optimizer_with_populated_state()
+
+        # Force every float state tensor into bf16 while params stay fp32.
+        for group in opt.param_groups:
+            for p in group["params"]:
+                assert p.dtype == torch.float32
+                for k, v in list(opt.state[p].items()):
+                    if torch.is_tensor(v) and v.is_floating_point():
+                        opt.state[p][k] = v.to(torch.bfloat16)
+
+        migrated, seen = move_optimizer_state_to_params(opt)
+
+        for group in opt.param_groups:
+            for p in group["params"]:
+                for k, v in opt.state[p].items():
+                    if torch.is_tensor(v) and v.is_floating_point():
+                        assert v.dtype == p.dtype, (
+                            f"state[{k}] dtype={v.dtype}, param dtype={p.dtype}"
+                        )
+        assert migrated >= 1
+        assert seen >= migrated
+
+    def test_helper_preserves_int_state_dtype(self) -> None:
+        """Integer state (e.g. ``step`` counter on some builds) keeps int dtype.
+
+        Newer PyTorch tracks ``step`` as a 0-d int64 tensor on CPU. The
+        helper must not coerce int state to the param's float dtype --
+        that would break counter semantics and potentially cause LR
+        scheduler drift.
+        """
+        from titans.scripts import move_optimizer_state_to_params
+
+        opt = self._optimizer_with_populated_state()
+
+        # Inject an int state tensor alongside the real float state.
+        for group in opt.param_groups:
+            for p in group["params"]:
+                opt.state[p]["_int_counter"] = torch.tensor(42, dtype=torch.int64)
+
+        move_optimizer_state_to_params(opt)
+
+        for group in opt.param_groups:
+            for p in group["params"]:
+                v = opt.state[p]["_int_counter"]
+                assert v.dtype == torch.int64, (
+                    f"int state tensor coerced to {v.dtype}, must stay int64"
+                )
+                assert int(v.item()) == 42, "int state value must be preserved"
 
     def test_helper_skips_params_without_state(self) -> None:
         """Params with no registered state must not raise or be touched."""
@@ -223,8 +285,9 @@ class TestMoveOptimizerStateToParams:
         opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
         assert not any(opt.state[p] for g in opt.param_groups for p in g["params"])
 
-        # Must not raise.
-        move_optimizer_state_to_params(opt)
+        migrated, seen = move_optimizer_state_to_params(opt)
+        assert migrated == 0
+        assert seen == 0
 
 
 def test_make_dataloader_multiworker_flags_cuda() -> None:

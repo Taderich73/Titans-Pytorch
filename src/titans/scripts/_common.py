@@ -169,50 +169,73 @@ def make_optimizer(
     return torch.optim.AdamW(list(params), **kwargs)
 
 
-def move_optimizer_state_to_params(optimizer: torch.optim.Optimizer) -> None:
-    """Migrate optimizer state tensors onto each parameter's device in place.
+def move_optimizer_state_to_params(optimizer: torch.optim.Optimizer) -> tuple[int, int]:
+    """Migrate optimizer state tensors onto each parameter's device + dtype.
 
     Why this exists:
         ``torch.optim.Optimizer.load_state_dict`` does not coerce state
-        tensor device (or dtype) to match the live parameters. On a resume
-        path that calls ``optimizer.load_state_dict(...)`` *after*
-        ``accelerator.prepare`` has moved parameters onto the accelerator
-        (e.g. CUDA) and ``load_checkpoint`` has surfaced the saved payload
-        on CPU (the default), the optimizer ends up with CPU-fp32
-        ``exp_avg`` / ``exp_avg_sq`` tensors while parameters and gradients
-        are on CUDA. The fused Adam / AdamW kernel refuses to mix devices
-        across the ``(params, grads, exp_avgs, exp_avg_sqs)`` quartet and
+        tensor device or dtype to match the live parameters — unlike
+        ``nn.Module.load_state_dict``. On a resume path that calls
+        ``optimizer.load_state_dict(...)`` *after* ``accelerator.prepare``
+        has moved parameters onto the accelerator (e.g. CUDA) and
+        ``load_checkpoint`` has surfaced the saved payload on CPU (the
+        default), the optimizer ends up with stale ``exp_avg`` /
+        ``exp_avg_sq`` tensors that don't match the live quartet of
+        ``(params, grads, exp_avgs, exp_avg_sqs)``. The fused Adam /
+        AdamW kernel enforces an identity constraint across all four and
         raises::
 
             RuntimeError: params, grads, exp_avgs, and exp_avg_sqs must
             have same dtype, device, and layout
 
-        This helper walks every registered param, looks up its state slot,
-        and moves each tensor-valued entry (``exp_avg``, ``exp_avg_sq``,
-        ``max_exp_avg_sq``, ``step`` when it is a tensor on some PyTorch
-        builds, etc.) onto the param's device. Dtype is intentionally
-        *not* coerced — under ``MIXED_PRECISION="bf16"`` ``accelerate``
-        keeps master parameters in fp32 and the saved optimizer state is
-        already fp32, so a device-only migration is both necessary and
-        sufficient.
+        This helper walks every registered param, looks up its state
+        slot, and coerces each tensor-valued entry (``exp_avg``,
+        ``exp_avg_sq``, ``max_exp_avg_sq``, and ``step`` when it is a
+        tensor on some PyTorch builds) onto the param's device. For
+        floating-point state entries it also coerces dtype to match the
+        param — covering the case where a checkpoint was saved under a
+        different precision config or where ``accelerate`` stores master
+        parameters in bf16 rather than fp32.
 
-    Safe to call even when no state has been loaded: the helper iterates
-    registered params only and no-ops on any param whose state slot is
-    missing or empty.
+        Integer state entries (e.g. ``step``) keep their original dtype
+        to preserve counter semantics.
+
+    Safe to call even when no state has been loaded: iterates registered
+    params only and no-ops on any param whose state slot is missing or
+    empty.
 
     Args:
         optimizer: A ``torch.optim.Optimizer`` (or the
             ``accelerate.optimizer.AcceleratedOptimizer`` wrapper, whose
             ``.state`` and ``.param_groups`` proxy through).
+
+    Returns:
+        ``(migrated, seen)`` — count of state tensors whose device or
+        dtype changed, and the total tensor-valued state entries visited.
+        Callers can log these to confirm the helper ran on the resume
+        path, which is essential when diagnosing whether a downstream
+        optimizer crash is caused by stale cached code on the runner.
     """
+    migrated = 0
+    seen = 0
     for group in optimizer.param_groups:
         for p in group["params"]:
             state = optimizer.state.get(p)
             if not state:
                 continue
             for key, value in list(state.items()):
-                if torch.is_tensor(value) and value.device != p.device:
-                    state[key] = value.to(p.device)
+                if not torch.is_tensor(value):
+                    continue
+                seen += 1
+                # For floating-point state tensors, coerce both device
+                # and dtype to the param's. For integer state (e.g. the
+                # AdamW ``step`` counter on newer PyTorch builds), only
+                # coerce device to preserve int semantics.
+                target_dtype = p.dtype if value.is_floating_point() else value.dtype
+                if value.device != p.device or value.dtype != target_dtype:
+                    state[key] = value.to(device=p.device, dtype=target_dtype)
+                    migrated += 1
+    return migrated, seen
 
 
 def make_dataloader(

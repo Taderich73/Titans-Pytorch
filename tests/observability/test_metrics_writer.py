@@ -42,12 +42,40 @@ def test_metrics_writer_supports_namespaced_keys(tmp_path: Path) -> None:
     assert row["eval/loss"] == pytest.approx(2.61)
 
 
-def test_null_writer_is_noop() -> None:
-    """NullMetricsWriter must accept all calls without raising."""
+def test_null_writer_log_and_close_are_noop() -> None:
+    """NullMetricsWriter.log and close must be silent no-ops."""
     writer = NullMetricsWriter()
     writer.log(step=1, loss=3.14)
-    writer.tqdm_summary(MagicMock(), step=1, loss=3.14)
     writer.close()  # must not raise
+
+
+def test_null_writer_tqdm_summary_still_updates_postfix() -> None:
+    """Disabling JSONL must not silence the tqdm postfix.
+
+    Regression test: an earlier version of ``NullMetricsWriter`` treated
+    ``tqdm_summary`` as a no-op, which meant that the documented "empty
+    --metrics-jsonl disables JSONL and keeps tqdm-only logging"
+    behaviour was broken -- training under defaults produced a raw
+    progress meter with no curated keys. The Null writer must project
+    the same curated subset as the real writer.
+    """
+    writer = NullMetricsWriter()
+    pbar = MagicMock()
+
+    writer.tqdm_summary(
+        pbar,
+        step=100,
+        loss=2.57,
+        lr=2.8e-4,
+        **{"grad/global_norm": 1.82},
+    )
+
+    pbar.set_postfix.assert_called_once()
+    # The curated short labels must include at least 'loss', 'lr', '|g|'.
+    call_kwargs = pbar.set_postfix.call_args.kwargs
+    assert "loss" in call_kwargs
+    assert "lr" in call_kwargs
+    assert "|g|" in call_kwargs
 
 
 def test_build_returns_null_when_path_empty(tmp_path: Path) -> None:
