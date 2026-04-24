@@ -52,6 +52,7 @@ from titans.scripts._common import (
     make_optimizer,
     maybe_compile,
     move_optimizer_state_to_params,
+    remap_optimizer_state_by_name,
     setup_checkpoint_dir,
     tokenize_chat,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "make_optimizer",
     "maybe_compile",
     "move_optimizer_state_to_params",
+    "remap_optimizer_state_by_name",
     "setup_checkpoint_dir",
     "tokenize_chat",
 ]

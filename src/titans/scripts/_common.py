@@ -315,6 +315,91 @@ def initialize_missing_optimizer_state(
     return initialized, seen
 
 
+def remap_optimizer_state_by_name(
+    state_dict: dict,
+    saved_param_names: list[str],
+    live_param_names: list[str],
+) -> tuple[dict, int, int]:
+    """Rebuild an optimizer state_dict keyed by LIVE param positions.
+
+    Why this exists:
+        ``torch.optim.Optimizer.load_state_dict`` maps saved state to
+        live params strictly by position within each param group. When
+        ``named_parameters()`` order drifts between save and load —
+        module refactors, feature-flag toggles, reordered ``__init__``
+        attribute assignments — positional load silently lands state on
+        the wrong param. PR #15 detects this with a shape-compatibility
+        check and refuses the load; this helper enables the corresponding
+        *fix*: given a list of param names captured at save time alongside
+        the state_dict, we can rebuild a new state_dict whose positional
+        indices match the *live* optimizer's param order.
+
+    Assumptions:
+        - Only the first param group is remapped. Callers using
+          multi-group optimizers (e.g. separate weight-decay groups) must
+          extend this helper. pretrain.py uses a single param group today.
+        - ``saved_param_names`` corresponds 1:1 with the saved
+          ``param_groups[0]["params"]`` positions.
+        - ``live_param_names`` is the corresponding list for the live
+          optimizer.
+
+    Behaviour on drift:
+        - Params that exist in both saved and live: state preserved,
+          positionally re-indexed.
+        - Params only in live (new since checkpoint): no state — caller
+          should follow up with ``initialize_missing_optimizer_state``.
+        - Params only in saved (removed since checkpoint): state dropped.
+        - Position-only drift (same names, different order): state fully
+          preserved, correctly reassigned.
+
+    Args:
+        state_dict: The saved optimizer state_dict.
+        saved_param_names: Flat list of param names captured at save time,
+            in optimizer param-group-0 order.
+        live_param_names: Flat list of param names in the live
+            optimizer's param-group-0 order.
+
+    Returns:
+        ``(new_state_dict, preserved, dropped)`` where ``preserved`` is
+        the number of params whose state was carried across and
+        ``dropped`` is the count of saved state entries that had no
+        matching live param.
+    """
+    if not state_dict or "state" not in state_dict:
+        return state_dict, 0, 0
+
+    saved_groups = state_dict.get("param_groups", [])
+    if len(saved_groups) != 1:
+        return state_dict, 0, 0
+
+    saved_state = state_dict["state"]
+    saved_positions = saved_groups[0].get("params", [])
+
+    if len(saved_positions) != len(saved_param_names):
+        return state_dict, 0, 0
+
+    # saved_name -> saved_state entry (skip absent state to avoid
+    # overwriting live defaultdict slots with empties).
+    name_to_state: dict[str, dict] = {}
+    for pos, name in zip(saved_positions, saved_param_names):
+        if pos in saved_state:
+            name_to_state[name] = saved_state[pos]
+
+    new_state: dict = {}
+    preserved = 0
+    for live_pos, live_name in enumerate(live_param_names):
+        if live_name in name_to_state:
+            new_state[live_pos] = name_to_state[live_name]
+            preserved += 1
+
+    dropped = len(name_to_state) - preserved
+
+    new_group = dict(saved_groups[0])
+    new_group["params"] = list(range(len(live_param_names)))
+    new_state_dict = {"state": new_state, "param_groups": [new_group]}
+    return new_state_dict, preserved, dropped
+
+
 def is_optimizer_state_compatible(
     optimizer: torch.optim.Optimizer, state_dict: dict
 ) -> tuple[bool, int, int]:
