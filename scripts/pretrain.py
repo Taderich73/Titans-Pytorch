@@ -888,6 +888,40 @@ def train():
                             )
                         accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
 
+                        # Fused Adam requires per-param stride parity across
+                        # (param, grad, exp_avg, exp_avg_sq). Some backward
+                        # ops — most notably SDPA in the first block, where
+                        # BlockAttnRes takes the single-source shortcut and
+                        # returns the input tensor unchanged — can emit grads
+                        # whose memory format diverges from the contiguous
+                        # param. When that happens the fused CUDA kernel's
+                        # check_fast_path_restrictions trips; the surfaced
+                        # error message ("params, grads, exp_avgs, and
+                        # exp_avg_sqs must have same dtype, device, and
+                        # layout") is misleadingly narrow — the underlying
+                        # check also covers stride parity. Forcing grads
+                        # contiguous here restores the invariant the kernel
+                        # actually enforces.
+                        _fixed_grads = 0
+                        _total_grads = 0
+                        for _p in model.parameters():
+                            if _p.grad is None:
+                                continue
+                            _total_grads += 1
+                            if not _p.grad.is_contiguous():
+                                _p.grad = _p.grad.contiguous()
+                                _fixed_grads += 1
+                        if not getattr(train, "_titans_logged_grad_contig", False):
+                            train._titans_logged_grad_contig = True  # type: ignore[attr-defined]
+                            logger.info(
+                                "[observability] forced %d/%d grads "
+                                "contiguous on first sync step "
+                                "(global_step=%d)",
+                                _fixed_grads,
+                                _total_grads,
+                                global_step,
+                            )
+
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
