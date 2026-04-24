@@ -78,6 +78,7 @@ from titans.scripts import (
     make_optimizer,
     maybe_compile,
     move_optimizer_state_to_params,
+    remap_optimizer_state_by_name,
     setup_checkpoint_dir,
 )
 from titans.utils import seed_everything
@@ -748,36 +749,66 @@ def train():
 
         checkpoint = load_checkpoint(ckpt_local, weights_only=False)
 
+        # Resolve the resume step early so the scheduler block below can
+        # fast-forward to it if we end up skipping the saved scheduler
+        # state. Falls back to parsing the filename when the checkpoint
+        # metadata sidecar is missing (e.g. safetensors-only uploads).
+        _step_from_ckpt = checkpoint.get("step", 0)
+        if _step_from_ckpt == 0 and "step_" in RESUME_FROM:
+            import re as _re
+
+            _m = _re.search(r"step_(\d+)", RESUME_FROM)
+            if _m:
+                _step_from_ckpt = int(_m.group(1))
+
         unwrapped = accelerator.unwrap_model(model)
         unwrapped.load_state_dict(checkpoint["model"])
 
+        optimizer_state_loaded = False
         if "optimizer" in checkpoint:
-            # Shape-check the saved optimizer state against the live
-            # optimizer BEFORE loading. Torch's Optimizer.load_state_dict
-            # maps saved state to live params by POSITION. When a
-            # checkpoint is loaded against code whose named_parameters()
-            # ordering has drifted — e.g. a module refactor added or
-            # reordered submodules — saved state silently lands on the
-            # wrong param. Device/dtype/layout uniformity survives the
-            # misalignment (which is why prior PRs #6/#7/#11 appeared to
-            # succeed on those axes) but the fused-Adam fast-path check
-            # then rejects the shape mismatch between state and param
-            # with the misleading "params, grads, exp_avgs, and
-            # exp_avg_sqs must have same dtype, device, and layout"
-            # error. See titans.scripts._common.is_optimizer_state_compatible.
+            # If the checkpoint carries optimizer_param_names (written by
+            # post-PR#16 save paths), rebuild the state_dict keyed by
+            # live param positions via name matching. This survives param-
+            # order drift — module refactors or feature-flag toggles can
+            # reorder named_parameters() between save and load, and
+            # Optimizer.load_state_dict maps positionally. Legacy
+            # checkpoints without the names list fall through to the
+            # shape-compatibility check from PR #15.
+            opt_state_dict = checkpoint["optimizer"]
+            saved_names = checkpoint.get("optimizer_param_names")
+            if saved_names is not None:
+                live_names = [
+                    name
+                    for name, _ in accelerator.unwrap_model(model).named_parameters()
+                ]
+                opt_state_dict, preserved, dropped = remap_optimizer_state_by_name(
+                    opt_state_dict, saved_names, live_names
+                )
+                logger.info(
+                    "[observability] remapped %d/%d optimizer state "
+                    "entries by name (%d saved entries dropped as not "
+                    "present in live model)",
+                    preserved,
+                    len(live_names),
+                    dropped,
+                )
+
+            # Shape-check the (possibly remapped) state against the live
+            # optimizer BEFORE loading. This catches both positional drift
+            # on legacy checkpoints AND param-shape changes that name-
+            # based remap can't rescue.
             compatible, mismatches, checked = is_optimizer_state_compatible(
-                optimizer, checkpoint["optimizer"]
+                optimizer, opt_state_dict
             )
             if compatible:
-                optimizer.load_state_dict(checkpoint["optimizer"])
-                # Device/dtype coerce after load -- see
-                # titans.scripts._common.move_optimizer_state_to_params.
+                optimizer.load_state_dict(opt_state_dict)
                 migrated, seen = move_optimizer_state_to_params(optimizer)
                 logger.info(
                     f"[observability] migrated {migrated}/{seen} optimizer "
                     "state tensors after load_state_dict (device + dtype "
                     "coerced to match live params)"
                 )
+                optimizer_state_loaded = True
             else:
                 logger.warning(
                     "[observability] optimizer state from %s has "
@@ -790,10 +821,6 @@ def train():
                     mismatches,
                     checked,
                 )
-            # Whether we loaded or not, every live param needs Adam
-            # state before the first fused-Adam call or the kernel's
-            # precondition fails. See titans.scripts._common.
-            # initialize_missing_optimizer_state.
             init_count, total = initialize_missing_optimizer_state(optimizer)
             logger.info(
                 f"[observability] initialized {init_count}/{total} "
@@ -801,21 +828,49 @@ def train():
                 "load_state_dict"
             )
         if "scheduler" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler"])
+            # Scheduler and optimizer form a pair: a saved scheduler's
+            # last_epoch and _last_lr were observed against a specific
+            # optimizer-step trajectory. If we skipped the optimizer
+            # load due to drift, replaying that scheduler state is
+            # nonsensical — we'd be jumping the LR schedule into a
+            # position the momentum estimates know nothing about. Load
+            # only when optimizer state loaded cleanly; otherwise fast-
+            # forward a fresh scheduler to the resume point so the first
+            # few training steps don't replay warmup from scratch.
+            if optimizer_state_loaded:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+            else:
+                import warnings as _warnings
 
-        global_step = checkpoint.get("step", 0)
-
-        # Fallback: parse step from filename when sidecar is missing
-        if global_step == 0 and "step_" in RESUME_FROM:
-            import re
-
-            m = re.search(r"step_(\d+)", RESUME_FROM)
-            if m:
-                global_step = int(m.group(1))
-                logger.warning(
-                    f"No step in checkpoint metadata, inferred step={global_step} "
-                    f"from filename (optimizer/scheduler state NOT restored)"
+                target_opt_step = max(
+                    0,
+                    _step_from_ckpt // GRADIENT_ACCUMULATION_STEPS,
                 )
+                with _warnings.catch_warnings():
+                    # scheduler.step() before optimizer.step() logs a
+                    # UserWarning; suppress since we're intentionally
+                    # advancing the schedule without training iterations.
+                    _warnings.simplefilter("ignore")
+                    for _ in range(target_opt_step):
+                        scheduler.step()
+                logger.warning(
+                    "[observability] skipped scheduler state load "
+                    "(optimizer state was incompatible); fast-forwarded "
+                    "fresh scheduler by %d opt steps to match resume "
+                    "position",
+                    target_opt_step,
+                )
+
+        # global_step was computed earlier (as _step_from_ckpt) so the
+        # scheduler fast-forward path could reach it. Reuse that value;
+        # emit the "inferred from filename" warning path only when the
+        # sidecar was missing.
+        global_step = _step_from_ckpt
+        if checkpoint.get("step", 0) == 0 and global_step != 0:
+            logger.warning(
+                f"No step in checkpoint metadata, inferred step={global_step} "
+                f"from filename (optimizer/scheduler state NOT restored)"
+            )
 
         logger.info(f"Resumed at step {global_step}, training to {MAX_STEPS}")
 
@@ -1159,12 +1214,20 @@ def train():
                 unwrapped = accelerator.unwrap_model(model)
                 with tempfile.TemporaryDirectory() as tmpdir:
                     ckpt_stem = Path(tmpdir) / f"step_{global_step}"
+                    # optimizer_param_names captures the saved param order
+                    # so a future resume can name-remap optimizer state
+                    # across named_parameters() drift (module refactors,
+                    # feature toggles) without dropping momentum. See
+                    # titans.scripts.remap_optimizer_state_by_name.
                     ckpt_files = save_checkpoint(
                         unwrapped.state_dict(),
                         ckpt_stem,
                         format=SAVE_FORMAT,
                         metadata={
                             "optimizer": optimizer.state_dict(),
+                            "optimizer_param_names": [
+                                name for name, _ in unwrapped.named_parameters()
+                            ],
                             "scheduler": scheduler.state_dict(),
                             "config": config.to_dict(),
                             "step": global_step,
@@ -1206,6 +1269,9 @@ def train():
                     format=SAVE_FORMAT,
                     metadata={
                         "optimizer": optimizer.state_dict(),
+                        "optimizer_param_names": [
+                            name for name, _ in unwrapped.named_parameters()
+                        ],
                         "scheduler": scheduler.state_dict(),
                         "config": config.to_dict(),
                         "step": global_step,

@@ -416,6 +416,110 @@ class TestInitializeMissingOptimizerState:
                 assert step.device == p.device
 
 
+class TestRemapOptimizerStateByName:
+    """Regression tests for ``remap_optimizer_state_by_name``.
+
+    Name-based remap preserves momentum across named_parameters() order
+    drift (module refactors, feature-flag toggles) where positional
+    load_state_dict silently lands state on the wrong param.
+    """
+
+    @staticmethod
+    def _populated_optimizer(model: torch.nn.Module) -> torch.optim.AdamW:
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        out = model(torch.randn(1, 4)).sum()
+        out.backward()
+        opt.step()
+        return opt
+
+    def test_identical_order_preserves_all_state(self) -> None:
+        from titans.scripts import remap_optimizer_state_by_name
+
+        model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt = self._populated_optimizer(model)
+        saved_names = [n for n, _ in model.named_parameters()]
+        saved_state = opt.state_dict()
+
+        remapped, preserved, dropped = remap_optimizer_state_by_name(
+            saved_state, saved_names, saved_names
+        )
+        num_params = sum(1 for _ in model.parameters())
+        assert preserved == num_params
+        assert dropped == 0
+        assert len(remapped["state"]) == num_params
+
+    def test_permutation_rescues_state(self) -> None:
+        """Same names in different order: state lands at the *right* live
+        positions after remap."""
+        from titans.scripts import remap_optimizer_state_by_name
+
+        model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt = self._populated_optimizer(model)
+        saved_names = [n for n, _ in model.named_parameters()]
+        saved_state = opt.state_dict()
+
+        # Same names, reversed order
+        live_names = list(reversed(saved_names))
+        remapped, preserved, dropped = remap_optimizer_state_by_name(
+            saved_state, saved_names, live_names
+        )
+        assert preserved == len(live_names)
+        assert dropped == 0
+
+        # First saved exp_avg must now live at last live position and vice versa
+        first_saved_exp_avg = saved_state["state"][0]["exp_avg"]
+        last_live_pos = len(live_names) - 1
+        assert torch.equal(
+            remapped["state"][last_live_pos]["exp_avg"], first_saved_exp_avg
+        )
+
+    def test_added_param_has_no_state_in_remap(self) -> None:
+        """Live model has a new param not in saved: remap skips it so
+        caller's initialize_missing_optimizer_state fills it later."""
+        from titans.scripts import remap_optimizer_state_by_name
+
+        model_old = torch.nn.Sequential(torch.nn.Linear(4, 8))
+        opt_old = self._populated_optimizer(model_old)
+        saved_names = [n for n, _ in model_old.named_parameters()]
+        saved_state = opt_old.state_dict()
+
+        live_names = saved_names + ["blocks.new.weight", "blocks.new.bias"]
+        remapped, preserved, dropped = remap_optimizer_state_by_name(
+            saved_state, saved_names, live_names
+        )
+        assert preserved == len(saved_names)
+        assert dropped == 0
+        # New live positions aren't in the remapped state
+        for i, name in enumerate(live_names):
+            if name in saved_names:
+                assert i in remapped["state"]
+            else:
+                assert i not in remapped["state"]
+
+    def test_removed_param_state_is_dropped(self) -> None:
+        """Saved has a param no longer in live model: state is dropped."""
+        from titans.scripts import remap_optimizer_state_by_name
+
+        model_big = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt_big = self._populated_optimizer(model_big)
+        saved_names = [n for n, _ in model_big.named_parameters()]
+        saved_state = opt_big.state_dict()
+
+        live_names = saved_names[:2]  # drop the second linear's params
+        remapped, preserved, dropped = remap_optimizer_state_by_name(
+            saved_state, saved_names, live_names
+        )
+        assert preserved == 2
+        assert dropped == len(saved_names) - 2
+
+    def test_empty_state_dict_is_passthrough(self) -> None:
+        from titans.scripts import remap_optimizer_state_by_name
+
+        out, p, d = remap_optimizer_state_by_name({}, [], [])
+        assert out == {}
+        assert p == 0 and d == 0
+
+
 class TestIsOptimizerStateCompatible:
     """Regression tests for ``is_optimizer_state_compatible``.
 
