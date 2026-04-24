@@ -893,6 +893,15 @@ def train():
                             es_stats: Counter[tuple[str, str, str]] = Counter()
                             missing_ea = 0
                             missing_es = 0
+                            # id(p) -> qualified name for reverse lookup
+                            # so we can identify rogue state-less params.
+                            _param_names: dict[int, str] = {
+                                id(p): name
+                                for name, p in accelerator.unwrap_model(
+                                    model
+                                ).named_parameters()
+                            }
+                            _no_state_params: list[tuple[str, tuple[int, ...]]] = []
                             for group in optimizer.param_groups:
                                 for p in group["params"]:
                                     if p.grad is None:
@@ -910,6 +919,13 @@ def train():
                                         es_stats[_key(es)] += 1
                                     else:
                                         missing_es += 1
+                                    if ea is None or es is None:
+                                        _no_state_params.append(
+                                            (
+                                                _param_names.get(id(p), "<unmapped>"),
+                                                tuple(p.shape),
+                                            )
+                                        )
 
                             logger.info(
                                 "[diag] fused-Adam histogram on first sync "
@@ -935,6 +951,23 @@ def train():
                                 dict(es_stats),
                                 missing_es,
                             )
+                            # Previous smoke run showed missing=2 for both
+                            # exp_avg and exp_avg_sq despite uniform dtype /
+                            # device / layout on the 359 present entries.
+                            # Naming those two params narrows the fix to the
+                            # module they live in.
+                            if _no_state_params:
+                                logger.info(
+                                    "[diag] %d params with grad but no "
+                                    "optimizer state:",
+                                    len(_no_state_params),
+                                )
+                                for _name, _shape in _no_state_params:
+                                    logger.info(
+                                        "[diag]   no-state: name=%s shape=%s",
+                                        _name,
+                                        _shape,
+                                    )
 
                     optimizer.step()
                     scheduler.step()
