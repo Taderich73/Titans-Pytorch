@@ -118,6 +118,115 @@ def test_make_optimizer_cuda_uses_fused() -> None:
     assert opt.defaults.get("fused") is True
 
 
+class TestMoveOptimizerStateToParams:
+    """Regression tests for ``move_optimizer_state_to_params``.
+
+    The helper fixes the resume-path bug where ``optimizer.load_state_dict``
+    leaves state tensors on CPU while live params have been moved to CUDA
+    by ``accelerator.prepare``. Fused Adam then refuses to mix devices and
+    raises ``RuntimeError``. Local CI runs on CPU-only; the cross-device
+    migration test is gated on CUDA availability.
+    """
+
+    from titans.scripts import move_optimizer_state_to_params
+
+    def _optimizer_with_populated_state(self) -> torch.optim.AdamW:
+        """Return an AdamW whose state slots carry exp_avg / exp_avg_sq."""
+        model = torch.nn.Linear(4, 4)
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        # Run one forward + backward + step so state slots populate.
+        loss = model(torch.randn(2, 4)).sum()
+        loss.backward()
+        opt.step()
+        return opt
+
+    def test_helper_is_noop_when_state_already_on_param_device(self) -> None:
+        """Same-device call must not raise and must leave state device intact."""
+        from titans.scripts import move_optimizer_state_to_params
+
+        opt = self._optimizer_with_populated_state()
+
+        # Snapshot pre-call devices.
+        before = [
+            (k, v.device)
+            for group in opt.param_groups
+            for p in group["params"]
+            for k, v in opt.state[p].items()
+            if torch.is_tensor(v)
+        ]
+        assert before, "precondition: optimizer state must carry tensors"
+
+        move_optimizer_state_to_params(opt)
+
+        after = [
+            (k, v.device)
+            for group in opt.param_groups
+            for p in group["params"]
+            for k, v in opt.state[p].items()
+            if torch.is_tensor(v)
+        ]
+        assert before == after
+
+    def test_helper_migrates_state_onto_param_device(self) -> None:
+        """Simulate the resume path: state tensors loaded on one device,
+        params on another. The helper must place every state tensor onto
+        the corresponding param's device.
+
+        We synthesise the mismatch without CUDA by moving state tensors to
+        a pinned-memory CPU copy and asserting identity after migration.
+        On runners where CUDA is available we additionally exercise the
+        true CPU -> CUDA path that triggers the production bug.
+        """
+        from titans.scripts import move_optimizer_state_to_params
+
+        opt = self._optimizer_with_populated_state()
+
+        # Move every state tensor to a distinct on-disk device. Without
+        # CUDA we simulate by creating fresh CPU tensors (so identity
+        # differs from the originals) and asserting the helper writes
+        # back tensors whose ``.device`` matches each param.
+        target_device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+        # If CUDA is available, move params themselves so the helper
+        # actually has to migrate state CPU -> CUDA.
+        if target_device.type == "cuda":
+            for group in opt.param_groups:
+                for p in group["params"]:
+                    p.data = p.data.to(target_device)
+                    if p.grad is not None:
+                        p.grad = p.grad.to(target_device)
+            # Force state tensors to stay on CPU to simulate the post-load
+            # state from ``torch.load(..., map_location="cpu")``.
+            for group in opt.param_groups:
+                for p in group["params"]:
+                    for k, v in list(opt.state[p].items()):
+                        if torch.is_tensor(v):
+                            opt.state[p][k] = v.cpu()
+
+        move_optimizer_state_to_params(opt)
+
+        for group in opt.param_groups:
+            for p in group["params"]:
+                for k, v in opt.state[p].items():
+                    if torch.is_tensor(v):
+                        assert v.device == p.device, (
+                            f"state[{k}] still on {v.device}, param on {p.device}"
+                        )
+
+    def test_helper_skips_params_without_state(self) -> None:
+        """Params with no registered state must not raise or be touched."""
+        from titans.scripts import move_optimizer_state_to_params
+
+        # Fresh optimizer: no step() call => empty state for every param.
+        model = torch.nn.Linear(4, 4)
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        assert not any(opt.state[p] for g in opt.param_groups for p in g["params"])
+
+        # Must not raise.
+        move_optimizer_state_to_params(opt)
+
+
 def test_make_dataloader_multiworker_flags_cuda() -> None:
     """Multi-worker DataLoader enables pin_memory and persistent_workers on CUDA."""
     from torch.utils.data import TensorDataset

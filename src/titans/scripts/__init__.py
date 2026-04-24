@@ -49,6 +49,7 @@ from titans.scripts._common import (
     make_dataloader,
     make_optimizer,
     maybe_compile,
+    move_optimizer_state_to_params,
     setup_checkpoint_dir,
     tokenize_chat,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "make_dataloader",
     "make_optimizer",
     "maybe_compile",
+    "move_optimizer_state_to_params",
     "setup_checkpoint_dir",
     "tokenize_chat",
 ]

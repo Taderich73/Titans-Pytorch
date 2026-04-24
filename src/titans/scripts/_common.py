@@ -169,6 +169,52 @@ def make_optimizer(
     return torch.optim.AdamW(list(params), **kwargs)
 
 
+def move_optimizer_state_to_params(optimizer: torch.optim.Optimizer) -> None:
+    """Migrate optimizer state tensors onto each parameter's device in place.
+
+    Why this exists:
+        ``torch.optim.Optimizer.load_state_dict`` does not coerce state
+        tensor device (or dtype) to match the live parameters. On a resume
+        path that calls ``optimizer.load_state_dict(...)`` *after*
+        ``accelerator.prepare`` has moved parameters onto the accelerator
+        (e.g. CUDA) and ``load_checkpoint`` has surfaced the saved payload
+        on CPU (the default), the optimizer ends up with CPU-fp32
+        ``exp_avg`` / ``exp_avg_sq`` tensors while parameters and gradients
+        are on CUDA. The fused Adam / AdamW kernel refuses to mix devices
+        across the ``(params, grads, exp_avgs, exp_avg_sqs)`` quartet and
+        raises::
+
+            RuntimeError: params, grads, exp_avgs, and exp_avg_sqs must
+            have same dtype, device, and layout
+
+        This helper walks every registered param, looks up its state slot,
+        and moves each tensor-valued entry (``exp_avg``, ``exp_avg_sq``,
+        ``max_exp_avg_sq``, ``step`` when it is a tensor on some PyTorch
+        builds, etc.) onto the param's device. Dtype is intentionally
+        *not* coerced — under ``MIXED_PRECISION="bf16"`` ``accelerate``
+        keeps master parameters in fp32 and the saved optimizer state is
+        already fp32, so a device-only migration is both necessary and
+        sufficient.
+
+    Safe to call even when no state has been loaded: the helper iterates
+    registered params only and no-ops on any param whose state slot is
+    missing or empty.
+
+    Args:
+        optimizer: A ``torch.optim.Optimizer`` (or the
+            ``accelerate.optimizer.AcceleratedOptimizer`` wrapper, whose
+            ``.state`` and ``.param_groups`` proxy through).
+    """
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            state = optimizer.state.get(p)
+            if not state:
+                continue
+            for key, value in list(state.items()):
+                if torch.is_tensor(value) and value.device != p.device:
+                    state[key] = value.to(p.device)
+
+
 def make_dataloader(
     dataset: Dataset,
     *,
