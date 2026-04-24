@@ -28,7 +28,6 @@ The load path dispatches on the version:
 from __future__ import annotations
 
 import logging
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -231,17 +230,13 @@ def load_memory_states(
                 current_version=TITANS_SCHEMA_VERSION,
             )
     else:
-        # Pre-0.7 file written before schema versioning shipped. Warn
-        # once and fall through to the legacy best-effort code path.
-        warnings.warn(
-            (
-                f"Loading unversioned checkpoint {path!s}: assuming "
-                "pre-0.7 layout. Re-save with the current version of "
-                "titans to stop this warning. See MIGRATIONS.md."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        # Pre-0.7 files were written before schema versioning shipped,
+        # but the on-disk layout matches v1 exactly. Stamp the in-memory
+        # dict as current so downstream consumers see a self-describing
+        # payload, and continue silently. If a future breaking change
+        # lands, bump TITANS_SCHEMA_VERSION and register a migration --
+        # the older-than-current branch above will then apply it.
+        data[_SCHEMA_VERSION_KEY] = np.array([TITANS_SCHEMA_VERSION], dtype=np.int64)
 
     if "num_layers" not in data:
         raise ValueError("Invalid memory state file: missing 'num_layers' metadata")

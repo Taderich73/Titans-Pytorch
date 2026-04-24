@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -290,8 +289,15 @@ def save_checkpoint(
 def _check_schema_version(payload: dict[str, Any], source: Path) -> None:
     """Dispatch on the schema version carried by a loaded checkpoint.
 
-    * Missing key -> emit a ``DeprecationWarning`` and best-effort load
-      (pre-0.7 layout).
+    * Missing key -> stamp the payload as the current schema version in
+      place and continue silently. Pre-0.7 files wrote exactly the same
+      on-disk layout as v1; treating the absence of the version key as
+      "implicitly v1" avoids a DeprecationWarning the caller can do
+      nothing meaningful about without running a separate convert step.
+      If a future breaking change lands, bump
+      :data:`~titans.TITANS_SCHEMA_VERSION` and register a migration in
+      :data:`_CHECKPOINT_MIGRATIONS`; the older-than-current branch
+      below will handle the migration path.
     * Equal to current -> silent.
     * Newer -> :class:`RuntimeError` (tell the user to upgrade titans).
     * Older -> route through :func:`_migrate_payload_to_current` which
@@ -303,15 +309,10 @@ def _check_schema_version(payload: dict[str, Any], source: Path) -> None:
     from titans import TITANS_SCHEMA_VERSION
 
     if _SCHEMA_VERSION_KEY not in payload:
-        warnings.warn(
-            (
-                f"Loading unversioned checkpoint {source!s}: assuming "
-                "pre-0.7 layout. Re-save with the current version of "
-                "titans to stop this warning. See MIGRATIONS.md."
-            ),
-            DeprecationWarning,
-            stacklevel=3,
-        )
+        # Pre-0.7 files are functionally v1; stamp in-memory so the
+        # loaded payload is self-describing for any downstream consumer.
+        payload[_SCHEMA_VERSION_KEY] = TITANS_SCHEMA_VERSION
+        del source  # retained on the signature for future migration use
         return
 
     file_version = int(payload[_SCHEMA_VERSION_KEY])

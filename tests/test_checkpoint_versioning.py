@@ -94,12 +94,14 @@ class TestMemoryDumpVersioning:
         torch.testing.assert_close(loaded[0].weights[0], state.weights[0])
         torch.testing.assert_close(loaded[0].momentum[0], state.momentum[0])
 
-    def test_unversioned_loads_with_warning(self, tmp_path: Path) -> None:
-        """A file lacking ``titans_schema_version`` loads with a warning.
+    def test_unversioned_loads_silently(self, tmp_path: Path) -> None:
+        """A file lacking ``titans_schema_version`` loads silently as v1.
 
-        We emulate a pre-0.7 file by writing the npz directly, omitting
-        the schema-version key. The load path must warn via
-        ``DeprecationWarning`` and still produce a valid MemoryState.
+        Pre-0.7 files wrote exactly the v1 on-disk layout; the load path
+        must treat the absence of the version key as implicitly-v1 and
+        emit no :class:`DeprecationWarning`. If a future breaking change
+        ships, bump :data:`TITANS_SCHEMA_VERSION` and register a
+        migration -- the older-than-current branch will then apply it.
         """
         arrays: dict[str, np.ndarray] = {
             # Legacy unversioned layout: same keys save_memory_states
@@ -118,10 +120,15 @@ class TestMemoryDumpVersioning:
             warnings.simplefilter("always")
             loaded = load_memory_states(path)
 
-        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        assert deps, "Expected a DeprecationWarning for the unversioned load"
-        assert any("unversioned" in str(w.message).lower() for w in deps), (
-            f"Warning must mention 'unversioned'; got {[str(w.message) for w in deps]}"
+        deps = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "unversioned" in str(w.message).lower()
+        ]
+        assert not deps, (
+            "Unversioned load must be silent now that unversioned is "
+            f"treated as v1; got {[str(w.message) for w in deps]}"
         )
 
         assert len(loaded) == 1
@@ -246,8 +253,13 @@ class TestCheckpointVersioning:
         )
         assert loaded["titans_schema_version"] == TITANS_SCHEMA_VERSION
 
-    def test_unversioned_pt_loads_with_warning(self, tmp_path: Path) -> None:
-        """A pre-P5 ``.pt`` file (no version key) loads with a warning."""
+    def test_unversioned_pt_loads_silently(self, tmp_path: Path) -> None:
+        """A pre-P5 ``.pt`` file (no version key) loads silently as v1.
+
+        The on-disk layout of a pre-0.7 ``.pt`` file is identical to v1;
+        the load path stamps the loaded payload as current and emits no
+        :class:`DeprecationWarning`.
+        """
         stem = tmp_path / "legacy"
         pt_path = stem.with_suffix(".pt")
         # Write a legacy-shaped checkpoint directly — no version key.
@@ -257,9 +269,20 @@ class TestCheckpointVersioning:
             warnings.simplefilter("always")
             loaded = load_checkpoint(pt_path, weights_only=False)
 
-        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        assert deps and any("unversioned" in str(w.message).lower() for w in deps)
+        deps = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "unversioned" in str(w.message).lower()
+        ]
+        assert not deps, (
+            "Unversioned load must be silent now that unversioned is "
+            f"treated as v1; got {[str(w.message) for w in deps]}"
+        )
         assert torch.equal(loaded["model"]["w"], torch.ones(2, 2))
+        # In-memory stamp ensures downstream consumers see a
+        # self-describing payload.
+        assert loaded["titans_schema_version"] == TITANS_SCHEMA_VERSION
 
     def test_newer_version_pt_refuses(self, tmp_path: Path) -> None:
         """A .pt file tagged with a version newer than code must refuse."""

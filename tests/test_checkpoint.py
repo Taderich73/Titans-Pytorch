@@ -176,11 +176,13 @@ class TestLoadCheckpoint:
         Post-P5 every save writes a sidecar carrying the schema version.
         We still cover the no-sidecar case — it's what pre-0.7 files
         look like on disk — by deleting the sidecar after the write.
-        ``load_checkpoint`` must surface this as a ``DeprecationWarning``
-        (unversioned checkpoint) while still returning the model.
+        ``load_checkpoint`` must treat the absence of the sidecar as
+        implicitly-v1, stamp the returned payload, and surface no
+        DeprecationWarning about the unversioned state.
         """
         import warnings
 
+        from titans import TITANS_SCHEMA_VERSION
         from titans.checkpoint import load_checkpoint, save_checkpoint
 
         state_dict = {"weight": torch.randn(4, 4)}
@@ -198,11 +200,19 @@ class TestLoadCheckpoint:
 
         assert "model" in result
         assert torch.equal(result["model"]["weight"], state_dict["weight"])
-        assert set(result.keys()) == {"model"}
-        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        assert any("unversioned" in str(w.message) for w in deps), (
-            "Expected a DeprecationWarning about an unversioned "
-            f"checkpoint; got: {[str(w.message) for w in caught]}"
+        # In-memory stamp now adds titans_schema_version to the payload
+        # so downstream consumers see a self-describing dict.
+        assert result["titans_schema_version"] == TITANS_SCHEMA_VERSION
+        assert set(result.keys()) == {"model", "titans_schema_version"}
+        deps = [
+            w
+            for w in caught
+            if issubclass(w.category, DeprecationWarning)
+            and "unversioned" in str(w.message).lower()
+        ]
+        assert not deps, (
+            "Unversioned load must be silent now that unversioned is "
+            f"treated as v1; got: {[str(w.message) for w in deps]}"
         )
 
     def test_extensionless_prefers_safetensors(self, tmp_path: Path) -> None:
