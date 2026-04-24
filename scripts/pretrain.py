@@ -75,6 +75,7 @@ from titans.scripts import (
     make_dataloader,
     make_optimizer,
     maybe_compile,
+    move_optimizer_state_to_params,
     setup_checkpoint_dir,
 )
 from titans.utils import seed_everything
@@ -747,6 +748,13 @@ def train():
 
         if "optimizer" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer"])
+            # Optimizer.load_state_dict does not coerce state tensors to
+            # the live params' device. load_checkpoint defaults to
+            # device="cpu", so without this migration fused Adam / AdamW
+            # would trip on the first sync-gradient step with "params,
+            # grads, exp_avgs, and exp_avg_sqs must have same dtype,
+            # device, and layout". See titans.scripts._common.
+            move_optimizer_state_to_params(optimizer)
         if "scheduler" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler"])
 
