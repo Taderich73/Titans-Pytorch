@@ -922,6 +922,104 @@ def train():
                                 global_step,
                             )
 
+                        # One-shot emulation of the C++ check that actually
+                        # fires ("params, grads, exp_avgs, and exp_avg_sqs
+                        # must have same dtype, device, and layout"). The
+                        # real check — check_fast_path_restrictions in
+                        # aten/src/ATen/native/ForeachUtils.h — verifies
+                        #   1) dtype / device / layout==strided AND
+                        #      is_non_overlapping_and_dense() on every
+                        #      tensor, and
+                        #   2) sizes + strides match at matching positions
+                        #      across (params, grads, exp_avgs, exp_avg_sqs),
+                        #      ignoring size-1 dims in the stride check.
+                        # Histograms + contig checks have ruled out (1). This
+                        # block isolates (2) by walking each grad-bearing
+                        # param's quartet and logging the exact attributes
+                        # of any that violates the per-position check.
+                        if not getattr(train, "_titans_logged_quartet", False):
+                            train._titans_logged_quartet = True  # type: ignore[attr-defined]
+                            _names = {
+                                id(p): name
+                                for name, p in accelerator.unwrap_model(
+                                    model
+                                ).named_parameters()
+                            }
+                            _violations: list[tuple[str, str]] = []
+                            _nond_violations: list[tuple[str, str, str]] = []
+                            for group in optimizer.param_groups:
+                                for p in group["params"]:
+                                    if p.grad is None:
+                                        continue
+                                    state = optimizer.state.get(p, {})
+                                    ea = state.get("exp_avg")
+                                    es = state.get("exp_avg_sq")
+                                    if ea is None or es is None:
+                                        continue
+                                    name = _names.get(id(p), "<unmapped>")
+                                    for tag, t in (
+                                        ("p", p),
+                                        ("grad", p.grad),
+                                        ("exp_avg", ea),
+                                        ("exp_avg_sq", es),
+                                    ):
+                                        if not t.is_non_overlapping_and_dense():
+                                            _nond_violations.append(
+                                                (name, tag, str(t.stride()))
+                                            )
+                                    # Per-position size + non-size-1-dim
+                                    # stride check against p.
+                                    p_sizes = (
+                                        tuple(p.sizes())
+                                        if hasattr(p, "sizes")
+                                        else tuple(p.shape)
+                                    )
+                                    p_strides = tuple(p.stride())
+                                    for tag, t in (
+                                        ("grad", p.grad),
+                                        ("exp_avg", ea),
+                                        ("exp_avg_sq", es),
+                                    ):
+                                        t_sizes = tuple(t.shape)
+                                        t_strides = tuple(t.stride())
+                                        if t_sizes != p_sizes:
+                                            _violations.append(
+                                                (
+                                                    f"{name}:{tag}",
+                                                    f"size {t_sizes} != p {p_sizes}",
+                                                )
+                                            )
+                                            continue
+                                        for dim, (s, ps, ts) in enumerate(
+                                            zip(p_sizes, p_strides, t_strides)
+                                        ):
+                                            if s == 1:
+                                                continue
+                                            if ps != ts:
+                                                _violations.append(
+                                                    (
+                                                        f"{name}:{tag}",
+                                                        f"dim{dim} size={s} "
+                                                        f"p_stride={ps} "
+                                                        f"{tag}_stride={ts}",
+                                                    )
+                                                )
+                            logger.info(
+                                "[diag] fast_path check: %d non_overlap "
+                                "violations, %d size/stride violations",
+                                len(_nond_violations),
+                                len(_violations),
+                            )
+                            for n, tag, st in _nond_violations[:10]:
+                                logger.info(
+                                    "[diag]   non_overlap: %s tag=%s stride=%s",
+                                    n,
+                                    tag,
+                                    st,
+                                )
+                            for spec, detail in _violations[:20]:
+                                logger.info("[diag]   size/stride: %s %s", spec, detail)
+
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
