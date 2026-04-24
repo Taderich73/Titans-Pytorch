@@ -416,6 +416,90 @@ class TestInitializeMissingOptimizerState:
                 assert step.device == p.device
 
 
+class TestIsOptimizerStateCompatible:
+    """Regression tests for ``is_optimizer_state_compatible``.
+
+    Verifies that param-order drift between a saved optimizer state_dict
+    and a live optimizer is detected by shape-checking each saved
+    state entry against its would-be target live param. This is what
+    PRs #11-14 were missing — every prior diag axis was uniform under
+    drift (device, dtype, layout, contig, non-overlapping-dense), so
+    only a shape check catches it.
+    """
+
+    def test_compatible_when_shapes_match(self) -> None:
+        """Identical model layout: state loads cleanly."""
+        from titans.scripts import is_optimizer_state_compatible
+
+        model_a = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt_a = torch.optim.AdamW(model_a.parameters(), lr=1e-3)
+        out = model_a(torch.randn(1, 4)).sum()
+        out.backward()
+        opt_a.step()
+        saved = opt_a.state_dict()
+
+        model_b = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt_b = torch.optim.AdamW(model_b.parameters(), lr=1e-3)
+
+        compatible, mismatches, checked = is_optimizer_state_compatible(opt_b, saved)
+        assert compatible
+        assert mismatches == 0
+        assert checked > 0
+
+    def test_drift_detected_when_layer_dims_change(self) -> None:
+        """Hidden-dim mismatch between save and load: drift detected."""
+        from titans.scripts import is_optimizer_state_compatible
+
+        model_a = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt_a = torch.optim.AdamW(model_a.parameters(), lr=1e-3)
+        out = model_a(torch.randn(1, 4)).sum()
+        out.backward()
+        opt_a.step()
+        saved = opt_a.state_dict()
+
+        # Live model with different hidden dim — param shapes will
+        # mismatch at positional slots.
+        model_b = torch.nn.Sequential(torch.nn.Linear(4, 16), torch.nn.Linear(16, 4))
+        opt_b = torch.optim.AdamW(model_b.parameters(), lr=1e-3)
+
+        compatible, mismatches, checked = is_optimizer_state_compatible(opt_b, saved)
+        assert not compatible
+        assert mismatches > 0
+        assert checked > 0
+
+    def test_drift_detected_when_param_count_changes(self) -> None:
+        """Extra layer on load side: compatibility check refuses."""
+        from titans.scripts import is_optimizer_state_compatible
+
+        model_a = torch.nn.Sequential(torch.nn.Linear(4, 8))
+        opt_a = torch.optim.AdamW(model_a.parameters(), lr=1e-3)
+        out = model_a(torch.randn(1, 4)).sum()
+        out.backward()
+        opt_a.step()
+        saved = opt_a.state_dict()
+
+        model_b = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 4))
+        opt_b = torch.optim.AdamW(model_b.parameters(), lr=1e-3)
+
+        compatible, _, _ = is_optimizer_state_compatible(opt_b, saved)
+        assert not compatible
+
+    def test_empty_saved_state_is_compatible(self) -> None:
+        """Fresh optimizer (no state yet) is trivially compatible."""
+        from titans.scripts import is_optimizer_state_compatible
+
+        model = torch.nn.Linear(4, 4)
+        opt_saved = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        opt_live = torch.optim.AdamW(torch.nn.Linear(4, 4).parameters(), lr=1e-3)
+
+        compatible, mismatches, checked = is_optimizer_state_compatible(
+            opt_live, opt_saved.state_dict()
+        )
+        assert compatible
+        assert mismatches == 0
+        assert checked == 0  # nothing to check since saved state is empty
+
+
 def test_make_dataloader_multiworker_flags_cuda() -> None:
     """Multi-worker DataLoader enables pin_memory and persistent_workers on CUDA."""
     from torch.utils.data import TensorDataset
