@@ -30,6 +30,7 @@ import tempfile
 import traceback
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 # Force unbuffered stdout/stderr so HF Jobs logs stream in real-time.
 # PYTHONUNBUFFERED must be set before interpreter start; this is the
@@ -47,6 +48,17 @@ from titans import TitansConfig
 from titans._logging import setup_logging
 from titans.checkpoint import load_checkpoint, save_checkpoint
 from titans.memory_dump import save_memory_states
+from titans.observability import (
+    EvalConfig,
+    GateHookRegistry,
+    build_metrics_writer,
+    collect_layer_stats,
+    global_grad_norm,
+    is_eval_example,
+    restore_memory_states,
+    run_eval,
+    stash_memory_states,
+)
 
 # Shared script-level helpers ship inside the ``titans`` wheel under the
 # ``titans.scripts`` subpackage so HuggingFace Jobs (which uploads only
@@ -325,6 +337,22 @@ PROFILE_MEMORY_PER_BLOCK = False
 PROFILE_MEMORY_STEPS = 5
 
 # ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+# JSONL metrics path. Empty string disables JSONL; tqdm postfix stays on.
+METRICS_JSONL = ""
+# Per-feature toggles for the four observability modules.
+LOG_GRAD_NORM = True
+LOG_LAYER_STATS = True
+LOG_GATE_ALPHA = True
+# Periodic validation: every_n_steps, batch count per eval, holdout partition.
+EVAL_EVERY = 2500
+EVAL_BATCHES = 200
+EVAL_HOLDOUT_FRACTION = 0.001
+EVAL_HOLDOUT_SEED = 12345
+EVAL_RESET_MEMORY_STATE = True
+
+# ---------------------------------------------------------------------------
 # Streaming Dataset
 # ---------------------------------------------------------------------------
 
@@ -332,7 +360,16 @@ PROFILE_MEMORY_STEPS = 5
 class StreamingTextDataset(IterableDataset):
     """Stream tokenized text from HuggingFace datasets."""
 
-    def __init__(self, dataset_name, subset, tokenizer, seq_len, seed=42):
+    def __init__(
+        self,
+        dataset_name,
+        subset,
+        tokenizer,
+        seq_len,
+        seed=42,
+        partition: str = "all",
+        eval_cfg: EvalConfig | None = None,
+    ):
         from datasets import load_dataset
 
         self.ds = load_dataset(
@@ -345,9 +382,30 @@ class StreamingTextDataset(IterableDataset):
         self.tokenizer = tokenizer
         self.seq_len = seq_len
         self._buffer = []
+        self.partition = partition
+        self.eval_cfg = eval_cfg
+        if partition in {"train", "eval"} and eval_cfg is None:
+            raise ValueError(
+                "StreamingTextDataset: partition 'train' or 'eval' requires eval_cfg."
+            )
 
     def __iter__(self):
+        row_index = 0
         for example in self.ds:
+            row_index += 1
+            if self.partition != "all":
+                if example.get("id") is not None:
+                    key = str(example.get("id"))
+                elif example.get("url") is not None:
+                    key = str(example.get("url"))
+                else:
+                    key = f"row-{row_index}"
+                is_eval = is_eval_example(key, self.eval_cfg)
+                if self.partition == "train" and is_eval:
+                    continue
+                if self.partition == "eval" and not is_eval:
+                    continue
+
             text = example.get("text", "")
             if not text:
                 continue
@@ -456,18 +514,46 @@ def train():
         logger.info(f"Parameters: {num_params:,}")
     _log_mem("after model construction (CPU)")
 
+    eval_cfg = EvalConfig(
+        every_n_steps=int(EVAL_EVERY),
+        num_batches=int(EVAL_BATCHES),
+        reset_memory_state=bool(EVAL_RESET_MEMORY_STATE),
+        holdout_fraction=float(EVAL_HOLDOUT_FRACTION),
+        holdout_seed=int(EVAL_HOLDOUT_SEED),
+    )
+
     # Dataset
     try:
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, token=token)
+        train_partition = "train" if eval_cfg.every_n_steps > 0 else "all"
         dataset = StreamingTextDataset(
-            DATASET_NAME, DATASET_SUBSET, tokenizer, SEQ_LEN, seed=SEED
+            DATASET_NAME,
+            DATASET_SUBSET,
+            tokenizer,
+            SEQ_LEN,
+            seed=SEED,
+            partition=train_partition,
+            eval_cfg=eval_cfg if eval_cfg.every_n_steps > 0 else None,
         )
         logger.info(f"Streaming from {DATASET_NAME}/{DATASET_SUBSET}")
+
+        eval_dataset = None
+        if eval_cfg.every_n_steps > 0:
+            eval_dataset = StreamingTextDataset(
+                DATASET_NAME,
+                DATASET_SUBSET,
+                tokenizer,
+                SEQ_LEN,
+                seed=SEED,
+                partition="eval",
+                eval_cfg=eval_cfg,
+            )
     except Exception as e:
         logger.warning(f"Could not load dataset ({e}), falling back to synthetic")
         dataset = SyntheticDataset(VOCAB_SIZE, SEQ_LEN)
+        eval_dataset = None
 
     dataloader = make_dataloader(
         dataset,
@@ -477,6 +563,16 @@ def train():
         streaming=isinstance(dataset, IterableDataset),
         drop_last=True,
     )
+    eval_loader = None
+    if eval_dataset is not None:
+        eval_loader = make_dataloader(
+            eval_dataset,
+            batch_size=BATCH_SIZE,
+            num_workers=int(os.environ.get("NUM_WORKERS", "4")),
+            device_type=accelerator.device.type,
+            streaming=True,
+            drop_last=True,
+        )
 
     # Optimizer + scheduler
     optimizer = make_optimizer(
@@ -521,6 +617,39 @@ def train():
         model, optimizer, dataloader, scheduler
     )
     _log_mem("after accelerator.prepare")
+
+    if eval_loader is not None:
+        eval_loader = accelerator.prepare(eval_loader)
+
+    # Observability setup -- MetricsWriter + GateHookRegistry.
+    metrics = build_metrics_writer(METRICS_JSONL, accelerator)
+    gate_hooks: GateHookRegistry | None = None
+    if LOG_GATE_ALPHA:
+        gate_hooks = GateHookRegistry(accelerator.unwrap_model(model))
+
+    # INVARIANT: _chunked_loss_fn MUST start from eval_states=None on every
+    # batch. stash_memory_states() is a shallow list copy -- any state leaked
+    # back into training through this function would corrupt the training
+    # memory state via shared tensor references. If you change this function
+    # to carry state across eval batches, deepen stash_memory_states first.
+    def _chunked_loss_fn(
+        m: torch.nn.Module, b: dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Eval loss for the chunked Titans forward.
+
+        Uses a fresh memory state per batch (no carry-over). Averages
+        cross-entropy across all chunks.
+        """
+        chunks_e = b["input_ids"].split(CHUNK_SIZE, dim=1)
+        label_chunks_e = b["labels"].split(CHUNK_SIZE, dim=1)
+        eval_states = None
+        total = torch.zeros((), dtype=torch.float32, device=b["input_ids"].device)
+        for chunk_ids, chunk_labels in zip(chunks_e, label_chunks_e, strict=True):
+            logits_e, eval_states, _ = m(chunk_ids, states=eval_states)
+            total = total + F.cross_entropy(
+                logits_e.reshape(-1, VOCAB_SIZE), chunk_labels.reshape(-1)
+            )
+        return total / max(1, len(chunks_e))
 
     # Opt-in torch.compile (COMPILE=1). No-op on CPU or when use_attn_res.
     model = maybe_compile(
@@ -662,175 +791,219 @@ def train():
         disable=not accelerator.is_main_process,
     )
 
-    for batch in dataloader:
-        if global_step >= MAX_STEPS:
-            break
+    try:
+        for batch in dataloader:
+            if global_step >= MAX_STEPS:
+                break
 
-        # Memory profiling for the first few steps. After PROFILE_MEMORY_STEPS
-        # the helpers no-op (gated by global_step) so production runs aren't
-        # spammed.
-        _profile_this_step = PROFILE_MEMORY and global_step < PROFILE_MEMORY_STEPS
-        if _profile_this_step:
-            _reset_max_mem()
-            _log_mem(f"step {global_step:03d}: batch loaded")
+            # Memory profiling for the first few steps. After PROFILE_MEMORY_STEPS
+            # the helpers no-op (gated by global_step) so production runs aren't
+            # spammed.
+            _profile_this_step = PROFILE_MEMORY and global_step < PROFILE_MEMORY_STEPS
+            if _profile_this_step:
+                _reset_max_mem()
+                _log_mem(f"step {global_step:03d}: batch loaded")
 
-        try:
-            with accelerator.accumulate(model):
-                chunks = batch["input_ids"].split(CHUNK_SIZE, dim=1)
-                label_chunks = batch["labels"].split(CHUNK_SIZE, dim=1)
-                num_chunks = len(chunks)
-                batch_loss = 0.0
+            # Initialize per-step observability accumulators.
+            _pre_clip_grad_norm: float | None = None
 
-                for chunk_ids, chunk_labels in zip(chunks, label_chunks):
-                    logits, memory_states, _ = model(chunk_ids, states=memory_states)
-                    if _profile_this_step:
-                        _log_mem(f"step {global_step:03d}: after forward")
-                    chunk_loss = F.cross_entropy(
-                        logits.reshape(-1, VOCAB_SIZE), chunk_labels.reshape(-1)
-                    )
-                    accelerator.backward(chunk_loss / num_chunks)
-                    if _profile_this_step:
-                        _log_mem(f"step {global_step:03d}: after backward")
-                    batch_loss += chunk_loss.item() / num_chunks
-
-                    # Truncated BPTT: detach state at chunk boundary
-                    if memory_states is not None:
-                        memory_states = [
-                            s.detach() if s is not None else None for s in memory_states
-                        ]
-
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                if _profile_this_step:
-                    _log_mem(f"step {global_step:03d}: after optimizer step")
-        except torch.cuda.OutOfMemoryError as oom:
-            logger.error(f"[mem] CUDA OOM at step {global_step}")
-            logger.error(f"[mem] {oom}")
-            if torch.cuda.is_available():
-                summary = torch.cuda.memory_summary(abbreviated=True)
-                logger.error(f"[mem] memory_summary:\n{summary}")
-            raise
-
-        # Capture delta/weight norms BEFORE optional global state reset
-        _pre_reset_g_norm = None
-        _base_norm = None
-        if memory_states is not None:
             try:
-                state0 = memory_states[0]
-                # TNT path: state is TNTMemoryState with .global_state.weights
-                g_state = getattr(state0, "global_state", None)
-                if (
-                    g_state is not None
-                    and hasattr(g_state, "weights")
-                    and len(g_state.weights) > 0
-                ):
-                    _pre_reset_g_norm = (
-                        g_state.weights[0].detach().float().norm().item()
+                with accelerator.accumulate(model):
+                    chunks = batch["input_ids"].split(CHUNK_SIZE, dim=1)
+                    label_chunks = batch["labels"].split(CHUNK_SIZE, dim=1)
+                    num_chunks = len(chunks)
+                    batch_loss = 0.0
+
+                    for chunk_ids, chunk_labels in zip(chunks, label_chunks):
+                        logits, memory_states, _ = model(
+                            chunk_ids, states=memory_states
+                        )
+                        if _profile_this_step:
+                            _log_mem(f"step {global_step:03d}: after forward")
+                        chunk_loss = F.cross_entropy(
+                            logits.reshape(-1, VOCAB_SIZE), chunk_labels.reshape(-1)
+                        )
+                        accelerator.backward(chunk_loss / num_chunks)
+                        if _profile_this_step:
+                            _log_mem(f"step {global_step:03d}: after backward")
+                        batch_loss += chunk_loss.item() / num_chunks
+
+                        # Truncated BPTT: detach state at chunk boundary
+                        if memory_states is not None:
+                            memory_states = [
+                                s.detach() if s is not None else None
+                                for s in memory_states
+                            ]
+
+                    # Pre-clip grad norm; guarded by sync_gradients so accum
+                    # off-steps are skipped.
+                    if accelerator.sync_gradients:
+                        if LOG_GRAD_NORM:
+                            _pre_clip_grad_norm = global_grad_norm(
+                                accelerator.unwrap_model(model)
+                            )
+                        accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    if _profile_this_step:
+                        _log_mem(f"step {global_step:03d}: after optimizer step")
+            except torch.cuda.OutOfMemoryError as oom:
+                logger.error(f"[mem] CUDA OOM at step {global_step}")
+                logger.error(f"[mem] {oom}")
+                if torch.cuda.is_available():
+                    summary = torch.cuda.memory_summary(abbreviated=True)
+                    logger.error(f"[mem] memory_summary:\n{summary}")
+                raise
+
+            # Per-layer stats (memory state + weight norms) across all blocks.
+            _layer_stats = None
+            if LOG_LAYER_STATS and memory_states is not None:
+                try:
+                    _layer_stats = collect_layer_stats(
+                        accelerator.unwrap_model(model), memory_states
                     )
-                # Non-TNT path: state is MemoryState with .weights directly
-                elif hasattr(state0, "weights") and len(state0.weights) > 0:
-                    _pre_reset_g_norm = state0.weights[0].detach().float().norm().item()
+                except Exception:  # noqa: BLE001 -- logging must not crash training
+                    _layer_stats = None
 
-                # Base weight norm (for delta param context)
-                unwrapped_norm = accelerator.unwrap_model(model)
-                block0_mem_module = unwrapped_norm.blocks[0].memory
-                # TNT: block.memory.global_memory.memory has .layers
-                inner = getattr(
-                    getattr(block0_mem_module, "global_memory", None),
-                    "memory",
-                    None,
-                )
-                # Non-TNT: block.memory.memory has .layers
-                if inner is None:
-                    inner = getattr(block0_mem_module, "memory", None)
-                if inner is not None and hasattr(inner, "layers"):
-                    _base_norm = inner.layers[0].weight.detach().float().norm().item()
-            except Exception:
-                pass
+            # Optional per-batch global memory state reset.
+            # When RESET_GLOBAL_STATE_PER_BATCH is False, still reset during warmup
+            # so gates learn reasonable values before state begins carrying.
+            reset_this_batch = (
+                RESET_GLOBAL_STATE_PER_BATCH or global_step < STATE_CARRY_WARMUP_STEPS
+            )
+            if reset_this_batch and memory_states is not None:
+                unwrapped_for_reset = accelerator.unwrap_model(model)
+                reset_batch_size = batch["input_ids"].shape[0]
+                new_memory_states = []
+                for block, state in zip(unwrapped_for_reset.blocks, memory_states):
+                    if state is None:
+                        new_memory_states.append(None)
+                        continue
+                    global_mem = getattr(
+                        getattr(block, "memory", None), "global_memory", None
+                    )
+                    if global_mem is not None and hasattr(state, "global_state"):
+                        fresh_global = global_mem.init_state(reset_batch_size)
+                        new_memory_states.append(
+                            replace(state, global_state=fresh_global)
+                        )
+                    else:
+                        new_memory_states.append(state)
+                memory_states = new_memory_states
 
-        # Optional per-batch global memory state reset.
-        # When RESET_GLOBAL_STATE_PER_BATCH is False, still reset during warmup
-        # so gates learn reasonable values before state begins carrying.
-        reset_this_batch = (
-            RESET_GLOBAL_STATE_PER_BATCH or global_step < STATE_CARRY_WARMUP_STEPS
-        )
-        if reset_this_batch and memory_states is not None:
-            unwrapped_for_reset = accelerator.unwrap_model(model)
-            reset_batch_size = batch["input_ids"].shape[0]
-            new_memory_states = []
-            for block, state in zip(unwrapped_for_reset.blocks, memory_states):
-                if state is None:
-                    new_memory_states.append(None)
-                    continue
-                global_mem = getattr(
-                    getattr(block, "memory", None), "global_memory", None
-                )
-                if global_mem is not None and hasattr(state, "global_state"):
-                    fresh_global = global_mem.init_state(reset_batch_size)
-                    new_memory_states.append(replace(state, global_state=fresh_global))
-                else:
-                    new_memory_states.append(state)
-            memory_states = new_memory_states
+            running_loss += batch_loss
+            global_step += 1
+            pbar.update(1)
 
-        running_loss += batch_loss
-        global_step += 1
-        pbar.update(1)
+            if global_step % LOG_EVERY == 0:
+                avg_loss = running_loss / LOG_EVERY
+                lr = optimizer.param_groups[0]["lr"]
 
-        if global_step % LOG_EVERY == 0:
-            avg_loss = running_loss / LOG_EVERY
-            lr = optimizer.param_groups[0]["lr"]
-            postfix = {"loss": f"{avg_loss:.4f}", "lr": f"{lr:.2e}"}
+                row: dict[str, Any] = {"loss": avg_loss, "lr": lr}
+                if _pre_clip_grad_norm is not None:
+                    row["grad/global_norm"] = _pre_clip_grad_norm
+                if _layer_stats is not None:
+                    row.update(_layer_stats.to_dict())
+                if gate_hooks is not None:
+                    row.update(gate_hooks.snapshot())
+                    gate_hooks.clear()
 
-            # Global memory state norm (captured BEFORE reset above)
-            if _pre_reset_g_norm is not None:
-                postfix["g_norm"] = f"{_pre_reset_g_norm:.2e}"
-                if _base_norm is not None:
-                    postfix["base_norm"] = f"{_base_norm:.2e}"
-
-            # Gate decay instrumentation: raw bias, sigmoid(bias), gradient
-            try:
-                unwrapped_for_log = accelerator.unwrap_model(model)
-                block0 = unwrapped_for_log.blocks[0]
-                # TNT path: block.memory.global_memory.memory.gate_decay_proj
-                gate_proj = getattr(
-                    getattr(getattr(block0, "memory", None), "global_memory", None),
-                    "memory",
-                    None,
-                )
-                gate_proj = getattr(gate_proj, "gate_decay_proj", None)
-                # Non-TNT path: block.memory.gate_decay_proj
-                if gate_proj is None:
+                # Preserve the existing decay_bias probe -- block-0-only scalar
+                # that is distinct from gate/alpha_mean.
+                try:
+                    unwrapped_for_log = accelerator.unwrap_model(model)
+                    block0 = unwrapped_for_log.blocks[0]
                     gate_proj = getattr(
-                        getattr(block0, "memory", None), "gate_decay_proj", None
+                        getattr(getattr(block0, "memory", None), "global_memory", None),
+                        "memory",
+                        None,
                     )
-                if gate_proj is not None:
-                    raw_bias = gate_proj.bias.item()
-                    alpha0 = torch.sigmoid(gate_proj.bias).item()
-                    postfix["alpha"] = f"{alpha0:.6f}"
-                    postfix["decay_bias"] = f"{raw_bias:.4f}"
-                    # Show per-token alpha when per_chunk_decay is active
-                    if config.per_chunk_decay:
-                        alpha_tok = 1.0 - (1.0 - alpha0) ** (1.0 / CHUNK_SIZE)
-                        postfix["alpha_tok"] = f"{alpha_tok:.2e}"
-                    if gate_proj.bias.grad is not None:
-                        postfix["gate_grad"] = f"{gate_proj.bias.grad.item():.2e}"
-            except Exception:
-                pass
+                    gate_proj = getattr(gate_proj, "gate_decay_proj", None)
+                    if gate_proj is None:
+                        gate_proj = getattr(
+                            getattr(block0, "memory", None), "gate_decay_proj", None
+                        )
+                    if gate_proj is not None:
+                        row["decay_bias"] = float(gate_proj.bias.item())
+                except Exception:  # noqa: BLE001
+                    pass
 
-            pbar.set_postfix(**postfix)
-            running_loss = 0.0
+                metrics.log(global_step, **row)
+                metrics.tqdm_summary(pbar, global_step, **row)
+                running_loss = 0.0
 
-        if global_step % SAVE_EVERY == 0 and accelerator.is_main_process:
+            if (
+                eval_loader is not None
+                and eval_cfg.every_n_steps > 0
+                and global_step % eval_cfg.every_n_steps == 0
+            ):
+                stashed = (
+                    stash_memory_states(memory_states)
+                    if eval_cfg.reset_memory_state
+                    else None
+                )
+                eval_metrics_row = run_eval(
+                    model=model,
+                    eval_loader=eval_loader,
+                    accelerator=accelerator,
+                    cfg=eval_cfg,
+                    loss_fn=_chunked_loss_fn,
+                )
+                if eval_cfg.reset_memory_state:
+                    memory_states = restore_memory_states(stashed)
+                metrics.log(global_step, **eval_metrics_row)
+                metrics.tqdm_summary(pbar, global_step, **eval_metrics_row)
+
+            if global_step % SAVE_EVERY == 0 and accelerator.is_main_process:
+                unwrapped = accelerator.unwrap_model(model)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    ckpt_stem = Path(tmpdir) / f"step_{global_step}"
+                    ckpt_files = save_checkpoint(
+                        unwrapped.state_dict(),
+                        ckpt_stem,
+                        format=SAVE_FORMAT,
+                        metadata={
+                            "optimizer": optimizer.state_dict(),
+                            "scheduler": scheduler.state_dict(),
+                            "config": config.to_dict(),
+                            "step": global_step,
+                        },
+                    )
+
+                    if PUSH_CHECKPOINTS and token:
+                        for fpath in ckpt_files:
+                            api.upload_file(
+                                path_or_fileobj=str(fpath),
+                                path_in_repo=f"checkpoints/{fpath.name}",
+                                repo_id=HUB_REPO,
+                            )
+                        logger.info(
+                            f"Pushed checkpoint step {global_step} to {HUB_REPO}"
+                        )
+
+                    # Also save memory states
+                    if memory_states is not None:
+                        mem_path = Path(tmpdir) / f"memory_step_{global_step}.npz"
+                        save_memory_states(memory_states, mem_path)
+                        if PUSH_CHECKPOINTS and token:
+                            api.upload_file(
+                                path_or_fileobj=str(mem_path),
+                                path_in_repo=f"checkpoints/memory_step_{global_step}.npz",
+                                repo_id=HUB_REPO,
+                            )
+
+        pbar.close()
+
+        # Final checkpoint
+        if accelerator.is_main_process:
             unwrapped = accelerator.unwrap_model(model)
             with tempfile.TemporaryDirectory() as tmpdir:
-                ckpt_stem = Path(tmpdir) / f"step_{global_step}"
-                ckpt_files = save_checkpoint(
+                final_stem = Path(tmpdir) / "final"
+                final_files = save_checkpoint(
                     unwrapped.state_dict(),
-                    ckpt_stem,
+                    final_stem,
                     format=SAVE_FORMAT,
                     metadata={
                         "optimizer": optimizer.state_dict(),
@@ -841,62 +1014,31 @@ def train():
                 )
 
                 if PUSH_CHECKPOINTS and token:
-                    for fpath in ckpt_files:
+                    for fpath in final_files:
                         api.upload_file(
                             path_or_fileobj=str(fpath),
                             path_in_repo=f"checkpoints/{fpath.name}",
                             repo_id=HUB_REPO,
                         )
-                    logger.info(f"Pushed checkpoint step {global_step} to {HUB_REPO}")
-
-                # Also save memory states
-                if memory_states is not None:
-                    mem_path = Path(tmpdir) / f"memory_step_{global_step}.npz"
-                    save_memory_states(memory_states, mem_path)
-                    if PUSH_CHECKPOINTS and token:
+                    if memory_states is not None:
+                        mem_path = Path(tmpdir) / "memory_final.npz"
+                        save_memory_states(memory_states, mem_path)
                         api.upload_file(
                             path_or_fileobj=str(mem_path),
-                            path_in_repo=f"checkpoints/memory_step_{global_step}.npz",
+                            path_in_repo="checkpoints/memory_final.npz",
                             repo_id=HUB_REPO,
                         )
+                    logger.info(f"Final checkpoint pushed to {HUB_REPO}")
 
-    pbar.close()
+            logger.info(f"Training complete — {global_step} steps")
 
-    # Final checkpoint
-    if accelerator.is_main_process:
-        unwrapped = accelerator.unwrap_model(model)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            final_stem = Path(tmpdir) / "final"
-            final_files = save_checkpoint(
-                unwrapped.state_dict(),
-                final_stem,
-                format=SAVE_FORMAT,
-                metadata={
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                    "config": config.to_dict(),
-                    "step": global_step,
-                },
-            )
-
-            if PUSH_CHECKPOINTS and token:
-                for fpath in final_files:
-                    api.upload_file(
-                        path_or_fileobj=str(fpath),
-                        path_in_repo=f"checkpoints/{fpath.name}",
-                        repo_id=HUB_REPO,
-                    )
-                if memory_states is not None:
-                    mem_path = Path(tmpdir) / "memory_final.npz"
-                    save_memory_states(memory_states, mem_path)
-                    api.upload_file(
-                        path_or_fileobj=str(mem_path),
-                        path_in_repo="checkpoints/memory_final.npz",
-                        repo_id=HUB_REPO,
-                    )
-                logger.info(f"Final checkpoint pushed to {HUB_REPO}")
-
-        logger.info(f"Training complete — {global_step} steps")
+    finally:
+        # Observability teardown -- runs on every exit path (normal, OOM,
+        # KeyboardInterrupt, checkpoint upload failure). Without this, hooks
+        # leak model references and buffered JSONL lines are lost.
+        if gate_hooks is not None:
+            gate_hooks.remove()
+        metrics.close()
 
 
 def _parse_args() -> None:

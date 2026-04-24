@@ -13,9 +13,10 @@ from typing import Literal
 class TitansConfig:
     """Configuration for Titans models.
 
-    All fields are preserved from the MLX implementation. Features not yet
-    ported (TNT, AttnRes, MCA, adaptive window) are accepted here but raise
-    NotImplementedError at model construction time.
+    All fields are preserved from the MLX implementation. TNT hierarchical
+    memory, AttnRes, MCA, adaptive window, and memory-state quantization are
+    all implemented in the PyTorch port and controlled by their respective
+    ``use_*`` / enable flags below.
     """
 
     # Core dimensions
@@ -51,7 +52,7 @@ class TitansConfig:
     use_rope: bool = True
     rope_proportion: float = 1.0  # Fraction of head_dim pairs to rotate (0.0-1.0)
 
-    # TNT Hierarchical Memory (deferred)
+    # TNT Hierarchical Memory
     use_tnt: bool = False
     global_chunk_size: int = 2048
     local_chunk_sizes: list[int] = field(default_factory=lambda: [8, 16])
@@ -67,26 +68,29 @@ class TitansConfig:
     tnt_stage: int = 1
     finetune_local_chunk_sizes: list[int] | None = None
 
-    # AttnRes (deferred)
+    # AttnRes
     use_attn_res: bool = False
     num_attnres_blocks: int = 8
     attnres_warmup_steps: int = 0
     attnres_modulate_global_memory: bool = True
     attnres_modulate_local_memory: bool = False
 
-    # Memory state quantization (deferred)
+    # Memory state quantization (baseline min-max asymmetric; not TurboQuant).
+    # Applied at every forward when enabled: state is dequantized on entry and
+    # re-quantized on exit, which forces detach() at the chunk boundary and
+    # severs cross-chunk gradient flow — intended for inference, not training.
     quantize_memory_state: bool = False
     memory_state_weight_bits: int = 4
     memory_state_momentum_bits: int = 8
 
-    # Adaptive window sizing (deferred)
+    # Adaptive window sizing (honored by MAG/MAL; silently ignored by MAC)
     adaptive_window: bool = False
     adaptive_window_min: int = 64
     adaptive_window_max: int | None = None
     adaptive_window_temperature: float = 10.0
     adaptive_window_lambda: float = 0.01
 
-    # Memory Cross-Attention (deferred)
+    # Memory Cross-Attention
     use_mca: bool = False
     mca_insertion_layers: list[int] | None = None
     mca_num_heads: int = 8

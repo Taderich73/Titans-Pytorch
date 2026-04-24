@@ -271,6 +271,66 @@ def main():
             "per-block memory growth."
         ),
     )
+    # --- Observability (training metrics + eval) ---
+    obs = parser.add_argument_group("Observability")
+    obs.add_argument(
+        "--metrics-jsonl",
+        type=str,
+        default=None,
+        help="Override METRICS_JSONL path. Empty string disables JSONL.",
+    )
+    obs.add_argument(
+        "--log-grad-norm",
+        type=str,
+        default=None,
+        choices=["true", "false"],
+        help="Override LOG_GRAD_NORM (default: true in pretrain.py).",
+    )
+    obs.add_argument(
+        "--log-layer-stats",
+        type=str,
+        default=None,
+        choices=["true", "false"],
+        help="Override LOG_LAYER_STATS (default: true in pretrain.py).",
+    )
+    obs.add_argument(
+        "--log-gate-alpha",
+        type=str,
+        default=None,
+        choices=["true", "false"],
+        help="Override LOG_GATE_ALPHA (default: true in pretrain.py).",
+    )
+    obs.add_argument(
+        "--eval-every",
+        type=int,
+        default=None,
+        help="Override EVAL_EVERY: run eval every N steps. 0 disables.",
+    )
+    obs.add_argument(
+        "--eval-batches",
+        type=int,
+        default=None,
+        help="Override EVAL_BATCHES: batches per eval.",
+    )
+    obs.add_argument(
+        "--eval-holdout-fraction",
+        type=float,
+        default=None,
+        help="Override EVAL_HOLDOUT_FRACTION: fraction held out for eval.",
+    )
+    obs.add_argument(
+        "--eval-holdout-seed",
+        type=int,
+        default=None,
+        help="Override EVAL_HOLDOUT_SEED: independent of --seed.",
+    )
+    obs.add_argument(
+        "--eval-reset-memory-state",
+        type=str,
+        default=None,
+        choices=["true", "false"],
+        help="Override EVAL_RESET_MEMORY_STATE (default: true in pretrain.py).",
+    )
     # --- Misc ---
     parser.add_argument("--seed", type=int, default=None, help="Override SEED")
 
@@ -430,6 +490,16 @@ def main():
         ("HUB_REPO", "--hub-repo", args.hub_repo),
         # Misc
         ("SEED", "--seed", args.seed),
+        # Observability
+        ("METRICS_JSONL", "--metrics-jsonl", args.metrics_jsonl),
+        ("EVAL_EVERY", "--eval-every", args.eval_every),
+        ("EVAL_BATCHES", "--eval-batches", args.eval_batches),
+        (
+            "EVAL_HOLDOUT_FRACTION",
+            "--eval-holdout-fraction",
+            args.eval_holdout_fraction,
+        ),
+        ("EVAL_HOLDOUT_SEED", "--eval-holdout-seed", args.eval_holdout_seed),
     ]
 
     for const, flag, value in overrides:
@@ -484,6 +554,26 @@ def main():
             script, "STATE_CARRY_WARMUP_STEPS", args.state_carry_warmup
         )
         print(f"  --state-carry-warmup: {args.state_carry_warmup}")
+
+    if args.log_grad_norm is not None:
+        val = args.log_grad_norm.lower() == "true"
+        script = _apply_override(script, "LOG_GRAD_NORM", val)
+        print(f"  --log-grad-norm: {val}")
+
+    if args.log_layer_stats is not None:
+        val = args.log_layer_stats.lower() == "true"
+        script = _apply_override(script, "LOG_LAYER_STATS", val)
+        print(f"  --log-layer-stats: {val}")
+
+    if args.log_gate_alpha is not None:
+        val = args.log_gate_alpha.lower() == "true"
+        script = _apply_override(script, "LOG_GATE_ALPHA", val)
+        print(f"  --log-gate-alpha: {val}")
+
+    if args.eval_reset_memory_state is not None:
+        val = args.eval_reset_memory_state.lower() == "true"
+        script = _apply_override(script, "EVAL_RESET_MEMORY_STATE", val)
+        print(f"  --eval-reset-memory-state: {val}")
 
     # Apply --no-push flag
     if args.no_push:

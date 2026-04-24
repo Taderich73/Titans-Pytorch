@@ -96,3 +96,6 @@ archive/
 
 # Claude
 .claude/
+
+# Git worktrees (local isolated workspaces)
+.worktrees/
