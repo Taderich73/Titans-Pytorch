@@ -871,20 +871,51 @@ def train():
                             )
                         accelerator.clip_grad_norm_(model.parameters(), GRAD_CLIP)
 
-                        # One-shot diagnostic: dump the dtype/device/layout
-                        # of the (param, grad, exp_avg, exp_avg_sq) quartet
-                        # for the first few params on the first sync step
-                        # of this training session. Fires exactly once per
-                        # process so resumed runs still show what is
-                        # actually mismatched when fused Adam complains.
+                        # One-shot diagnostic: histogram the (device, dtype,
+                        # layout) combos across all params in the optimizer
+                        # on the first sync-gradient step. Fused Adam requires
+                        # every quartet (param, grad, exp_avg, exp_avg_sq) to
+                        # agree on those three; if any histogram has >1 combo
+                        # we have pinpointed the mismatched tensor-kind.
+                        # Params with grad=None are skipped — they are also
+                        # skipped by Adam's _init_group, so they cannot
+                        # contribute to the fused-Adam crash.
                         if not getattr(train, "_titans_logged_first_sync", False):
                             train._titans_logged_first_sync = True  # type: ignore[attr-defined]
+                            from collections import Counter
+
+                            def _key(t: torch.Tensor) -> tuple[str, str, str]:
+                                return (str(t.device), str(t.dtype), str(t.layout))
+
+                            p_stats: Counter[tuple[str, str, str]] = Counter()
+                            g_stats: Counter[tuple[str, str, str]] = Counter()
+                            ea_stats: Counter[tuple[str, str, str]] = Counter()
+                            es_stats: Counter[tuple[str, str, str]] = Counter()
+                            missing_ea = 0
+                            missing_es = 0
+                            for group in optimizer.param_groups:
+                                for p in group["params"]:
+                                    if p.grad is None:
+                                        continue
+                                    p_stats[_key(p)] += 1
+                                    g_stats[_key(p.grad)] += 1
+                                    state = optimizer.state.get(p, {})
+                                    ea = state.get("exp_avg")
+                                    es = state.get("exp_avg_sq")
+                                    if ea is not None:
+                                        ea_stats[_key(ea)] += 1
+                                    else:
+                                        missing_ea += 1
+                                    if es is not None:
+                                        es_stats[_key(es)] += 1
+                                    else:
+                                        missing_es += 1
+
                             logger.info(
-                                "[diag] fused-Adam quartet dump on first "
-                                "sync-gradient step (global_step=%d)",
+                                "[diag] fused-Adam histogram on first sync "
+                                "step (global_step=%d)",
                                 global_step,
                             )
-                            _dumped = 0
                             for g_idx, group in enumerate(optimizer.param_groups):
                                 logger.info(
                                     "[diag] group %d: fused=%s foreach=%s",
@@ -892,57 +923,18 @@ def train():
                                     group.get("fused"),
                                     group.get("foreach"),
                                 )
-                                for p in group["params"]:
-                                    if _dumped >= 5:
-                                        break
-                                    state = optimizer.state.get(p, {})
-                                    ea = state.get("exp_avg")
-                                    es = state.get("exp_avg_sq")
-                                    logger.info(
-                                        "[diag]   param shape=%s device=%s "
-                                        "dtype=%s layout=%s contig=%s",
-                                        tuple(p.shape),
-                                        p.device,
-                                        p.dtype,
-                                        p.layout,
-                                        p.data.is_contiguous(),
-                                    )
-                                    if p.grad is not None:
-                                        logger.info(
-                                            "[diag]   grad       device=%s "
-                                            "dtype=%s layout=%s contig=%s",
-                                            p.grad.device,
-                                            p.grad.dtype,
-                                            p.grad.layout,
-                                            p.grad.is_contiguous(),
-                                        )
-                                    else:
-                                        logger.info("[diag]   grad       None")
-                                    if ea is not None:
-                                        logger.info(
-                                            "[diag]   exp_avg    device=%s "
-                                            "dtype=%s layout=%s contig=%s",
-                                            ea.device,
-                                            ea.dtype,
-                                            ea.layout,
-                                            ea.is_contiguous(),
-                                        )
-                                    else:
-                                        logger.info("[diag]   exp_avg    absent")
-                                    if es is not None:
-                                        logger.info(
-                                            "[diag]   exp_avg_sq device=%s "
-                                            "dtype=%s layout=%s contig=%s",
-                                            es.device,
-                                            es.dtype,
-                                            es.layout,
-                                            es.is_contiguous(),
-                                        )
-                                    else:
-                                        logger.info("[diag]   exp_avg_sq absent")
-                                    _dumped += 1
-                                if _dumped >= 5:
-                                    break
+                            logger.info("[diag] param hist:      %s", dict(p_stats))
+                            logger.info("[diag] grad hist:       %s", dict(g_stats))
+                            logger.info(
+                                "[diag] exp_avg hist:    %s (missing=%d)",
+                                dict(ea_stats),
+                                missing_ea,
+                            )
+                            logger.info(
+                                "[diag] exp_avg_sq hist: %s (missing=%d)",
+                                dict(es_stats),
+                                missing_es,
+                            )
 
                     optimizer.step()
                     scheduler.step()

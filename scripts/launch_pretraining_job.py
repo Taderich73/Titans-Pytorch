@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -342,9 +343,27 @@ def main():
             "Not authenticated with HuggingFace. Run: huggingface-cli login"
         )
 
-    # Read the training script
-    script_path = Path(__file__).parent / "pretrain.py"
-    script = script_path.read_text()
+    # Read the training script at the pinned SHA. Previously the launcher
+    # bundled the *local* working-copy pretrain.py, which meant --titans-sha
+    # only pinned the installed `titans` package — not the driver script.
+    # Launches from a stale local repo silently shipped pre-SHA code. Now
+    # we `git show <sha>:scripts/pretrain.py` so the script body, the
+    # package pin, and HEAD-of-history are all from the same commit.
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        script = subprocess.check_output(
+            ["git", "show", f"{args.titans_sha}:scripts/pretrain.py"],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Could not read scripts/pretrain.py at SHA "
+            f"{args.titans_sha!r}. Run `git fetch` if the SHA is from a "
+            f"remote branch you have not pulled, or verify the SHA exists "
+            f"locally. git stderr: {exc.stderr.strip()}"
+        ) from exc
 
     # Inject the titans package SHA pin into the uv script header. The default
     # dependency line is unpinned ("titans @ git+...OpenTitans.git"), which
