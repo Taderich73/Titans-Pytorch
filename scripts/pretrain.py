@@ -379,12 +379,17 @@ class StreamingTextDataset(IterableDataset):
     ):
         from datasets import load_dataset
 
+        # ``trust_remote_code`` was removed from ``load_dataset`` in newer
+        # ``datasets`` versions: the flag now only matters for datasets that
+        # ship a Python loading script, and HF gates those separately.
+        # FineWeb-Edu is plain parquet, so the flag is unneeded — passing it
+        # used to log a non-fatal ERROR and is on track to become a hard
+        # raise. Removed for forward-compat.
         self.ds = load_dataset(
             dataset_name,
             subset,
             split="train",
             streaming=True,
-            trust_remote_code=True,
         ).shuffle(seed=seed, buffer_size=100000)
         self.tokenizer = tokenizer
         self.seq_len = seq_len
