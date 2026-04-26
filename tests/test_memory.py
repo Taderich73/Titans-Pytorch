@@ -257,6 +257,85 @@ class TestNeuralLongTermMemory:
                 f"{name}.weight.grad is all zero (expected nonzero)"
             )
 
+    def test_freeze_inner_loop_returns_state_unchanged(self, default_config, device):
+        """freeze_inner_loop=True: returned state weights/momentum equal input."""
+        default_config.freeze_inner_loop = True
+        mem = NeuralLongTermMemory(default_config).to(device)
+        mem.eval()
+
+        state = mem.init_state(batch_size=2)
+        # Inject a non-trivial momentum so we'd notice if it were touched.
+        for m in state.momentum:
+            m.copy_(torch.randn_like(m))
+        for w in state.weights:
+            w.copy_(torch.randn_like(w))
+
+        x = torch.randn(2, 8, default_config.dim, device=device)
+        with torch.no_grad():
+            _, new_state, _ = mem(x, state=state)
+
+        for w_in, w_out in zip(state.weights, new_state.weights):
+            assert torch.equal(w_in, w_out)
+        for m_in, m_out in zip(state.momentum, new_state.momentum):
+            assert torch.equal(m_in, m_out)
+
+    def test_freeze_inner_loop_output_shape(self, default_config, device):
+        """freeze_inner_loop=True: output shape matches input."""
+        default_config.freeze_inner_loop = True
+        mem = NeuralLongTermMemory(default_config).to(device)
+        mem.eval()
+
+        x = torch.randn(2, 8, default_config.dim, device=device)
+        with torch.no_grad():
+            output, state, gate = mem(x)
+
+        assert output.shape == x.shape
+        assert state is not None
+        assert gate is None
+
+    def test_freeze_inner_loop_is_deterministic(self, default_config, device):
+        """Two consecutive frozen forwards on the same input/state are bit-equal."""
+        default_config.freeze_inner_loop = True
+        mem = NeuralLongTermMemory(default_config).to(device)
+        mem.eval()
+
+        state = mem.init_state(batch_size=2)
+        x = torch.randn(2, 8, default_config.dim, device=device)
+
+        with torch.no_grad():
+            out1, state1, _ = mem(x, state=state)
+            out2, state2, _ = mem(x, state=state)
+
+        assert torch.equal(out1, out2)
+        for w1, w2 in zip(state1.weights, state2.weights):
+            assert torch.equal(w1, w2)
+
+    def test_freeze_default_off_preserves_behavior(self, default_config, device):
+        """With default freeze_inner_loop=False, state still updates as before."""
+        assert default_config.freeze_inner_loop is False
+        mem = NeuralLongTermMemory(default_config).to(device)
+
+        state = mem.init_state(batch_size=2)
+        x = torch.randn(2, 8, default_config.dim, device=device)
+        _, new_state, _ = mem(x, state=state)
+
+        assert not torch.equal(state.weights[0], new_state.weights[0])
+
+    def test_freeze_inner_loop_rejects_observability_returns(
+        self, default_config, device
+    ):
+        """freeze_inner_loop=True must reject return_keys/return_q/return_signal_frame."""
+        default_config.freeze_inner_loop = True
+        mem = NeuralLongTermMemory(default_config).to(device)
+
+        x = torch.randn(2, 8, default_config.dim, device=device)
+        with pytest.raises(ValueError, match="freeze_inner_loop=True"):
+            mem(x, return_keys=True)
+        with pytest.raises(ValueError, match="freeze_inner_loop=True"):
+            mem(x, return_q=True)
+        with pytest.raises(ValueError, match="freeze_inner_loop=True"):
+            mem(x, return_signal_frame=True)
+
 
 class TestPerChunkDecay:
     """Verify per-chunk decay reparameterization identity and gradient health."""

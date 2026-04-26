@@ -348,6 +348,16 @@ class NeuralLongTermMemory(nn.Module):
                 retrieve with the INCOMING state — the returned ``output`` is
                 computed from ``state`` before the update.
         """
+        if self.config.freeze_inner_loop:
+            if return_keys or return_q or return_signal_frame:
+                raise ValueError(
+                    "freeze_inner_loop=True does not support return_keys, "
+                    "return_q, or return_signal_frame. These are training/"
+                    "observability paths; frozen mode is for inference-only "
+                    "ablation and lite-inference serving."
+                )
+            return self._forward_frozen(x, state, return_state=return_state)
+
         batch_size = x.shape[0]
 
         if state is None:
@@ -597,6 +607,38 @@ class NeuralLongTermMemory(nn.Module):
         if extras:
             return (output, None, gate_snapshot, *extras)
         return output, None, gate_snapshot
+
+    def _forward_frozen(
+        self,
+        x: torch.Tensor,
+        state: MemoryState | None,
+        return_state: bool,
+    ) -> tuple:
+        """Frozen-inference path: retrieve through incoming state, no update.
+
+        Skips the inner-loop SGD update entirely. Returned ``new_state`` is
+        the input ``state`` unchanged (or a freshly initialized state if
+        ``state is None``). Used by the warm-frozen ablation and any
+        lite-inference deployment that wants the trained prior alone.
+
+        Returns the same 3-tuple shape as ``forward`` (output, state, None).
+        ``gate_snapshot`` is always None — gates are not applied.
+        """
+        batch_size = x.shape[0]
+        if state is None:
+            state = self.init_state(batch_size)
+
+        if self.config.quantize_memory_state:
+            from titans.quantize_state import QuantizedMemoryState
+
+            if isinstance(state, QuantizedMemoryState):
+                state = state.dequantize(dtype=x.dtype)
+
+        output = self.retrieve(x, state)
+
+        if return_state:
+            return output, state, None
+        return output, None, None
 
     def _parallel_memory_update_linear(
         self,
