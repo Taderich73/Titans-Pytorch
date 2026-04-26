@@ -18,29 +18,41 @@ explanations:
   B. **Classical overfit.** The model has memorized the training
      distribution and fails to generalize.
 
-This script disambiguates by running inference under three memory
+This script disambiguates by running inference under four memory
 initializations on the same held-out corpus, then printing mean
 cross-entropy for each:
 
-  1. ``fresh``   — ``eval_states=None`` per batch (matches pretrain.py
-                   eval path; the canonical "honest" eval signal).
-  2. ``warm``    — pre-loaded from ``memory_final.npz``, reset to that
-                   state at the start of every batch. Tests whether the
-                   trained inner-loop memory carries information that
-                   helps prediction on unseen text.
-  3. ``stream``  — pre-loaded from ``memory_final.npz`` once, then
-                   carried across batches (memory continues to update).
-                   Simulates a streaming inference deployment.
+  1. ``fresh``         — ``eval_states=None`` per batch (matches
+                         pretrain.py eval path; the canonical "honest"
+                         eval signal).
+  2. ``warm-frozen``   — pre-loaded from ``memory_final.npz``, reset
+                         per batch, ``config.freeze_inner_loop=True``
+                         so the inner-loop SGD update is skipped at
+                         inference. Isolates the trained-prior
+                         contribution from any in-batch test-time
+                         adaptation.
+  3. ``warm``          — pre-loaded from ``memory_final.npz``, reset to
+                         that state at the start of every batch. Adds
+                         in-batch test-time adaptation on top of the
+                         warm-frozen condition.
+  4. ``stream``        — pre-loaded from ``memory_final.npz`` once,
+                         then carried across batches (memory continues
+                         to update). Adds cross-batch adaptation on
+                         top of warm.
 
 Interpreting the numbers:
-  * ``fresh`` ≈ ``warm``  → trained memory state has no transfer value;
-    the train-eval gap is dominated by inside-batch in-context
-    memorization (Hypothesis A).
-  * ``warm`` ≪ ``fresh``   → trained memory state is genuinely a
-    learned-prior that helps unseen-text prediction. Train-eval gap is
-    partly the trained-memory contribution.
-  * ``stream`` ≪ ``warm``  → online memory adaptation is working and
-    helping prediction across batch boundaries.
+  * ``fresh`` ≈ ``warm``         → trained memory has no transfer value;
+    train-eval gap is dominated by in-batch in-context memorization
+    (Hypothesis A).
+  * ``warm`` ≪ ``fresh``          → trained memory state is genuinely a
+    learned-prior that helps unseen-text prediction.
+  * ``warm-frozen`` ≈ ``warm``    → in-batch test-time adaptation does
+    little; warm's win over fresh is the trained prior.
+  * ``warm-frozen`` ≈ ``fresh``   → the trained prior alone is weak;
+    warm's win comes from in-batch adaptation, not transfer from
+    training.
+  * ``stream`` ≪ ``warm``         → cross-batch online adaptation is
+    working and helping prediction across batch boundaries.
 
 Typical usage::
 
@@ -139,7 +151,7 @@ def _load_model_and_config(
     ns = _Cfg()
     for k, v in cfg_dict.items():
         setattr(ns, k, v)
-    ns.variant = cfg_dict.get("variant", "MAC")
+    ns.variant = cfg_dict.get("variant", "mac")
 
     titans_cfg = build_titans_config(ns)
     model = create_model(ns.variant, titans_cfg)
@@ -351,7 +363,7 @@ def main() -> None:
     )
 
     logger.info("=" * 78)
-    logger.info("Running condition 1/3: fresh (eval_states=None per batch)")
+    logger.info("Running condition 1/4: fresh (eval_states=None per batch)")
     fresh = _eval_one_condition(
         model,
         batches,
@@ -363,7 +375,28 @@ def main() -> None:
 
     logger.info("=" * 78)
     logger.info(
-        "Running condition 2/3: warm (preloaded memory_final.npz, reset per batch)"
+        "Running condition 2/4: warm-frozen "
+        "(preloaded memory, reset per batch, inner loop disabled)"
+    )
+    # Toggle the shared config flag for this condition only. All
+    # NeuralLongTermMemory blocks read from this same TitansConfig
+    # instance, so one assignment switches every block.
+    model.config.freeze_inner_loop = True
+    try:
+        warm_frozen = _eval_one_condition(
+            model,
+            batches,
+            args.chunk_size,
+            initial_states=initial_states,
+            carry_across_batches=False,
+            label="warm-frozen",
+        )
+    finally:
+        model.config.freeze_inner_loop = False
+
+    logger.info("=" * 78)
+    logger.info(
+        "Running condition 3/4: warm (preloaded memory_final.npz, reset per batch)"
     )
     warm = _eval_one_condition(
         model,
@@ -376,7 +409,7 @@ def main() -> None:
 
     logger.info("=" * 78)
     logger.info(
-        "Running condition 3/3: stream (preloaded memory, carry across batches)"
+        "Running condition 4/4: stream (preloaded memory, carry across batches)"
     )
     stream = _eval_one_condition(
         model,
@@ -399,20 +432,26 @@ def main() -> None:
     print(f"  Dataset: {args.dataset}/{args.dataset_subset}")
     print(f"  Tokenizer: {args.tokenizer}\n")
     print(
-        f"  {'condition':<10} {'mean':>10} {'std':>10} {'min':>10} "
+        f"  {'condition':<13} {'mean':>10} {'std':>10} {'min':>10} "
         f"{'max':>10} {'pp':>10}"
     )
-    for r in (fresh, warm, stream):
+    for r in (fresh, warm_frozen, warm, stream):
         print(
-            f"  {r['label']:<10} {r['mean']:>10.4f} {r['std']:>10.4f} "
+            f"  {r['label']:<13} {r['mean']:>10.4f} {r['std']:>10.4f} "
             f"{r['min']:>10.4f} {r['max']:>10.4f} {r['perplexity']:>10.3f}"
         )
     print()
 
+    delta_prior = fresh["mean"] - warm_frozen["mean"]
+    delta_adapt = warm_frozen["mean"] - warm["mean"]
     delta_warm = fresh["mean"] - warm["mean"]
     delta_stream = warm["mean"] - stream["mean"]
-    print(f"  Δ fresh→warm   = {delta_warm:+.4f}")
-    print(f"  Δ warm→stream  = {delta_stream:+.4f}")
+    print(f"  Δ fresh→warm-frozen  = {delta_prior:+.4f}  (trained prior alone)")
+    print(
+        f"  Δ warm-frozen→warm   = {delta_adapt:+.4f}  (in-batch test-time adaptation)"
+    )
+    print(f"  Δ fresh→warm         = {delta_warm:+.4f}  (= prior + adaptation)")
+    print(f"  Δ warm→stream        = {delta_stream:+.4f}  (cross-batch adaptation)")
     print()
 
     # Interpretation hint
@@ -429,6 +468,24 @@ def main() -> None:
             "  contribution; remainder is whatever fresh→warm doesn't\n"
             "  close."
         )
+        # Attribute warm's win between trained prior and in-batch adaptation.
+        if delta_prior < 0.05:
+            print(
+                "  Attribution: ~all of warm's win is in-batch test-time\n"
+                "  adaptation — the trained prior alone (warm-frozen)\n"
+                "  doesn't beat fresh."
+            )
+        elif delta_adapt < 0.05:
+            print(
+                "  Attribution: ~all of warm's win is the trained prior;\n"
+                "  in-batch test-time adaptation adds nothing on top."
+            )
+        else:
+            prior_pct = delta_prior / delta_warm * 100
+            print(
+                f"  Attribution: trained prior accounts for ~{prior_pct:.0f}%\n"
+                f"  of warm's win; the rest is in-batch test-time adaptation."
+            )
     else:
         print(
             "  Verdict: trained memory state HURTS prediction on unseen\n"
