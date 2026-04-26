@@ -150,6 +150,13 @@ class TitansConfig:
     # linear memory (num_memory_layers == 1).
     num_memory_inner_steps: int = 1
 
+    # Inference-only flag. When True, NeuralLongTermMemory.forward() skips
+    # the test-time SGD update and retrieval uses the incoming state
+    # weights unchanged. Used to isolate the trained-prior contribution at
+    # inference (warm-frozen ablation) and to enable a "lite inference"
+    # deployment path. Never set True during training.
+    freeze_inner_loop: bool = False
+
     # Auto-checkpointing (disabled by default — zero overhead when False)
     auto_checkpoint: bool = False
     checkpoint_config: dict | None = None  # MemoryCheckpointConfig as dict or instance
@@ -299,6 +306,7 @@ class TitansConfig:
             ),
             "mac_per_position_memory_query": self.mac_per_position_memory_query,
             "num_memory_inner_steps": self.num_memory_inner_steps,
+            "freeze_inner_loop": self.freeze_inner_loop,
         }
 
     @classmethod

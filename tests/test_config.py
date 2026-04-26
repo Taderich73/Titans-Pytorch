@@ -185,3 +185,16 @@ class TestMemoryInnerSteps:
         assert hf_cfg.num_memory_inner_steps == 8
         round_tripped = hf_cfg.to_titans_config()
         assert round_tripped.num_memory_inner_steps == 8
+
+
+def test_freeze_inner_loop_default_and_roundtrip():
+    """freeze_inner_loop defaults False and round-trips through to_dict/from_dict."""
+    cfg = TitansConfig()
+    assert cfg.freeze_inner_loop is False
+
+    cfg.freeze_inner_loop = True
+    d = cfg.to_dict()
+    assert d["freeze_inner_loop"] is True
+
+    restored = TitansConfig.from_dict(d)
+    assert restored.freeze_inner_loop is True
