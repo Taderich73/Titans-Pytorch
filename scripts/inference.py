@@ -267,7 +267,17 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # cuda → mps (Apple Silicon GPU via PyTorch's Metal backend) → cpu
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+            and torch.backends.mps.is_built()
+        ):
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
     else:
         device = torch.device(args.device)
 
