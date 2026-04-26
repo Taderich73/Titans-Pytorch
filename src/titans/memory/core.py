@@ -623,6 +623,11 @@ class NeuralLongTermMemory(nn.Module):
 
         Returns the same 3-tuple shape as ``forward`` (output, state, None).
         ``gate_snapshot`` is always None — gates are not applied.
+
+        State aliasing: unlike the normal forward path which constructs a
+        fresh ``MemoryState`` for the return value, this path returns the
+        caller's ``state`` object by reference. Do not mutate it after the
+        call — if you need an isolated copy, clone it explicitly.
         """
         batch_size = x.shape[0]
         if state is None:

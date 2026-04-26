@@ -258,7 +258,13 @@ class TestNeuralLongTermMemory:
             )
 
     def test_freeze_inner_loop_returns_state_unchanged(self, default_config, device):
-        """freeze_inner_loop=True: returned state weights/momentum equal input."""
+        """freeze_inner_loop=True: weights/momentum are not mutated in-place.
+
+        Snapshots the input state's tensors before the forward call and
+        verifies the post-call values are bit-equal to the snapshots. This
+        catches both "object aliasing returns input" AND any hypothetical
+        in-place mutation regression like ``state.weights[0].add_(g)``.
+        """
         default_config.freeze_inner_loop = True
         mem = NeuralLongTermMemory(default_config).to(device)
         mem.eval()
@@ -270,14 +276,19 @@ class TestNeuralLongTermMemory:
         for w in state.weights:
             w.copy_(torch.randn_like(w))
 
+        # Snapshot BEFORE the call. Cloning detaches from the state's
+        # internal storage so an in-place mutation would diverge.
+        w_snapshots = [w.clone() for w in state.weights]
+        m_snapshots = [m.clone() for m in state.momentum]
+
         x = torch.randn(2, 8, default_config.dim, device=device)
         with torch.no_grad():
             _, new_state, _ = mem(x, state=state)
 
-        for w_in, w_out in zip(state.weights, new_state.weights):
-            assert torch.equal(w_in, w_out)
-        for m_in, m_out in zip(state.momentum, new_state.momentum):
-            assert torch.equal(m_in, m_out)
+        for snap, w_out in zip(w_snapshots, new_state.weights):
+            assert torch.equal(snap, w_out)
+        for snap, m_out in zip(m_snapshots, new_state.momentum):
+            assert torch.equal(snap, m_out)
 
     def test_freeze_inner_loop_output_shape(self, default_config, device):
         """freeze_inner_loop=True: output shape matches input."""
@@ -294,7 +305,9 @@ class TestNeuralLongTermMemory:
         assert gate is None
 
     def test_freeze_inner_loop_is_deterministic(self, default_config, device):
-        """Two consecutive frozen forwards on the same input/state are bit-equal."""
+        """Two consecutive frozen forwards produce identical outputs and
+        leave the input state's weights unmutated across both calls.
+        """
         default_config.freeze_inner_loop = True
         mem = NeuralLongTermMemory(default_config).to(device)
         mem.eval()
@@ -302,13 +315,17 @@ class TestNeuralLongTermMemory:
         state = mem.init_state(batch_size=2)
         x = torch.randn(2, 8, default_config.dim, device=device)
 
+        # Snapshot the input weights so we can verify NEITHER call
+        # silently mutated them in-place.
+        w_snapshots = [w.clone() for w in state.weights]
+
         with torch.no_grad():
-            out1, state1, _ = mem(x, state=state)
-            out2, state2, _ = mem(x, state=state)
+            out1, _, _ = mem(x, state=state)
+            out2, _, _ = mem(x, state=state)
 
         assert torch.equal(out1, out2)
-        for w1, w2 in zip(state1.weights, state2.weights):
-            assert torch.equal(w1, w2)
+        for snap, w in zip(w_snapshots, state.weights):
+            assert torch.equal(snap, w)
 
     def test_freeze_default_off_preserves_behavior(self, default_config, device):
         """With default freeze_inner_loop=False, state still updates as before."""
