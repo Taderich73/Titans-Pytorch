@@ -235,7 +235,15 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument(
-        "--memory-state", type=str, default=None, help="Path to memory state .npz"
+        "--memory-state",
+        type=str,
+        default="auto",
+        help=(
+            "Path to memory state .npz to pre-load as the initial inner-loop "
+            "memory. 'auto' (default) looks for memory_<stem>.npz next to "
+            "--checkpoint and loads it if present. Pass 'none' to start from "
+            "fresh (zero) memory state."
+        ),
     )
     parser.add_argument(
         "--save-memory",
@@ -303,12 +311,30 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     input_ids = tokenizer.encode(args.prompt, return_tensors="pt").to(device)
 
+    # Resolve memory-state init: 'auto' looks for memory_<stem>.npz next
+    # to the checkpoint, 'none' (or empty) means fresh memory, and any
+    # other value is taken as an explicit path. Auto-loading matches user
+    # intuition — when a checkpoint is saved with its memory dump, loading
+    # both together is the expected default.
     memory_states = None
-    if args.memory_state:
+    mem_path: Path | None = None
+    if args.memory_state == "auto":
+        ckpt_stem = Path(args.checkpoint).with_suffix("").name
+        # Strip e.g. ".safetensors" if the user passed a full filename.
+        candidate = Path(args.checkpoint).parent / f"memory_{ckpt_stem}.npz"
+        if candidate.exists():
+            mem_path = candidate
+            logger.info(f"Auto-detected memory dump: {candidate}")
+        else:
+            logger.info(f"No memory dump at {candidate} — using fresh memory state")
+    elif args.memory_state and args.memory_state.lower() != "none":
+        mem_path = Path(args.memory_state)
+
+    if mem_path is not None:
         memory_states = load_memory_states(
-            args.memory_state, device=device, reset_for_inference=True
+            str(mem_path), device=device, reset_for_inference=True
         )
-        logger.info(f"Loaded memory state from {args.memory_state}")
+        logger.info(f"Loaded memory state from {mem_path}")
 
     generated, final_states = generate(
         model,
