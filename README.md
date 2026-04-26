@@ -135,6 +135,33 @@ uv run python scripts/convert.py checkpoints/final.pt --to hf \
 See the HF integration doc for `Trainer` usage and the config guide for
 flag-level help. Run the test suite with `uv run pytest tests/`.
 
+## Interpreting Training Loss vs Eval Loss
+
+**Don't read training loss as a generalization signal.** Titans models
+include a `NeuralLongTermMemory` module per block whose weights update
+*during the forward pass* via test-time gradient descent on the keys/
+values it just observed — this inner loop is the headline feature of the
+Titans paper. As a consequence, a training-batch loss is computed by a
+model that has *already adapted to part of that same batch* through the
+inner-loop update. The number is contaminated by in-context
+memorization that is working as designed, not by classical overfit.
+
+In practice the gap is large. A recent 100K-step run on FineWeb-Edu
+ended with `loss=0.029` (training) and `eval=1.30` (perplexity ~3.66).
+The eval path in `scripts/pretrain.py::_chunked_loss_fn` deliberately
+starts each eval batch from `eval_states=None`, so eval is the only
+honest signal of how the model generalizes to unseen tokens without
+benefit of the inner-loop memory carryover.
+
+**Rules of thumb:**
+- Compare runs by **eval loss**, not training loss.
+- Don't expect Titans training loss to track standard transformer
+  training loss at the same hyperparameters — you'll see Titans go
+  much lower without a corresponding eval improvement.
+- A still-decreasing eval at the schedule end means undertrained;
+  budget more steps or slow the cosine decay before reading too much
+  into the train number.
+
 ## Citation
 
 ```bibtex
