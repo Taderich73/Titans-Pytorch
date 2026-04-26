@@ -51,8 +51,17 @@ Typical usage::
         --dataset HuggingFaceFW/fineweb-edu --dataset-subset sample-10BT \\
         --num-batches 50 --batch-size 1 --seq-len 2048
 
-Runs on CUDA when available, falls back to CPU (much slower). For a
-quick smoke test, use ``--num-batches 5``.
+Device selection: ``--device auto`` (default) prefers CUDA, then
+Apple Silicon MPS, then CPU. Pass ``--device mps`` explicitly on
+Apple Silicon to bypass the cuda probe. **Note:** MPS here is
+PyTorch's Metal backend — the existing PyTorch model runs on Apple
+GPU. This is NOT Apple's MLX framework, which would require a
+parallel Titans implementation in MLX and a weight converter (see
+project followups for that scope).
+
+For a quick smoke test, use ``--num-batches 5``. CPU is functional
+but much slower — expect ~30s/batch on a 148M model with
+seq_len=2048; MPS or CUDA cuts that to ~1-2s/batch.
 """
 
 from __future__ import annotations
@@ -74,6 +83,34 @@ from titans.scripts import build_titans_config, create_model
 
 setup_logging(logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_device(arg: str) -> torch.device:
+    """Resolve --device with cuda → mps → cpu auto-fallback.
+
+    'auto' walks the preference order: a CUDA GPU first, then Apple
+    Silicon's MPS backend (PyTorch's Metal Performance Shaders bridge,
+    works for any Apple Silicon Mac with a recent torch build), then
+    CPU. Pass an explicit value (cuda / mps / cpu) to override.
+
+    Note: this is PyTorch's MPS backend — i.e. the existing PyTorch
+    model runs on the Apple GPU. It is NOT Apple's MLX framework,
+    which would require a separate MLX-native Titans implementation
+    plus a weight converter. See the README / project followups if
+    that's what you actually need.
+    """
+    if arg != "auto":
+        return torch.device(arg)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    mps_avail = (
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+        and torch.backends.mps.is_built()
+    )
+    if mps_avail:
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def _load_model_and_config(
@@ -270,15 +307,14 @@ def main() -> None:
     parser.add_argument(
         "--device",
         default="auto",
-        help="cuda / cpu / auto (default: prefer cuda when available).",
+        help=(
+            "cuda / mps / cpu / auto. 'auto' falls back: cuda → mps "
+            "(Apple Silicon GPU via PyTorch's Metal backend) → cpu."
+        ),
     )
     args = parser.parse_args()
 
-    device = torch.device(
-        "cuda"
-        if (args.device == "auto" and torch.cuda.is_available())
-        else (args.device if args.device != "auto" else "cpu")
-    )
+    device = _resolve_device(args.device)
     logger.info(f"Using device: {device}")
 
     try:
